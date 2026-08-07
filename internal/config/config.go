@@ -12,24 +12,24 @@ import (
 
 // ControllerConfig 总控配置。
 type ControllerConfig struct {
-	PublicURL  string         `yaml:"public_url"`  // 总控对外地址
-	Listen     string         `yaml:"listen"`      // 监听地址 :8080
-	DatabaseURL string        `yaml:"database_url"`
-	SecretKeyEnv string       `yaml:"secret_key_env"` // 用户凭据 AES 密钥的环境变量名
-	StaticDir  string         `yaml:"static_dir"`  // React 构建产物目录
-	Node       NodePolicy     `yaml:"node"`
-	Ticket     TicketPolicy   `yaml:"ticket"`
-	Backup     BackupPolicy   `yaml:"backup"`
-	OAuth      OAuthConfig    `yaml:"oauth"`
-	Admin      AdminConfig    `yaml:"admin"`
+	PublicURL    string       `yaml:"public_url"` // 总控对外地址
+	Listen       string       `yaml:"listen"`     // 监听地址 :8080
+	DatabaseURL  string       `yaml:"database_url"`
+	SecretKeyEnv string       `yaml:"secret_key_env"` // 控制面凭证加密主密钥的环境变量名
+	StaticDir    string       `yaml:"static_dir"`     // React 构建产物目录
+	Node         NodePolicy   `yaml:"node"`
+	Ticket       TicketPolicy `yaml:"ticket"`
+	Backup       BackupPolicy `yaml:"backup"`
+	OAuth        OAuthConfig  `yaml:"oauth"`
+	Admin        AdminConfig  `yaml:"admin"`
 }
 
 // NodePolicy 节点策略。
 type NodePolicy struct {
-	RegisterCPU  float64 `yaml:"register_cpu"`  // 可注册阈值 % (默认50)
-	RegisterMem  float64 `yaml:"register_mem"`
-	RegisterDisk float64 `yaml:"register_disk"`
-	HeartbeatTimeoutSec int `yaml:"heartbeat_timeout_sec"` // 心跳超时判离线(默认45)
+	RegisterCPU         float64 `yaml:"register_cpu"` // 可注册阈值 % (默认50)
+	RegisterMem         float64 `yaml:"register_mem"`
+	RegisterDisk        float64 `yaml:"register_disk"`
+	HeartbeatTimeoutSec int     `yaml:"heartbeat_timeout_sec"` // 心跳超时判离线(默认45)
 }
 
 // TicketPolicy 票据策略。
@@ -39,11 +39,11 @@ type TicketPolicy struct {
 
 // BackupPolicy 备份策略。
 type BackupPolicy struct {
-	OfflineGraceMin int `yaml:"offline_grace_min"` // 离线保护期(默认12)
-	RetainVersions  int `yaml:"retain_versions"`       // 存储节点保留版本(默认4)
-	ZstdLevel       int `yaml:"zstd_level"`            // 默认3
-	RetryMax        int `yaml:"retry_max"`             // 默认3
-	AbortOnLogin    bool `yaml:"abort_on_user_login"`  // 默认true
+	OfflineGraceMin int  `yaml:"offline_grace_min"`   // 离线保护期(默认12)
+	RetainVersions  int  `yaml:"retain_versions"`     // 存储节点保留版本(默认4)
+	ZstdLevel       int  `yaml:"zstd_level"`          // 默认3
+	RetryMax        int  `yaml:"retry_max"`           // 默认3
+	AbortOnLogin    bool `yaml:"abort_on_user_login"` // 默认true
 }
 
 // OAuthConfig 第三方登录。

@@ -21,6 +21,12 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	opened := false
+	defer func() {
+		if !opened {
+			_ = db.Close()
+		}
+	}()
 	db.SetMaxOpenConns(20)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(30 * time.Minute)
@@ -45,14 +51,9 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	if err := s.migrate(ctx); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	opened = true
 	return s, nil
 }
 
 // Close 关闭连接。
 func (s *Store) Close() error { return s.DB.Close() }
-
-// migrate 执行建表（幂等）。
-func (s *Store) migrate(ctx context.Context) error {
-	_, err := s.DB.ExecContext(ctx, schemaSQL)
-	return err
-}

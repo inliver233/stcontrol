@@ -1,7 +1,3 @@
-package store
-
-// schemaSQL 建表语句（幂等, IF NOT EXISTS）。
-const schemaSQL = `
 CREATE TABLE IF NOT EXISTS users (
   id              BIGSERIAL PRIMARY KEY,
   uuid            UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
@@ -27,8 +23,11 @@ CREATE TABLE IF NOT EXISTS nodes (
   agent_url       TEXT NOT NULL DEFAULT '',
   agent_psk       TEXT NOT NULL DEFAULT '',
   region          TEXT,
-  cpu_pct         REAL, mem_pct REAL, disk_pct REAL,
-  agent_version   TEXT, tavern_version TEXT,
+  cpu_pct         REAL,
+  mem_pct         REAL,
+  disk_pct        REAL,
+  agent_version   TEXT,
+  tavern_version  TEXT,
   last_seen_at    TIMESTAMPTZ,
   status          TEXT NOT NULL DEFAULT 'pending',
   allow_register  BOOLEAN NOT NULL DEFAULT true,
@@ -67,9 +66,11 @@ CREATE TABLE IF NOT EXISTS backup_jobs (
   trigger         TEXT NOT NULL,
   status          TEXT NOT NULL DEFAULT 'pending',
   data_version    BIGINT,
-  bytes           BIGINT, file_count INT,
+  bytes           BIGINT,
+  file_count      INT,
   error           TEXT,
-  started_at      TIMESTAMPTZ, finished_at TIMESTAMPTZ,
+  started_at      TIMESTAMPTZ,
+  finished_at     TIMESTAMPTZ,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -78,7 +79,8 @@ CREATE TABLE IF NOT EXISTS invitation_codes (
   max_uses        INT NOT NULL DEFAULT 1,
   used_count      INT NOT NULL DEFAULT 0,
   node_id         BIGINT,
-  expires_at      TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  expires_at      TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS register_tokens (
@@ -90,12 +92,15 @@ CREATE TABLE IF NOT EXISTS register_tokens (
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
-  id BIGSERIAL PRIMARY KEY, actor TEXT, action TEXT,
-  target TEXT, detail JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  id BIGSERIAL PRIMARY KEY,
+  actor TEXT,
+  action TEXT,
+  target TEXT,
+  detail JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_replicas_user ON user_replicas(user_id);
 CREATE INDEX IF NOT EXISTS idx_replicas_node ON user_replicas(node_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_jti ON tickets(jti);
 CREATE INDEX IF NOT EXISTS idx_backup_user ON backup_jobs(user_id);
-`

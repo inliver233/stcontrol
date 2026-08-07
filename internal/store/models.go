@@ -7,40 +7,41 @@ import (
 
 // User 总控用户。
 type User struct {
-	ID           int64
-	UUID         string
-	Username     string
-	DisplayName  string
-	PasswordEnc  sql.NullString // AES-GCM 加密的明文密码(账号密码用户)
-	PasswordHash sql.NullString // bcrypt, 总控登录校验
-	AuthProvider string
-	OAuthID      sql.NullString
-	AvatarURL    sql.NullString
-	Email        sql.NullString
-	HomeNodeID   sql.NullInt64
-	Status       string
-	CreatedAt    time.Time
+	ID           int64          `json:"id"`
+	GlobalID     int64          `json:"-"`
+	UUID         string         `json:"uuid"`
+	Username     string         `json:"username"`
+	DisplayName  string         `json:"display_name"`
+	PasswordEnc  sql.NullString `json:"-"` // 仅兼容 demo 旧列；新代码禁止写入可逆密码。
+	PasswordHash sql.NullString `json:"-"`
+	AuthProvider string         `json:"auth_provider"`
+	OAuthID      sql.NullString `json:"-"`
+	AvatarURL    sql.NullString `json:"avatar_url"`
+	Email        sql.NullString `json:"-"`
+	HomeNodeID   sql.NullInt64  `json:"home_node_id"`
+	Status       string         `json:"status"`
+	CreatedAt    time.Time      `json:"created_at"`
 }
 
 // Node 节点。
 type Node struct {
-	ID             int64
-	Name           string
-	Role           string
-	BaseURL        string
-	AgentURL       string
-	AgentPSK       string
-	Region         sql.NullString
-	CPUPct         sql.NullFloat64
-	MemPct         sql.NullFloat64
-	DiskPct        sql.NullFloat64
-	AgentVersion   sql.NullString
-	TavernVersion  sql.NullString
-	LastSeenAt     sql.NullTime
-	Status         string
-	AllowRegister  bool
-	IsBackupTarget bool
-	CreatedAt      time.Time
+	ID             int64           `json:"id"`
+	Name           string          `json:"name"`
+	Role           string          `json:"role"`
+	BaseURL        string          `json:"base_url"`
+	AgentURL       string          `json:"-"`
+	AgentPSK       string          `json:"-"`
+	Region         sql.NullString  `json:"region"`
+	CPUPct         sql.NullFloat64 `json:"cpu_pct"`
+	MemPct         sql.NullFloat64 `json:"mem_pct"`
+	DiskPct        sql.NullFloat64 `json:"disk_pct"`
+	AgentVersion   sql.NullString  `json:"agent_version"`
+	TavernVersion  sql.NullString  `json:"tavern_version"`
+	LastSeenAt     sql.NullTime    `json:"last_seen_at"`
+	Status         string          `json:"status"`
+	AllowRegister  bool            `json:"allow_register"`
+	IsBackupTarget bool            `json:"is_backup_target"`
+	CreatedAt      time.Time       `json:"created_at"`
 }
 
 // UserReplica 用户在某节点的副本。

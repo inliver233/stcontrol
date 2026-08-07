@@ -78,18 +78,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 生成总控侧凭据
+	// 生成总控侧不可逆验证凭据。节点兼容的 scrypt 材料由后续账号供应协议产生，
+	// 总控不保存可逆明文密码。
 	pwHash, err := crypto.HashPassword(req.Password)
 	if err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "密码哈希失败")
 		return
 	}
-	pwEnc, err := crypto.Encrypt(s.secretKey, []byte(req.Password))
-	if err != nil {
-		protocol.WriteError(w, http.StatusInternalServerError, "凭据加密失败")
-		return
-	}
-
 	// 代注册到节点
 	provReq := &protocol.ProvisionUserRequest{
 		Handle:         handle,
@@ -106,7 +101,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	user := &store.User{
 		Username:     handle,
 		DisplayName:  displayName,
-		PasswordEnc:  sql.NullString{String: pwEnc, Valid: true},
 		PasswordHash: sql.NullString{String: pwHash, Valid: true},
 		AuthProvider: "password",
 		HomeNodeID:   sql.NullInt64{Int64: node.ID, Valid: true},

@@ -123,7 +123,7 @@ federated:
 
 - 总控↔子控：HMAC-SHA256 签名 + 时间戳 + nonce 防重放，每节点独立 PSK，建议 HTTPS/mTLS。
 - 票据：短命(60s) + 一次性(服务端核销) + 绑定节点(aud) + 仅 HTTPS。
-- 用户凭据：AES-256-GCM 加密存库（密钥走环境变量 `CONTROLLER_SECRET_KEY`），bcrypt 校验总控登录。
+- 用户密码：总控只保存不可逆登录 hash；节点密码同步使用酒馆兼容的 scrypt hash/salt，不保存可逆明文。`CONTROLLER_SECRET_KEY` 只用于控制面凭证等必须可恢复的机器密钥材料。
 - 备份数据含明文 API key(secrets.json) → 传输 TLS，存储节点备份目录权限 0700。
 
 ## 构建产物

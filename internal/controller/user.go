@@ -17,11 +17,11 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{
-		"username":     user.Username,
-		"display_name": user.DisplayName,
+		"username":      user.Username,
+		"display_name":  user.DisplayName,
 		"auth_provider": user.AuthProvider,
-		"avatar_url":   user.AvatarURL.String,
-		"home_node_id": user.HomeNodeID.Int64,
+		"avatar_url":    user.AvatarURL.String,
+		"home_node_id":  user.HomeNodeID.Int64,
 	})
 }
 
@@ -76,12 +76,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusInternalServerError, "密码哈希失败")
 		return
 	}
-	pwEnc, err := crypto.Encrypt(s.secretKey, []byte(req.NewPassword))
-	if err != nil {
-		protocol.WriteError(w, http.StatusInternalServerError, "凭据加密失败")
-		return
-	}
-	if err := s.Store.UpdateUserPassword(ctx, userID, pwEnc, pwHash); err != nil {
+	if err := s.Store.UpdateUserPassword(ctx, userID, pwHash); err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "更新密码失败")
 		return
 	}
