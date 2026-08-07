@@ -37,6 +37,7 @@ func TestTavernAdapterUsesLoopbackAndSignedHashOnlyPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := a.provisionUser(context.Background(), &protocol.ProvisionUserRequest{
+		RegistrationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PolicyVersion: 3,
 		Handle: "alice", Name: "Alice", PasswordHash: "scrypt-hash", PasswordSalt: "salt",
 	})
 	if err != nil || result.LocalUserID != "alice" {
@@ -48,6 +49,9 @@ func TestTavernAdapterUsesLoopbackAndSignedHashOnlyPayload(t *testing.T) {
 	}
 	if _, exists := payload["password"]; exists || payload["password_hash"] != "scrypt-hash" {
 		t.Fatalf("payload=%s", captured)
+	}
+	if payload["registration_id"] != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" || payload["policy_version"] != float64(3) {
+		t.Fatalf("registration fencing missing: %s", captured)
 	}
 }
 

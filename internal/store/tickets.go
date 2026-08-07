@@ -36,52 +36,6 @@ func (s *Store) ConsumeTicket(ctx context.Context, jti string, now time.Time) (i
 	return userID, nodeID, err == nil, err
 }
 
-// ---------- 邀请码 ----------
-
-// ValidateInvitation 校验邀请码并消费（成功返回 true）。
-func (s *Store) ValidateInvitation(ctx context.Context, code string, nodeID int64) (bool, string, error) {
-	var maxUses, usedCount int
-	var codeNodeID sql.NullInt64
-	var expiresAt sql.NullTime
-	err := s.DB.QueryRowContext(ctx,
-		`SELECT max_uses, used_count, node_id, expires_at FROM invitation_codes WHERE code=$1`, code).
-		Scan(&maxUses, &usedCount, &codeNodeID, &expiresAt)
-	if err == sql.ErrNoRows {
-		return false, "邀请码不存在", nil
-	}
-	if err != nil {
-		return false, "", err
-	}
-	if expiresAt.Valid && time.Now().After(expiresAt.Time) {
-		return false, "邀请码已过期", nil
-	}
-	if usedCount >= maxUses {
-		return false, "邀请码已用尽", nil
-	}
-	if codeNodeID.Valid && codeNodeID.Int64 != nodeID {
-		return false, "邀请码不适用于该节点", nil
-	}
-	// 消费
-	res, err := s.DB.ExecContext(ctx,
-		`UPDATE invitation_codes SET used_count=used_count+1
-		 WHERE code=$1 AND used_count < max_uses`, code)
-	if err != nil {
-		return false, "", err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return false, "邀请码已用尽", nil
-	}
-	return true, "", nil
-}
-
-// CreateInvitation 创建邀请码。
-func (s *Store) CreateInvitation(ctx context.Context, code string, maxUses int, nodeID *int64, expiresAt *time.Time) error {
-	_, err := s.DB.ExecContext(ctx, `
-	  INSERT INTO invitation_codes (code, max_uses, node_id, expires_at) VALUES ($1,$2,$3,$4)
-	  ON CONFLICT (code) DO NOTHING`, code, maxUses, nodeID, expiresAt)
-	return err
-}
-
 // ---------- 注册令牌（一次性, 子控注册用） ----------
 
 // CreateRegisterToken 创建一次性注册令牌。

@@ -154,6 +154,8 @@ type ScanExistingUser struct {
 // ProvisionUserRequest 总控下发：在节点上创建用户。
 type ProvisionUserRequest struct {
 	OperationID    string `json:"operation_id"`
+	RegistrationID string `json:"registration_id"`
+	PolicyVersion  int64  `json:"policy_version"`
 	Handle         string `json:"handle"`
 	Name           string `json:"name"`
 	PasswordHash   string `json:"password_hash,omitempty"`

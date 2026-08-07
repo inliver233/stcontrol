@@ -45,7 +45,6 @@ const adminApi = {
   disableUser: (id: number) => adminReq<any>(`/api/admin/users/${id}/disable`, { method: 'POST' }),
   backups: () => adminReq<{ backups: any[] }>('/api/admin/backups'),
   abortBackup: (id: number) => adminReq<any>(`/api/admin/backups/${id}/abort`, { method: 'POST' }),
-  createInvitation: (body: any) => adminReq<any>('/api/admin/invitations', { method: 'POST', body: JSON.stringify(body) }),
   admins: () => adminReq<{ admins: any[] }>('/api/admin/admins'),
   createAdmin: (username: string, password: string) => adminReq<any>('/api/admin/admins', { method: 'POST', body: JSON.stringify({ username, password }) }),
   setAdminStatus: (id: number, status: string) => adminReq<any>(`/api/admin/admins/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
@@ -62,7 +61,6 @@ export default function AdminPage() {
     { path: '/admin/nodes', label: '节点管理' },
     { path: '/admin/users', label: '用户管理' },
     { path: '/admin/backups', label: '备份任务' },
-    { path: '/admin/invitations', label: '邀请码' },
     { path: '/admin/admins', label: '管理员' },
   ]
   const current = location.pathname
@@ -97,7 +95,6 @@ export default function AdminPage() {
           <Route path="/nodes" element={<NodesAdmin />} />
           <Route path="/users" element={<UsersAdmin />} />
           <Route path="/backups" element={<BackupsAdmin />} />
-          <Route path="/invitations" element={<InvitationsAdmin />} />
           <Route path="/admins" element={<AdminsAdmin />} />
         </Routes>
       </div>
@@ -285,44 +282,6 @@ function BackupsAdmin() {
           ))}
         </tbody>
       </table>
-    </>
-  )
-}
-
-// ---------- 邀请码 ----------
-function InvitationsAdmin() {
-  const [code, setCode] = useState('')
-  const [maxUses, setMaxUses] = useState(1)
-  const [result, setResult] = useState('')
-  const [error, setError] = useState('')
-
-  const create = async () => {
-    setError(''); setResult('')
-    try {
-      const res = await adminApi.createInvitation({ code: code || undefined, max_uses: maxUses })
-      setResult(`创建成功: ${res.code}`)
-      setCode('')
-    } catch (e: any) {
-      setError(e.message)
-    }
-  }
-
-  return (
-    <>
-      <h2>邀请码</h2>
-      {error && <div className="error-msg">{error}</div>}
-      {result && <div className="success-msg">{result}</div>}
-      <div className="card" style={{ maxWidth: 420 }}>
-        <div className="field">
-          <label>邀请码（留空自动生成）</label>
-          <input value={code} onChange={e => setCode(e.target.value)} />
-        </div>
-        <div className="field">
-          <label>可用次数</label>
-          <input type="number" value={maxUses} min={1} onChange={e => setMaxUses(parseInt(e.target.value) || 1)} />
-        </div>
-        <button className="btn" onClick={create}>生成邀请码</button>
-      </div>
     </>
   )
 }

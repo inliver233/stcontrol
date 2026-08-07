@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -79,6 +80,32 @@ func TestDecryptCommandAuthenticatesCiphertextAndDigest(t *testing.T) {
 	}
 }
 
+func TestDecryptCommandV2UsesKeyedPayloadAuthenticator(t *testing.T) {
+	t.Parallel()
+	a := &Agent{Cfg: &config.AgentConfig{AgentPSK: "agent-secret"}}
+	plaintext := []byte(`{"invitation_code":"low-entropy"}`)
+	key := controlcrypto.DeriveAgentCommandKey(a.Cfg.AgentPSK)
+	encoded, err := controlcrypto.Encrypt(key, plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, _ := json.Marshal(encryptedCommandEnvelope{Version: 2, Ciphertext: encoded})
+	authenticator := hmac.New(sha256.New, controlcrypto.DeriveAgentCommandAuthKey(a.Cfg.AgentPSK))
+	_, _ = authenticator.Write(plaintext)
+	command := protocol.AgentCommand{
+		EncryptedPayload: envelope, PayloadSHA256: hex.EncodeToString(authenticator.Sum(nil)),
+	}
+	got, err := a.decryptCommand(command)
+	if err != nil || string(got) != string(plaintext) {
+		t.Fatalf("plaintext=%q err=%v", got, err)
+	}
+	bareDigest := sha256.Sum256(plaintext)
+	command.PayloadSHA256 = hex.EncodeToString(bareDigest[:])
+	if _, err := a.decryptCommand(command); err == nil {
+		t.Fatal("v2 command accepted an unkeyed payload digest")
+	}
+}
+
 func TestExecuteScanExistingReturnsOnlySafeSummary(t *testing.T) {
 	t.Parallel()
 	tavernDir := t.TempDir()
@@ -135,6 +162,113 @@ func TestPasswordCommandPassesCommandOperationToAdapter(t *testing.T) {
 	succeeded, result := a.executeCommand(context.Background(), command)
 	if !succeeded || adapterRequest.OperationID != operationID || adapterRequest.Version != 4 {
 		t.Fatalf("succeeded=%v request=%+v result=%s", succeeded, adapterRequest, result)
+	}
+}
+
+func TestProvisionCommandPassesStableRegistrationAndDeliveryOperations(t *testing.T) {
+	t.Parallel()
+	operationID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	registrationID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	var adapterRequest protocol.ProvisionUserRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&adapterRequest); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(protocol.ProvisionUserResponse{
+			OK: true, Handle: "alice", LocalUserID: "local-alice",
+		})
+	}))
+	defer server.Close()
+	a, err := New(&config.AgentConfig{
+		TavernURL: server.URL, AgentPSK: "agent-secret", NodeID: 12, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := encryptedTestCommand(t, a.Cfg.AgentPSK, "provision_user", []byte(`{
+		"registration_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		"policy_version":7,"handle":"alice","name":"Alice",
+		"password_hash":"node-hash","password_salt":"node-salt"
+	}`))
+	command.OperationID = operationID
+	succeeded, result := a.executeCommand(context.Background(), command)
+	if !succeeded || adapterRequest.OperationID != operationID ||
+		adapterRequest.RegistrationID != registrationID || adapterRequest.PolicyVersion != 7 {
+		t.Fatalf("succeeded=%v request=%+v result=%s", succeeded, adapterRequest, result)
+	}
+}
+
+func TestDefinitiveProvisionErrorAllowsOnlyNodeOwnedBusinessRejections(t *testing.T) {
+	t.Parallel()
+	for _, code := range []string{
+		"invitation_invalid", "handle_conflict", "policy_changed", "registration_closed",
+	} {
+		if !definitiveProvisionError(code) {
+			t.Errorf("code %q should be definitive", code)
+		}
+	}
+	for _, code := range []string{
+		"", "adapter_unavailable", "timeout", "internal_error", "unknown",
+	} {
+		if definitiveProvisionError(code) {
+			t.Errorf("code %q must remain retryable", code)
+		}
+	}
+}
+
+func TestProvisionCommandDistinguishesDefinitiveRejectionFromUncertainFailure(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		response   protocol.ProvisionUserResponse
+		statusCode int
+		wantCode   string
+	}{
+		{
+			name: "node owned invitation rejection",
+			response: protocol.ProvisionUserResponse{
+				OK: false, Error: "invitation_invalid",
+			},
+			statusCode: http.StatusOK,
+			wantCode:   "provision_rejected",
+		},
+		{
+			name:       "transport failure may have executed",
+			statusCode: http.StatusServiceUnavailable,
+			wantCode:   "provision_unavailable",
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.statusCode)
+				if test.statusCode == http.StatusOK {
+					_ = json.NewEncoder(w).Encode(test.response)
+				}
+			}))
+			defer server.Close()
+			a, err := New(&config.AgentConfig{
+				TavernURL: server.URL, AgentPSK: "agent-secret", NodeID: 12, DataDir: t.TempDir(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			command := encryptedTestCommand(t, a.Cfg.AgentPSK, "provision_user", []byte(`{
+				"registration_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+				"policy_version":7,"handle":"alice","name":"Alice",
+				"password_hash":"node-hash","password_salt":"node-salt"
+			}`))
+			command.OperationID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+			succeeded, raw := a.executeCommand(context.Background(), command)
+			var result safeCommandResult
+			if err := json.Unmarshal(raw, &result); err != nil {
+				t.Fatal(err)
+			}
+			if succeeded || result.Code != test.wantCode {
+				t.Fatalf("succeeded=%v result=%s", succeeded, raw)
+			}
+		})
 	}
 }
 

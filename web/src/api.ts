@@ -61,6 +61,12 @@ export interface PasswordSyncResult {
   pending_nodes: number
 }
 
+export interface RegistrationStatus {
+  ok: boolean
+  state: 'pending' | 'retrying' | 'succeeded'
+  username?: string
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
 	const method = (options?.method || 'GET').toUpperCase()
 	const headers = new Headers(options?.headers)
@@ -98,16 +104,17 @@ function readCookie(name: string): string {
 
 export const api = {
   // 认证
-  register: (body: { username: string; display_name: string; password: string; node_id: number; invitation_code?: string }) =>
-    request<{ ok: boolean; username: string }>('/api/auth/register', { method: 'POST', body: JSON.stringify(body) }),
+  register: (body: { operation_id: string; username: string; display_name: string; password: string; node_id: number; invitation_code?: string }) =>
+    request<RegistrationStatus>('/api/auth/register', { method: 'POST', body: JSON.stringify(body) }),
   login: (body: { username: string; password: string }) =>
     request<{ ok: boolean }>('/api/auth/login', { method: 'POST', body: JSON.stringify(body) }),
 	adminLogin: (body: { username: string; password: string }) =>
 	  request<{ ok: boolean; is_admin: boolean }>('/api/auth/admin/login', { method: 'POST', body: JSON.stringify(body) }),
-	completeOAuth: (node_id: number) =>
-	  request<{ ok: boolean; username: string }>('/api/auth/oauth/complete', {
-		method: 'POST', body: JSON.stringify({ node_id }),
-	  }),
+  completeOAuth: (node_id: number, operation_id: string, invitation_code?: string) =>
+    request<RegistrationStatus>('/api/auth/oauth/complete', {
+      method: 'POST', body: JSON.stringify({ node_id, operation_id, invitation_code }),
+    }),
+  registrationStatus: () => request<RegistrationStatus>('/api/auth/registration/status'),
   logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
   me: () => request<Me>('/api/users/me'),
 

@@ -79,16 +79,23 @@ func (s *Store) UpdateNodeHeartbeat(
 	    tavern_version=$5, agent_version=$6, transfer_url=$7,
 	    last_seen_at=$8, status='online',
 	    registration_policy_state=CASE
-	      WHEN $10 IN ('open','invitation_required','closed') AND $11>=registration_policy_version THEN $10
+	      WHEN $10 IN ('open','invitation_required','closed')
+	        AND ($11>registration_policy_version
+	          OR ($11=registration_policy_version AND $10=registration_policy_state)) THEN $10
 	      ELSE 'error' END,
 	    registration_policy_version=GREATEST(registration_policy_version,$11),
 	    registration_policy_expires_at=CASE
-	      WHEN $10 IN ('open','invitation_required','closed') AND $11>=registration_policy_version THEN $12
+	      WHEN $10 IN ('open','invitation_required','closed')
+	        AND ($11>registration_policy_version
+	          OR ($11=registration_policy_version AND $10=registration_policy_state)) THEN $12
 	      ELSE $8 END,
 	    registration_policy_observed_at=$9,
 	    registration_policy_error_code=CASE
-	      WHEN $10 IN ('open','invitation_required','closed') AND $11>=registration_policy_version THEN NULL
+	      WHEN $10 IN ('open','invitation_required','closed')
+	        AND ($11>registration_policy_version
+	          OR ($11=registration_policy_version AND $10=registration_policy_state)) THEN NULL
 	      WHEN $11<registration_policy_version THEN 'version_rollback'
+	      WHEN $11=registration_policy_version AND $10<>registration_policy_state THEN 'version_reuse'
 	      ELSE $13 END
 	  WHERE id=$1`,
 		id, cpu, mem, disk, tavernVer, agentVer, transferURL, policy.ObservedAt,

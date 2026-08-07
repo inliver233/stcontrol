@@ -204,11 +204,10 @@ func (s *Store) CreateRegistrationWorkflow(
 
 func (s *Store) GetRegistrationWorkflowStatus(
 	ctx context.Context,
-	operationID string,
 	pendingTokenHash []byte,
 	now time.Time,
 ) (*RegistrationWorkflowStatus, error) {
-	if operationID == "" || len(pendingTokenHash) != 32 {
+	if len(pendingTokenHash) != 32 {
 		return nil, ErrInvalidRegistration
 	}
 	if now.IsZero() {
@@ -222,8 +221,8 @@ func (s *Store) GetRegistrationWorkflowStatus(
 		  workflow.error_code,registration.result_user_id
 		FROM workflows workflow
 		JOIN registration_workflows registration ON registration.workflow_id=workflow.id
-		WHERE workflow.operation_id=$1 AND registration.pending_token_hash=$2
-		  AND registration.client_expires_at>$3`, operationID, pendingTokenHash, now).
+		WHERE registration.pending_token_hash=$1
+		  AND registration.client_expires_at>$2`, pendingTokenHash, now).
 		Scan(&out.WorkflowID, &out.OperationID, &out.State, &out.LocalHandle, &errorCode, &resultUserID)
 	if err == sql.ErrNoRows {
 		return nil, nil

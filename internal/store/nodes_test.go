@@ -16,7 +16,7 @@ func TestUpdateNodeHeartbeatStoresVersionedRegistrationPolicy(t *testing.T) {
 	policy := NodeRegistrationPolicy{
 		State: "invitation_required", Version: 9, ExpiresAt: now.Add(time.Minute), ObservedAt: now,
 	}
-	mock.ExpectExec(`UPDATE nodes SET cpu_pct`).WithArgs(
+	mock.ExpectExec(`(?s)UPDATE nodes SET cpu_pct.*\$11>registration_policy_version.*\$11=registration_policy_version AND \$10=registration_policy_state.*version_reuse`).WithArgs(
 		int64(12), 10.0, 20.0, 30.0, "tavern", "agent", "https://transfer.example",
 		now, now, "invitation_required", int64(9), now.Add(time.Minute), "",
 	).WillReturnResult(sqlmock.NewResult(0, 1))

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -194,11 +195,13 @@ func (s *Server) enqueueAgentCommand(
 	if err != nil {
 		return 0, err
 	}
-	envelope, err := json.Marshal(encryptedCommandEnvelope{Version: 1, Ciphertext: ciphertext})
+	envelope, err := json.Marshal(encryptedCommandEnvelope{Version: 2, Ciphertext: ciphertext})
 	if err != nil {
 		return 0, err
 	}
-	payloadDigest := sha256.Sum256(plaintext)
+	payloadAuthenticator := hmac.New(sha256.New, controlcrypto.DeriveAgentCommandAuthKey(psk))
+	_, _ = payloadAuthenticator.Write(plaintext)
+	payloadDigest := payloadAuthenticator.Sum(nil)
 	commandID, err := newUUID()
 	if err != nil {
 		return 0, err
@@ -206,7 +209,7 @@ func (s *Server) enqueueAgentCommand(
 	now := time.Now().UTC()
 	return s.Store.EnqueueAgentCommand(ctx, store.EnqueueAgentCommandParams{
 		ID: commandID, OperationID: operationID, NodeID: node.ID,
-		CommandType: commandType, EncryptedPayload: envelope, PayloadSHA256: payloadDigest[:],
+		CommandType: commandType, EncryptedPayload: envelope, PayloadSHA256: payloadDigest,
 		ExpiresAt: now.Add(agentCommandTTL), Now: now,
 	})
 }

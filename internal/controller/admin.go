@@ -257,36 +257,6 @@ func (s *Server) handleAdminAbortBackup(w http.ResponseWriter, r *http.Request) 
 	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// handleAdminCreateInvitation 创建邀请码。
-func (s *Server) handleAdminCreateInvitation(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Code      string     `json:"code"`
-		MaxUses   int        `json:"max_uses"`
-		NodeID    *int64     `json:"node_id"`
-		ExpiresAt *time.Time `json:"expires_at"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
-		return
-	}
-	if req.Code == "" {
-		code, err := randomHexToken(6)
-		if err != nil {
-			protocol.WriteError(w, http.StatusInternalServerError, "生成邀请码失败")
-			return
-		}
-		req.Code = code
-	}
-	if req.MaxUses <= 0 {
-		req.MaxUses = 1
-	}
-	if err := s.Store.CreateInvitation(r.Context(), req.Code, req.MaxUses, req.NodeID, req.ExpiresAt); err != nil {
-		protocol.WriteError(w, http.StatusInternalServerError, "创建失败")
-		return
-	}
-	protocol.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "code": req.Code})
-}
-
 func parseID(s string) (int64, error) {
 	return strconv.ParseInt(s, 10, 64)
 }

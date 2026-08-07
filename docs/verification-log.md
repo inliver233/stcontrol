@@ -145,3 +145,16 @@
 - 节点确认成功后，`users`、`global_users`、`auth_identities`、`node_accounts`、home `user_replicas`、workflow/step 成功状态在同一个 serializable 事务发布；事务完成后清除 workflow 中的临时身份材料。
 - 单元测试覆盖新建、相同摘要 replay、不同摘要冲突、hash-only 状态查询、runnable/claim/retry/release、失败释放和完整发布事务。
 - `go test ./...`、`go vet ./...` 与 `git diff --check`：通过。Controller/Agent 尚未路由到新 workflow，因此 R15 仍为 `部分`。
+
+## 2026-08-08：注册 saga 端到端控制面接线批次
+
+- 密码注册和 OAuth 首次注册均已切到持久 workflow；浏览器提交稳定 operation ID，响应丢失后相同请求会轮换 hash-only 状态 token 并重放原 workflow，不会创建第二个用户或静默换节点。OAuth 发起前所选节点经 state 带回确认页并重新校验策略及邀请码。
+- 新增固定 `/api/auth/registration/status` 状态端点和 `Strict`、`HttpOnly`、路径限定 cookie；响应只公开 pending/retrying/succeeded 与安全错误，不公开 workflow、operation、节点策略版本或内部任务 ID。注册页和 OAuth 选点页支持刷新恢复及有界轮询。
+- worker 由 active controller generation 与 lease owner 双重 fencing；节点策略版本必须与创建时完全一致且仍新鲜。稳定 registration ID 交给节点 adapter 做供应和邀请码单次消费，每次 Agent 投递使用独立派生 operation ID。
+- Agent 仅把 `invitation_invalid/handle_conflict/policy_changed/registration_closed` 视为确定业务拒绝。超时、断连、无法解析结果、空本地用户 ID 及中心发布失败均视为可能已在节点执行，保留 handle/身份材料并持续幂等重试；只有投递前节点长期不可用或命令未能入队才在五次后安全终止。
+- legacy Controller 邀请码 API、管理 UI、Store 方法和 `invitation_codes` 表已删除；邀请码只在内存、Controller 加密 workflow 字段和 Agent AES-GCM 命令信封中短暂存在。命令的 durable 比较摘要升级为独立派生密钥的 HMAC-SHA256 v2，Agent 仅为已入队旧命令保留 v1 验证兼容，防止数据库读取者离线枚举低熵邀请码。
+- 心跳策略更新拒绝“同一版本更改状态”并记录 `version_reuse`；相同版本仅允许同状态刷新有效期，避免节点用复用版本绕过 workflow 的精确版本绑定。
+- 单元测试覆盖请求 HMAC、Strict cookie/安全状态、策略版本变化、第五次以后不确定结果仍重试、投递前安全失败终止、Agent 确定拒绝 allowlist、v2 密钥化摘要、稳定 registration ID/投递 ID 以及完整发布事务。
+- `go test -coverprofile=coverage/registration_integration.coverprofile ./...`：通过，总覆盖率 `34.9%`（`internal/controller 16.9%`、`internal/agent 39.9%`、`internal/store 55.0%`），仍未达到最终 80% 门禁。
+- `go vet ./...`、`GOOS=linux GOARCH=amd64 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。
+- 尚未完成且未冒充完成：SillyTavern federation adapter 仍因另一个工具的未提交冲突未挂载，因此节点侧真实策略、幂等供应及邀请码单次消费尚未形成真实闭环；真实 PostgreSQL、进程崩溃和网络响应丢失集成测试也待补，R15 保持 `部分`。

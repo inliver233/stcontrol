@@ -171,7 +171,11 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		}
 		provisioned, err := a.provisionUser(ctx, &payload)
 		if err != nil {
-			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "provision_failed"})
+			code := "provision_unavailable"
+			if provisioned != nil && definitiveProvisionError(provisioned.Error) {
+				code = "provision_rejected"
+			}
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: code})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, LocalUserID: provisioned.LocalUserID})
 	case "set_password":
@@ -231,13 +235,23 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 	}
 }
 
+func definitiveProvisionError(code string) bool {
+	switch code {
+	case "invitation_invalid", "handle_conflict", "policy_changed", "registration_closed":
+		return true
+	default:
+		return false
+	}
+}
+
 func validCapabilityHash(value string) bool {
 	decoded, err := hex.DecodeString(value)
 	return err == nil && len(decoded) == sha256.Size
 }
 
 func validProvisionRequest(req protocol.ProvisionUserRequest) bool {
-	if !validUUID(req.OperationID) || req.Handle == "" || req.Name == "" {
+	if !validUUID(req.OperationID) || !validUUID(req.RegistrationID) || req.PolicyVersion <= 0 ||
+		req.Handle == "" || req.Name == "" {
 		return false
 	}
 	passwordMode := req.PasswordHash != "" && req.PasswordSalt != "" && req.OAuthProvider == "" && req.OAuthSubject == ""
@@ -248,7 +262,8 @@ func validProvisionRequest(req protocol.ProvisionUserRequest) bool {
 
 func (a *Agent) decryptCommand(command protocol.AgentCommand) ([]byte, error) {
 	var envelope encryptedCommandEnvelope
-	if err := json.Unmarshal(command.EncryptedPayload, &envelope); err != nil || envelope.Version != 1 || envelope.Ciphertext == "" {
+	if err := json.Unmarshal(command.EncryptedPayload, &envelope); err != nil ||
+		(envelope.Version != 1 && envelope.Version != 2) || envelope.Ciphertext == "" {
 		return nil, fmt.Errorf("invalid envelope")
 	}
 	plaintext, err := controlcrypto.Decrypt(controlcrypto.DeriveAgentCommandKey(a.Cfg.AgentPSK), envelope.Ciphertext)
@@ -259,8 +274,16 @@ func (a *Agent) decryptCommand(command protocol.AgentCommand) ([]byte, error) {
 	if err != nil || len(want) != sha256.Size {
 		return nil, fmt.Errorf("invalid payload digest")
 	}
-	got := sha256.Sum256(plaintext)
-	if !hmac.Equal(got[:], want) {
+	var got []byte
+	if envelope.Version == 1 {
+		digest := sha256.Sum256(plaintext)
+		got = digest[:]
+	} else {
+		authenticator := hmac.New(sha256.New, controlcrypto.DeriveAgentCommandAuthKey(a.Cfg.AgentPSK))
+		_, _ = authenticator.Write(plaintext)
+		got = authenticator.Sum(nil)
+	}
+	if !hmac.Equal(got, want) {
 		return nil, fmt.Errorf("payload digest mismatch")
 	}
 	return plaintext, nil

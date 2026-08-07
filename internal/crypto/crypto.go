@@ -113,3 +113,9 @@ func RandomPassword(n int) (string, error) {
 func DeriveAgentCommandKey(psk string) []byte {
 	return sha256Of([]byte("stcontrol-agent-command:v1:" + psk))
 }
+
+// DeriveAgentCommandAuthKey is domain-separated from the AES-GCM key and
+// authenticates the plaintext digest used for idempotent command comparison.
+func DeriveAgentCommandAuthKey(psk string) []byte {
+	return sha256Of([]byte("stcontrol-agent-command-auth:v1:" + psk))
+}

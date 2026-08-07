@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -87,6 +86,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	stateHash := sha256.Sum256([]byte(state))
 	now := time.Now().UTC()
 	var bindingSession *session
+	var registrationNodeID *int64
 	if sess, _, sessionErr := s.getSession(r); sessionErr != nil {
 		protocol.WriteError(w, http.StatusServiceUnavailable, "会话服务暂不可用")
 		return
@@ -102,11 +102,10 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 			bindingSession = sess
 		}
 	}
-	var nodeID *int64
 	if bindingSession == nil {
 		var consumed bool
 		var err error
-		nodeID, consumed, err = s.Store.ConsumeOAuthState(r.Context(), stateHash[:], provider, now)
+		registrationNodeID, consumed, err = s.Store.ConsumeOAuthState(r.Context(), stateHash[:], provider, now)
 		if err != nil {
 			protocol.WriteError(w, http.StatusServiceUnavailable, "OAuth 状态验证失败")
 			return
@@ -144,39 +143,36 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if user == nil {
-		if nodeID == nil {
-			pendingToken, err := randomBearerToken()
-			if err != nil {
-				protocol.WriteError(w, http.StatusInternalServerError, "待注册凭证生成失败")
-				return
-			}
-			pendingID, err := newUUID()
-			if err != nil {
-				protocol.WriteError(w, http.StatusInternalServerError, "待注册凭证生成失败")
-				return
-			}
-			pendingHash := sha256.Sum256([]byte(pendingToken))
-			now := time.Now().UTC()
-			if strings.TrimSpace(displayName) == "" {
-				displayName = provider + " user"
-			}
-			if err := s.Store.CreateOAuthPending(ctx, store.CreateOAuthPendingParams{
-				ID: pendingID, TokenHash: pendingHash[:], Provider: provider,
-				ProviderSubject: oauthID, DisplayName: displayName, AvatarURL: avatarURL,
-				ExpiresAt: now.Add(oauthPendingTTL), Now: now,
-			}); err != nil {
-				protocol.WriteError(w, http.StatusServiceUnavailable, "待注册状态保存失败")
-				return
-			}
-			s.setOAuthPendingCookie(w, r, pendingToken, int(oauthPendingTTL.Seconds()))
-			http.Redirect(w, r, "/select-node", http.StatusFound)
-			return
-		}
-		user, err = s.provisionOAuthUser(ctx, provider, oauthID, displayName, avatarURL, *nodeID)
+		pendingToken, err := randomBearerToken()
 		if err != nil {
-			protocol.WriteError(w, http.StatusBadGateway, "创建账号失败")
+			protocol.WriteError(w, http.StatusInternalServerError, "待注册凭证生成失败")
 			return
 		}
+		pendingID, err := newUUID()
+		if err != nil {
+			protocol.WriteError(w, http.StatusInternalServerError, "待注册凭证生成失败")
+			return
+		}
+		pendingHash := sha256.Sum256([]byte(pendingToken))
+		now := time.Now().UTC()
+		if strings.TrimSpace(displayName) == "" {
+			displayName = provider + " user"
+		}
+		if err := s.Store.CreateOAuthPending(ctx, store.CreateOAuthPendingParams{
+			ID: pendingID, TokenHash: pendingHash[:], Provider: provider,
+			ProviderSubject: oauthID, DisplayName: displayName, AvatarURL: avatarURL,
+			ExpiresAt: now.Add(oauthPendingTTL), Now: now,
+		}); err != nil {
+			protocol.WriteError(w, http.StatusServiceUnavailable, "待注册状态保存失败")
+			return
+		}
+		s.setOAuthPendingCookie(w, r, pendingToken, int(oauthPendingTTL.Seconds()))
+		selectNodeURL := "/select-node"
+		if registrationNodeID != nil {
+			selectNodeURL += "?node_id=" + strconv.FormatInt(*registrationNodeID, 10)
+		}
+		http.Redirect(w, r, selectNodeURL, http.StatusFound)
+		return
 	}
 	if user.Status != "active" {
 		protocol.WriteError(w, http.StatusForbidden, "账号已被禁用")
@@ -191,7 +187,9 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 type completeOAuthRequest struct {
-	NodeID int64 `json:"node_id"`
+	OperationID    string `json:"operation_id"`
+	NodeID         int64  `json:"node_id"`
+	InvitationCode string `json:"invitation_code"`
 }
 
 // handleOAuthComplete finishes a new OAuth enrollment after node selection.
@@ -205,7 +203,8 @@ func (s *Server) handleOAuthComplete(w http.ResponseWriter, r *http.Request) {
 	var req completeOAuthRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil || req.NodeID <= 0 {
+	if err := decoder.Decode(&req); err != nil || req.NodeID <= 0 ||
+		!isUUID(req.OperationID) || len(req.InvitationCode) > 256 {
 		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
@@ -241,21 +240,61 @@ func (s *Server) handleOAuthComplete(w http.ResponseWriter, r *http.Request) {
 		user, err = s.Store.GetUserByID(r.Context(), pending.ResultUserID)
 	} else {
 		user, err = s.Store.GetUserByOAuth(r.Context(), pending.Provider, pending.ProviderSubject)
-		if err == nil && user == nil {
-			user, err = s.provisionOAuthUser(
-				r.Context(), pending.Provider, pending.ProviderSubject,
-				pending.DisplayName, pending.AvatarURL, req.NodeID,
-			)
-		}
-		if err != nil || user == nil {
+		if err != nil {
 			_ = s.Store.ReleaseOAuthPending(r.Context(), pending.ID, pending.ClaimID, time.Now().UTC())
-			protocol.WriteError(w, http.StatusBadGateway, "创建账号失败")
+			protocol.WriteError(w, http.StatusServiceUnavailable, "查询账号失败")
 			return
 		}
-		completed, err := s.Store.CompleteOAuthPending(
+		if user == nil {
+			node, nodeErr := s.Store.GetNodeByID(r.Context(), req.NodeID)
+			if nodeErr != nil || node == nil || !s.nodeRegistrable(node) {
+				_ = s.Store.ReleaseOAuthPending(r.Context(), pending.ID, pending.ClaimID, time.Now().UTC())
+				protocol.WriteError(w, http.StatusConflict, "该节点当前不可注册")
+				return
+			}
+			if node.RegistrationPolicyState == "invitation_required" && req.InvitationCode == "" {
+				_ = s.Store.ReleaseOAuthPending(r.Context(), pending.ID, pending.ClaimID, time.Now().UTC())
+				protocol.WriteError(w, http.StatusBadRequest, "该节点需要邀请码")
+				return
+			}
+			handle := oauthRegistrationHandle(pending.DisplayName, pending.Provider, pending.ProviderSubject)
+			workflow, registrationToken, workflowErr := s.createRegistrationWorkflow(
+				r.Context(), registrationStartInput{
+					OperationID: req.OperationID, Node: node, LocalHandle: handle,
+					DisplayName: pending.DisplayName, AuthProvider: pending.Provider,
+					OAuthSubject: pending.ProviderSubject, AvatarURL: pending.AvatarURL,
+					InvitationCode:  req.InvitationCode,
+					CredentialProof: pending.Provider + "\n" + pending.ProviderSubject,
+				},
+			)
+			if workflowErr != nil {
+				_ = s.Store.ReleaseOAuthPending(r.Context(), pending.ID, pending.ClaimID, time.Now().UTC())
+				s.writeRegistrationStartError(w, workflowErr)
+				return
+			}
+			_ = s.Store.ReleaseOAuthPending(r.Context(), pending.ID, pending.ClaimID, time.Now().UTC())
+			s.clearOAuthPendingCookie(w, r)
+			s.setRegistrationPendingCookie(w, r, registrationToken)
+			registrationHash := sha256.Sum256([]byte(registrationToken))
+			status, statusErr := s.Store.GetRegistrationWorkflowStatus(
+				r.Context(), registrationHash[:], time.Now().UTC(),
+			)
+			if statusErr != nil || status == nil {
+				protocol.WriteError(w, http.StatusServiceUnavailable, "注册状态暂不可用")
+				return
+			}
+			if status.State == "succeeded" || status.State == "failed" || status.State == "cancelled" {
+				s.writeRegistrationStatus(w, r, status)
+				return
+			}
+			s.queueRegistrationWorkflow(context.WithoutCancel(r.Context()), workflow.WorkflowID)
+			protocol.WriteJSON(w, http.StatusAccepted, map[string]any{"ok": true, "state": "pending"})
+			return
+		}
+		completed, completeErr := s.Store.CompleteOAuthPending(
 			r.Context(), pending.ID, pending.ClaimID, user.ID, time.Now().UTC(),
 		)
-		if err != nil || !completed {
+		if completeErr != nil || !completed {
 			_ = s.Store.ReleaseOAuthPending(r.Context(), pending.ID, pending.ClaimID, time.Now().UTC())
 			protocol.WriteError(w, http.StatusConflict, "注册操作已失效，请重试")
 			return
@@ -284,69 +323,16 @@ func (s *Server) clearOAuthPendingCookie(w http.ResponseWriter, r *http.Request)
 	s.setOAuthPendingCookie(w, r, "", -1)
 }
 
-// provisionOAuthUser creates a passwordless node identity for an OAuth user.
-func (s *Server) provisionOAuthUser(ctx context.Context, provider, oauthID, displayName, avatarURL string, nodeID int64) (*store.User, error) {
-	node, err := s.Store.GetNodeByID(ctx, nodeID)
-	if err != nil || node == nil {
-		return nil, fmt.Errorf("节点不存在")
-	}
-	if !s.nodeRegistrable(node) {
-		return nil, fmt.Errorf("节点当前不可注册")
-	}
-	// 生成 handle: displayName 规范化, 冲突则加随机后缀
+func oauthRegistrationHandle(displayName, provider, subject string) string {
 	base := NormalizeHandle(displayName)
 	if !isValidHandle(base) {
-		suffix, err := randomHexToken(3)
-		if err != nil {
-			return nil, err
-		}
-		base = provider + "-" + suffix
+		base = provider
 	}
-	handle := base
-	for i := 0; i < 5; i++ {
-		existing, _ := s.Store.GetUserByUsername(ctx, handle)
-		if existing == nil {
-			break
-		}
-		suffix, err := randomHexToken(2)
-		if err != nil {
-			return nil, err
-		}
-		handle = fmt.Sprintf("%s-%s", base, suffix)
+	if len(base) > 23 {
+		base = strings.Trim(base[:23], "-")
 	}
-	user := &store.User{
-		Username:     handle,
-		DisplayName:  displayName,
-		AuthProvider: provider,
-		OAuthID:      sql.NullString{String: oauthID, Valid: true},
-		AvatarURL:    sql.NullString{String: avatarURL, Valid: avatarURL != ""},
-		HomeNodeID:   sql.NullInt64{Int64: node.ID, Valid: true},
-		Status:       "recovering",
-	}
-	if err := s.Store.CreateUser(ctx, user); err != nil {
-		return nil, err
-	}
-	if _, err := s.Store.SetNodeAccountProvisioning(
-		ctx, user.GlobalID, node.ID, "", "", provider, oauthID, time.Now().UTC(),
-	); err != nil {
-		return nil, err
-	}
-	provReq := &protocol.ProvisionUserRequest{
-		Handle: handle, Name: displayName, OAuthProvider: provider, OAuthSubject: oauthID,
-	}
-	result, err := s.runAgentCommand(ctx, node, "provision_user", provReq, 45*time.Second)
-	if err != nil {
-		_ = s.Store.MarkNodeAccountError(ctx, user.GlobalID, node.ID, time.Now().UTC())
-		return nil, fmt.Errorf("节点账号创建未完成")
-	}
-	if err := s.Store.ActivateNodeAccount(ctx, user.ID, user.GlobalID, node.ID, result.LocalUserID, time.Now().UTC()); err != nil {
-		return nil, err
-	}
-	_ = s.Store.UpsertReplica(ctx, &store.UserReplica{
-		UserID: user.ID, NodeID: node.ID, Kind: "home", State: "ready",
-	})
-	_ = s.Store.Audit(ctx, handle, "oauth-register-"+provider, node.Name, nil)
-	return user, nil
+	digest := sha256.Sum256([]byte(provider + "\n" + subject))
+	return fmt.Sprintf("%s-%x", base, digest[:4])
 }
 
 // oauthProviderConfig 返回指定 provider 的配置。

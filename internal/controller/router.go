@@ -32,6 +32,7 @@ func (s *Server) routes(r *chi.Mux) {
 	// 认证
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Post("/register", s.handleRegister)
+		r.Get("/registration/status", s.handleRegistrationStatus)
 		r.Post("/login", s.handleLogin)
 		r.Post("/admin/login", s.handleAdminLogin)
 		r.Post("/oauth/complete", s.handleOAuthComplete)
@@ -90,7 +91,6 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Post("/users/{id}/disable", s.handleAdminDisableUser)
 		r.Get("/backups", s.handleAdminListBackups)
 		r.Post("/backups/{id}/abort", s.handleAdminAbortBackup)
-		r.Post("/invitations", s.handleAdminCreateInvitation)
 		r.Get("/admins", s.handleAdminListAdmins)
 		r.Post("/admins", s.handleAdminCreateAdmin)
 		r.Put("/admins/{id}/status", s.handleAdminSetAdminStatus)

@@ -101,14 +101,13 @@ func TestRegistrationStatusRequiresUnexpiredHashOnlyToken(t *testing.T) {
 	defer closeDB()
 	now := time.Date(2026, 8, 8, 1, 10, 0, 0, time.UTC)
 	tokenHash := bytes.Repeat([]byte{2}, 32)
-	mock.ExpectQuery(`registration.pending_token_hash`).WithArgs(
-		"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", tokenHash, now,
-	).WillReturnRows(sqlmock.NewRows([]string{
-		"id", "operation_id", "state", "local_handle", "error_code", "result_user_id",
-	}).AddRow("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-		"succeeded", "alice", nil, int64(7)))
+	mock.ExpectQuery(`registration.pending_token_hash`).WithArgs(tokenHash, now).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation_id", "state", "local_handle", "error_code", "result_user_id",
+		}).AddRow("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			"succeeded", "alice", nil, int64(7)))
 	status, err := st.GetRegistrationWorkflowStatus(
-		context.Background(), "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", tokenHash, now,
+		context.Background(), tokenHash, now,
 	)
 	if err != nil || status == nil || status.ResultUserID != 7 || status.State != "succeeded" {
 		t.Fatalf("status=%+v err=%v", status, err)
