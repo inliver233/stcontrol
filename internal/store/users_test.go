@@ -183,6 +183,33 @@ func TestListPendingPasswordSyncsOnlyReturnsDurableRetryMaterial(t *testing.T) {
 	assertMockExpectations(t, mock)
 }
 
+func TestListPendingPasswordSyncsForUserReturnsOnlyDurableStagedMaterial(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	mock.ExpectQuery(`FROM node_accounts account`).WithArgs(int64(70)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"legacy_user_id", "global_user_id", "node_id", "local_handle",
+			"password_hash", "password_salt", "password_material_version",
+		}).AddRow(int64(7), int64(70), int64(12), "alice", "stored-hash", "stored-salt", int64(5)))
+	syncs, err := st.ListPendingPasswordSyncsForUser(context.Background(), 70)
+	if err != nil || len(syncs) != 1 || syncs[0].PasswordHash != "stored-hash" ||
+		syncs[0].PasswordSalt != "stored-salt" || syncs[0].Version != 5 {
+		t.Fatalf("syncs=%+v err=%v", syncs, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestListPendingPasswordSyncsForUserRejectsInvalidUser(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	if _, err := st.ListPendingPasswordSyncsForUser(context.Background(), 0); err == nil {
+		t.Fatal("invalid global user was accepted")
+	}
+	assertMockExpectations(t, mock)
+}
+
 func TestSensitiveModelFieldsAreNeverSerialized(t *testing.T) {
 	t.Parallel()
 

@@ -209,10 +209,42 @@ func (s *Store) ListPendingPasswordSyncs(ctx context.Context, limit int, now tim
 		JOIN global_users global_user ON global_user.id=account.user_id AND global_user.status='active'
 		JOIN nodes node ON node.id=account.node_id AND node.status='online'
 		WHERE account.status IN ('pending','error')
-		  AND account.local_user_id IS NOT NULL
 		  AND account.password_hash IS NOT NULL AND account.password_salt IS NOT NULL
 		  AND account.updated_at<=$2
 		ORDER BY account.updated_at LIMIT $1`, limit, now.Add(-2*time.Minute))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var syncs []PendingPasswordSync
+	for rows.Next() {
+		var sync PendingPasswordSync
+		if err := rows.Scan(
+			&sync.LegacyUserID, &sync.GlobalUserID, &sync.NodeID, &sync.LocalHandle,
+			&sync.PasswordHash, &sync.PasswordSalt, &sync.Version,
+		); err != nil {
+			return nil, err
+		}
+		syncs = append(syncs, sync)
+	}
+	return syncs, rows.Err()
+}
+
+// ListPendingPasswordSyncsForUser returns the exact durable material staged by
+// the authoritative transaction. Immediate delivery and operation replay must
+// use this result rather than newly derived in-memory salts.
+func (s *Store) ListPendingPasswordSyncsForUser(ctx context.Context, globalUserID int64) ([]PendingPasswordSync, error) {
+	if globalUserID <= 0 {
+		return nil, fmt.Errorf("invalid global user")
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT global_user.legacy_user_id,account.user_id,account.node_id,account.local_handle,
+		  account.password_hash,account.password_salt,account.password_material_version
+		FROM node_accounts account
+		JOIN global_users global_user ON global_user.id=account.user_id
+		WHERE account.user_id=$1 AND account.status IN ('pending','error')
+		  AND account.password_hash IS NOT NULL AND account.password_salt IS NOT NULL
+		ORDER BY account.node_id`, globalUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -366,14 +398,28 @@ func stagePasswordMaterial(
 	passwordHash, passwordSalt string,
 	now time.Time,
 ) error {
-	_, err := tx.ExecContext(ctx, `
+	_, err := stagePasswordMaterialCount(ctx, tx, globalUserID, passwordHash, passwordSalt, now)
+	return err
+}
+
+func stagePasswordMaterialCount(
+	ctx context.Context,
+	tx *sql.Tx,
+	globalUserID int64,
+	passwordHash, passwordSalt string,
+	now time.Time,
+) (int64, error) {
+	result, err := tx.ExecContext(ctx, `
 		UPDATE node_accounts
 		SET status='pending',password_hash=$2,password_salt=$3,
 		  password_material_version=password_material_version+1,
 		  account_version=account_version+1,updated_at=$4
 		WHERE user_id=$1 AND status IN ('active','pending','error')`,
 		globalUserID, passwordHash, passwordSalt, now)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // ListUsers 列出全部用户（管理后台）。

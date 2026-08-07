@@ -44,6 +44,9 @@ const adminApi = {
   }),
   latestImport: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/imports/latest`),
   users: () => adminReq<{ users: any[] }>('/api/admin/users'),
+  recoverUserIdentity: (uuid: string, operationID: string, password: string) => adminReq<any>(`/api/admin/users/${uuid}/identity-recovery`, {
+    method: 'POST', body: JSON.stringify({ operation_id: operationID, password }),
+  }),
   triggerBackup: (id: number) => adminReq<any>(`/api/admin/users/${id}/backup`, { method: 'POST' }),
   disableUser: (id: number) => adminReq<any>(`/api/admin/users/${id}/disable`, { method: 'POST' }),
   backups: () => adminReq<{ backups: any[] }>('/api/admin/backups'),
@@ -263,21 +266,81 @@ function NodesAdmin() {
 function UsersAdmin() {
   const [users, setUsers] = useState<any[]>([])
   const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+  const [recoveryUser, setRecoveryUser] = useState<any>(null)
+  const [recoveryPassword, setRecoveryPassword] = useState('')
+  const [recovering, setRecovering] = useState(false)
+  const recoveryOperations = useRef<Record<string, string>>({})
   const load = () => adminApi.users().then(d => setUsers(d.users)).catch(e => setError(e.message))
   useEffect(() => { load() }, [])
+
+  const userUUID = (user: any) => user.UUID ?? user.uuid
+  const beginRecovery = (user: any) => {
+    setError('')
+    setMessage('')
+    setRecoveryUser(user)
+    setRecoveryPassword('')
+  }
+  const changeRecoveryPassword = (value: string) => {
+    if (recoveryUser) delete recoveryOperations.current[userUUID(recoveryUser)]
+    setRecoveryPassword(value)
+  }
+  const recoverIdentity = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!recoveryUser) return
+    const uuid = userUUID(recoveryUser)
+    const operationID = recoveryOperations.current[uuid] || crypto.randomUUID()
+    recoveryOperations.current[uuid] = operationID
+    setError('')
+    setMessage('')
+    setRecovering(true)
+    try {
+      const result = await adminApi.recoverUserIdentity(uuid, operationID, recoveryPassword)
+      delete recoveryOperations.current[uuid]
+      setRecoveryUser(null)
+      setRecoveryPassword('')
+      setMessage(result.user_status === 'disabled'
+        ? '身份凭据已恢复且现有会话已撤销；账号继续保持禁用，重新启用前不会投递节点密码。'
+        : result.pending_nodes > 0
+          ? `身份已恢复并撤销现有会话；${result.pending_nodes} 个节点离线或同步失败，系统将持久重试。`
+          : '身份已恢复、现有会话已撤销，所有关联节点密码已同步。')
+      load()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '身份恢复失败')
+    } finally {
+      setRecovering(false)
+    }
+  }
 
   return (
     <>
       <h2>用户管理</h2>
       {error && <div className="error-msg">{error}</div>}
+      {message && <div className="success-msg">{message}</div>}
+      {recoveryUser && (
+        <form onSubmit={recoverIdentity} className="card" style={{ margin: '0 0 20px', maxWidth: 560 }}>
+          <h3>人工恢复登录身份</h3>
+          <p>
+            为 <strong>{recoveryUser.Username ?? recoveryUser.username}</strong>（全局 UUID：
+            <span className="mono">{userUUID(recoveryUser)}</span>）设置一次新密码。
+            提交会撤销该用户全部现有总控会话；暂不可达节点会保持待同步并自动重试。
+          </p>
+          <div className="field">
+            <label>新密码（8 至 72 字节）</label>
+            <input type="password" value={recoveryPassword} onChange={e => changeRecoveryPassword(e.target.value)} minLength={8} maxLength={72} autoComplete="new-password" required />
+          </div>
+          <button className="btn" type="submit" disabled={recovering}>{recovering ? '恢复中…' : '确认恢复身份'}</button>{' '}
+          <button className="btn-sm" type="button" disabled={recovering} onClick={() => { setRecoveryUser(null); setRecoveryPassword('') }}>取消</button>
+        </form>
+      )}
       <table className="table">
         <thead>
-          <tr><th>ID</th><th>用户名</th><th>昵称</th><th>注册方式</th><th>家节点</th><th>状态</th><th>操作</th></tr>
+          <tr><th>全局 UUID</th><th>用户名</th><th>昵称</th><th>注册方式</th><th>家节点</th><th>状态</th><th>操作</th></tr>
         </thead>
         <tbody>
           {users.map(u => (
-            <tr key={u.ID ?? u.id}>
-              <td>{u.ID ?? u.id}</td>
+            <tr key={userUUID(u)}>
+              <td className="mono">{userUUID(u)}</td>
               <td>{u.Username ?? u.username}</td>
               <td>{u.DisplayName ?? u.display_name}</td>
               <td>{u.AuthProvider ?? u.auth_provider}</td>
@@ -285,7 +348,8 @@ function UsersAdmin() {
               <td><span className={`badge ${(u.Status ?? u.status) === 'active' ? 'green' : 'red'}`}>{u.Status ?? u.status}</span></td>
               <td style={{ whiteSpace: 'nowrap' }}>
                 <button className="btn-sm primary" onClick={() => adminApi.triggerBackup(u.ID ?? u.id).then(load)}>备份</button>{' '}
-                <button className="btn-sm danger" onClick={() => adminApi.disableUser(u.ID ?? u.id).then(load)}>禁用</button>
+                <button className="btn-sm danger" onClick={() => adminApi.disableUser(u.ID ?? u.id).then(load)}>禁用</button>{' '}
+                <button className="btn-sm" onClick={() => beginRecovery(u)}>人工恢复身份</button>
               </td>
             </tr>
           ))}

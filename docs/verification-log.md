@@ -171,3 +171,14 @@
 - `go test -coverprofile=coverage/account_import.coverprofile ./...`：通过，总覆盖率 `37.1%`（`internal/controller 18.7%`、`internal/agent 42.3%`、`internal/store 56.1%`、`internal/crypto 26.5%`），继续提升但仍低于最终 80% 门禁。
 - `go vet ./...`、`GOOS=linux GOARCH=amd64 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。
 - 尚未完成且未冒充完成：SillyTavern adapter 尚未挂载，当前真实节点只能得到目录回退库存；同名账号控制权证明、OAuth 未匹配认领、冲突合并/区分和管理员人工身份恢复尚未实现，因此 R16 保持 `部分`。
+
+## 2026-08-08：管理员人工身份恢复批次
+
+- 新增 `identity_recovery_operations`：稳定 operation ID、global UUID 所属用户、发起管理员、32-byte keyed HMAC 请求摘要、密码版本、暂存节点数和 active controller generation 构成持久幂等事实；不同管理员、用户或密码复用同一 operation ID 会冲突关闭。
+- 管理员可为现有 global UUID 创建缺失的密码身份或重置既有密码身份。bcrypt verifier、NFC+scrypt 节点材料、`users/global_users` 恢复状态、全部用户 session 撤销、操作事实和结构化安全审计在同一 serializable 事务提交；无 active generation 时整体回滚，数据库从不接收可逆明文密码。
+- 节点即时投递和响应丢失重放均按用户重新读取数据库已暂存的 hash/salt/version，不使用该 HTTP 请求重新生成的随机盐。在线成功节点转 active；离线/失败节点保持 pending/error，由后台使用同一持久材料重试。禁用用户只更新身份凭据并保持禁用，重新启用前不投递节点密码。
+- 管理台用户主标识改为 global UUID，并提供一次新密码的人工恢复表单。浏览器仅在失败重试期间保留同一 operation ID，不显示内部操作/任务 ID；成功提示明确说明会话撤销和待同步节点。
+- 单元测试覆盖缺失密码身份创建、既有密码版本递增、恢复中转 active、禁用状态保留、节点全量暂存、会话撤销、相同摘要 replay、不同摘要冲突、无 active generation 回滚、持久材料定向读取、HMAC 密钥/管理员/密码绑定、UUID 输入校验和 JSON 脱敏。
+- `go test -coverprofile=coverage/identity_recovery.coverprofile ./...`：通过，总覆盖率 `37.5%`（`internal/controller 18.9%`、`internal/agent 42.3%`、`internal/store 56.8%`、`internal/crypto 26.5%`），仍低于最终 80% 门禁。
+- `go vet ./...`、`GOOS=linux GOARCH=amd64 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。
+- 尚未完成且未冒充完成：真实 SillyTavern adapter 未挂载，因而节点改密仍无法形成应用侧闭环；导入候选的控制权证明/合并和无 global UUID 候选的恢复绑定仍待实现，R14/R16 保持 `部分`。

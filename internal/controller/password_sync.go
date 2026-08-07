@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"stcontrol/internal/protocol"
+	"stcontrol/internal/store"
 )
 
 func (s *Server) passwordSyncReconciler(ctx context.Context) {
@@ -28,12 +29,20 @@ func (s *Server) reconcilePendingPasswords(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	_, _ = s.deliverPasswordSyncs(ctx, syncs)
+}
+
+func (s *Server) deliverPasswordSyncs(
+	ctx context.Context,
+	syncs []store.PendingPasswordSync,
+) (synced, pending int) {
 	for _, sync := range syncs {
 		if ctx.Err() != nil {
-			return
+			return synced, len(syncs) - synced
 		}
 		node, err := s.Store.GetNodeByID(ctx, sync.NodeID)
 		if err != nil || node == nil || node.Status != "online" {
+			pending++
 			continue
 		}
 		_, err = s.runAgentCommand(ctx, node, "set_password", protocol.SetPasswordRequest{
@@ -42,10 +51,16 @@ func (s *Server) reconcilePendingPasswords(ctx context.Context) {
 		}, 45*time.Second)
 		if err != nil {
 			_ = s.Store.MarkNodeAccountError(ctx, sync.GlobalUserID, sync.NodeID, time.Now().UTC())
+			pending++
 			continue
 		}
-		_ = s.Store.ActivateNodeAccount(
+		if err := s.Store.ActivateNodeAccount(
 			ctx, sync.LegacyUserID, sync.GlobalUserID, sync.NodeID, "", time.Now().UTC(),
-		)
+		); err != nil {
+			pending++
+			continue
+		}
+		synced++
 	}
+	return synced, pending
 }
