@@ -288,3 +288,20 @@ a:hover { color: var(--primary-hover); }
 .mono { font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; background: var(--bg-input); padding: 2px 6px; border-radius: 4px; word-break: break-all; }
 
 .loading { text-align: center; padding: 40px; color: var(--text-dim); }
+
+/* ---------- 冲突恢复 ---------- */
+.conflict-page { align-items: flex-start; }
+.conflict-card { max-width: 1080px; }
+.conflict-sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 18px 0; }
+.conflict-source { background: var(--bg-input); border: 1px solid var(--border); border-radius: 10px; padding: 14px; display: grid; gap: 7px; }
+.conflict-source strong { margin-right: 8px; }
+.conflict-source small { color: var(--text-dim); }
+.evidence-ready { color: var(--green); }
+.evidence-pending { color: var(--yellow); }
+.evidence-failed { color: var(--red); }
+.conflict-summary { display: flex; flex-wrap: wrap; gap: 18px; color: var(--text-dim); margin-bottom: 12px; }
+.conflict-table-wrap { overflow-x: auto; }
+.conflict-table { min-width: 820px; }
+.conflict-path { max-width: 360px; white-space: normal; overflow-wrap: anywhere; }
+.conflict-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 14px; color: var(--text-dim); }
+.conflict-logout { margin-top: 24px; }

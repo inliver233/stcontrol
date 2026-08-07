@@ -918,7 +918,7 @@ func removeTaskDirectory(path string) {
 }
 
 func safeArchivePath(path string) bool {
-	return path != "" && path != archiveMetadataPath && filepath.IsLocal(filepath.FromSlash(path)) && path == filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))) &&
+	return path != "" && path != archiveMetadataPath && path != conflictEvidenceMetadataPath && filepath.IsLocal(filepath.FromSlash(path)) && path == filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))) &&
 		!strings.HasPrefix(path, ".stcontrol/")
 }
 

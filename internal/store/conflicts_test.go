@@ -24,20 +24,24 @@ func TestGetOpenReplicaConflictReturnsFrozenSources(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"node_id", "node_name", "node_role", "snapshot_id", "source_kind", "replica_state",
 			"authoritative", "manifest", "files", "bytes", "published", "data_version", "checksum", "captured",
+			"evidence_id", "evidence_state", "evidence_basis", "evidence_sha", "evidence_files", "evidence_bytes",
 		}).AddRow(int64(8), "compute-a", "compute", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-			"active", "conflict", true, manifest, int64(12), int64(4096), published, int64(7), "legacy", detected).
+			"active", "conflict", true, manifest, int64(12), int64(4096), published, int64(7), "legacy", detected,
+			"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "ready", "frozen_live", manifest, int64(12), int64(4096)).
 			AddRow(int64(9), "compute-b", "compute", nil, "hot_standby", "conflict", false,
-				nil, nil, nil, nil, int64(8), "other", detected))
+				nil, nil, nil, nil, int64(8), "other", detected,
+				"ffffffff-ffff-4fff-8fff-ffffffffffff", "pending", nil, nil, nil, nil))
 	conflict, err := store.GetOpenReplicaConflict(context.Background(), 70)
 	if err != nil || conflict == nil || len(conflict.Sources) != 2 {
 		t.Fatalf("conflict=%+v err=%v", conflict, err)
 	}
 	first := conflict.Sources[0].Public()
 	second := conflict.Sources[1].Public()
-	if first.EvidenceState != "immutable" || first.FileCount == nil || *first.FileCount != 12 {
+	if first.SourceSnapshotState != "immutable" || first.EvidenceState != "ready" ||
+		first.FileCount == nil || *first.FileCount != 12 {
 		t.Fatalf("first source=%+v", first)
 	}
-	if second.EvidenceState != "live_capture_required" || second.FileCount != nil {
+	if second.SourceSnapshotState != "live_capture_required" || second.EvidenceState != "pending" || second.FileCount != nil {
 		t.Fatalf("second source=%+v", second)
 	}
 	assertMockExpectations(t, mock)

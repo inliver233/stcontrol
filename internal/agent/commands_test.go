@@ -61,6 +61,16 @@ func TestRuntimeStateRejectsCorruptFile(t *testing.T) {
 	}
 }
 
+func TestConflictEvidencePagesDoNotEnterGeneralCommandCache(t *testing.T) {
+	t.Parallel()
+	if shouldCacheCommandResult("read_conflict_evidence_page") {
+		t.Fatal("encrypted manifest page would be duplicated in runtime command cache")
+	}
+	if !shouldCacheCommandResult("capture_conflict_evidence") {
+		t.Fatal("idempotent evidence capture receipt must remain restart-safe")
+	}
+}
+
 func TestPrepareRestoreReceiveRequiresComputeRole(t *testing.T) {
 	t.Parallel()
 	payload, err := json.Marshal(protocol.PrepareSnapshotReceiveRequest{

@@ -100,6 +100,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.sessionJanitor(ctx)
 	go s.snapshotWorkflowReconciler(ctx)
 	go s.restoreWorkflowReconciler(ctx)
+	go s.conflictEvidenceReconciler(ctx)
 	go s.passwordSyncReconciler(ctx)
 	go s.registrationWorkflowReconciler(ctx)
 

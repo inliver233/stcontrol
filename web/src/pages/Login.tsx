@@ -16,7 +16,11 @@ export default function LoginPage() {
     setError('')
     setBusy(true)
     try {
-      await api.login({ username, password })
+	  const result = await api.login({ username, password })
+	  if (result.recovery_required) {
+		navigate('/conflict', { replace: true })
+		return
+	  }
       await refresh()
       navigate('/')
     } catch (err: any) {

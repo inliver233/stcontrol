@@ -304,6 +304,43 @@ type ManifestEntry struct {
 	SHA256 string `json:"sha256"`
 }
 
+// ---------- 冲突证据 ----------
+
+type CaptureConflictEvidenceRequest struct {
+	ConflictID           string `json:"conflict_id"`
+	EvidenceID           string `json:"evidence_id"`
+	GlobalUserID         int64  `json:"global_user_id"`
+	Handle               string `json:"handle"`
+	SourceKind           string `json:"source_kind"`
+	SourceSnapshotID     string `json:"source_snapshot_id,omitempty"`
+	SourceManifestSHA256 string `json:"source_manifest_sha256,omitempty"`
+}
+
+type ConflictEvidenceReceipt struct {
+	EvidenceID       string `json:"evidence_id"`
+	EntriesSHA256    string `json:"entries_sha256"`
+	FileCount        int64  `json:"file_count"`
+	TotalBytes       int64  `json:"total_bytes"`
+	CaptureBasis     string `json:"capture_basis"`
+	SourceSnapshotID string `json:"source_snapshot_id,omitempty"`
+}
+
+type ReadConflictEvidencePageRequest struct {
+	ConflictID  string `json:"conflict_id"`
+	EvidenceID  string `json:"evidence_id"`
+	Cursor      int    `json:"cursor"`
+	MaxBytes    int    `json:"max_bytes"`
+	ResponseKey string `json:"response_key"`
+}
+
+type ConflictEvidencePage struct {
+	EvidenceID string          `json:"evidence_id"`
+	Cursor     int             `json:"cursor"`
+	NextCursor int             `json:"next_cursor"`
+	Complete   bool            `json:"complete"`
+	Entries    []ManifestEntry `json:"entries"`
+}
+
 // ---------- HMAC 签名 ----------
 
 // bodyHash 计算请求体的 SHA256 hex。

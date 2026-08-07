@@ -238,3 +238,14 @@
 - 针对性测试覆盖案件来源读取与公开最小化、非法用户、开放案件 session 条件、密码冲突登录、专用路由可达和普通业务路由失败关闭，以及调和 SQL 的创建/一次捕获顺序。
 - `go test ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。`go test -coverprofile=coverage/conflict_foundation.coverprofile ./...`：通过，总覆盖率 `42.8%`（Agent `46.0%`、Controller `25.0%`、Store `60.4%`），仍低于最终 80% 门禁。
 - 当前仅完成冲突闭环的身份与事实基础。Agent 逐文件证据捕获、分块/限额差异、用户来源选择、不同路径自动合并、同路径选边/双份保留、最终原子解冻和前端页面尚未实现；R19 仍为 `部分`。
+
+## 2026-08-08：冲突不可变证据与加密差异批次
+
+- 新增 `0019_conflict_evidence.sql`：来源拥有稳定 evidence ID、pending/capturing/retry_wait/ready/failed 状态、租约/尝试/退避和最终 entries digest/规模/捕获依据；manifest page 只保存 Controller 二次加密后的 ciphertext 与明文摘要，不保存可查询文件名。
+- compute Agent 在数据分区的隐藏控制目录中以任务暂存、两遍源检查、逐文件 SHA-256 和同文件系统 rename 发布冻结现场证据；该隐藏目录不会进入用户活动遥测。storage Agent 先读取严格私有 metadata，将原 manifest 重新绑定数据库摘要并复核全树，再复制证据。两种来源的重放都要验证作用域和现存证据全树，额外文件、篡改、符号链接、非普通文件、路径/大小/数量/磁盘门禁失败关闭。
+- Agent 固定命令 `capture_conflict_evidence` 只返回无路径 receipt；`read_conflict_evidence_page` 只返回以命令内响应密钥加密的 ciphertext，且不进入 Agent 通用完成结果缓存。Controller worker 使用持久 claim/lease/attempt，复核每页作用域、游标、严格排序、路径、摘要、总数/总字节和 entries digest，再用 evidence ID 用途隔离 key 重新加密并在 serializable 事务发布全部 pages、来源 ready、案件阶段和无路径审计；同事务把已摄取的命令结果改写为无路径摘要。第五次失败后保持 frozen/failed，不带不完整证据前进。
+- conflict 专用差异 API 从加密页重构并再次验证 manifest，只在响应正文返回认证用户自己的路径；URL 仅含数字 offset/limit。相同文件不显示，不同路径标记后续可自动并入，同路径不同内容标记必须选源或保留双份；聊天/JSON/文本/二进制仅分类，不宣称语义合并。
+- 新增 `/conflict` 页面和冲突登录分流。页面轮询案件与来源捕获状态，展示证据规模/依据、失败关闭、相同结果、差异摘要和分页表格；普通 auth 状态仍为空，不因此获得业务页面权限。
+- 单元测试覆盖 compute/storage 捕获、archive digest 绑定、加密分页无路径泄露、证据篡改重放拒绝、隐藏目录不进入用户遥测、任务 list/claim/retry/terminal、encrypted pages 原子完成/读取、持久页二次解密校验和不同路径/同路径差异分类。
+- `go test ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。`go test -coverprofile=coverage/conflict_evidence.coverprofile ./...`：通过，总覆盖率 `44.4%`（Agent `51.4%`、Controller `26.0%`、Store `60.8%`），仍低于最终 80% 门禁。
+- 当前仍未实现用户来源选择、同路径决策、不同路径实际合并、双份原件保留、结果原子发布/解冻；没有可用真实 PostgreSQL/双 Agent 环境，迁移、租约竞争、重启续跑和大清单仍只有 SQL mock/单进程证据，R19/R20 保持 `部分`。

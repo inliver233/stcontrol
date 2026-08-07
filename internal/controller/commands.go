@@ -29,11 +29,13 @@ type encryptedCommandEnvelope struct {
 }
 
 type agentCommandSummary struct {
-	OK          bool                              `json:"ok"`
-	Code        string                            `json:"code,omitempty"`
-	LocalUserID string                            `json:"local_user_id,omitempty"`
-	Users       []protocol.ScanExistingUser       `json:"users,omitempty"`
-	Snapshot    *protocol.SnapshotTransferReceipt `json:"snapshot,omitempty"`
+	OK               bool                              `json:"ok"`
+	Code             string                            `json:"code,omitempty"`
+	LocalUserID      string                            `json:"local_user_id,omitempty"`
+	Users            []protocol.ScanExistingUser       `json:"users,omitempty"`
+	Snapshot         *protocol.SnapshotTransferReceipt `json:"snapshot,omitempty"`
+	ConflictEvidence *protocol.ConflictEvidenceReceipt `json:"conflict_evidence,omitempty"`
+	Ciphertext       string                            `json:"ciphertext,omitempty"`
 }
 
 func (s *Server) handleAgentLeaseCommand(w http.ResponseWriter, r *http.Request) {

@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +14,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"stcontrol/internal/config"
 	controlcrypto "stcontrol/internal/crypto"
+	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
 
@@ -59,6 +62,84 @@ func TestPasswordLoginCreatesRecoveryOnlySessionForConflictUser(t *testing.T) {
 	}
 }
 
+func TestBuildConflictDifferencesKeepsDisjointAndSamePathSeparate(t *testing.T) {
+	t.Parallel()
+	conflict := &store.ReplicaConflict{
+		ID: "conflict",
+		Sources: []store.ReplicaConflictSource{
+			{NodeID: 8, NodeName: "node-a"},
+			{NodeID: 9, NodeName: "node-b"},
+		},
+	}
+	entries := map[int64]map[string]protocol.ManifestEntry{
+		8: {
+			"same.json":          {Path: "same.json", Size: 5, SHA256: strings.Repeat("1", 64)},
+			"only-a.txt":         {Path: "only-a.txt", Size: 3, SHA256: strings.Repeat("2", 64)},
+			"chats/thread.jsonl": {Path: "chats/thread.jsonl", Size: 8, SHA256: strings.Repeat("3", 64)},
+		},
+		9: {
+			"same.json":          {Path: "same.json", Size: 5, SHA256: strings.Repeat("1", 64)},
+			"only-b.bin":         {Path: "only-b.bin", Size: 4, SHA256: strings.Repeat("4", 64)},
+			"chats/thread.jsonl": {Path: "chats/thread.jsonl", Size: 9, SHA256: strings.Repeat("5", 64)},
+		},
+	}
+	response := buildConflictDifferences(conflict, entries)
+	if response.Total != 3 || response.OnlyOnSome != 2 || response.Different != 1 {
+		t.Fatalf("response=%+v", response)
+	}
+	if response.Files[0].Path != "chats/thread.jsonl" || response.Files[0].Category != "chat_or_log" ||
+		response.Files[0].Policy != "choose_source_or_preserve_both" {
+		t.Fatalf("first difference=%+v", response.Files[0])
+	}
+	if response.Files[1].Policy != "auto_merge_disjoint_path" {
+		t.Fatalf("disjoint difference=%+v", response.Files[1])
+	}
+}
+
+func TestLoadConflictEvidenceEntriesDecryptsAndRevalidates(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server := &Server{
+		Store: &store.Store{DB: db}, secretKey: []byte("01234567890123456789012345678901"),
+	}
+	evidenceID := "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	entries := []protocol.ManifestEntry{{Path: "settings.json", Size: 5, SHA256: strings.Repeat("a", 64)}}
+	page := protocol.ConflictEvidencePage{
+		EvidenceID: evidenceID, Cursor: 0, NextCursor: 1, Complete: true, Entries: entries,
+	}
+	plaintext, _ := json.Marshal(page)
+	ciphertext, err := controlcrypto.Encrypt(server.deriveConflictEvidenceKey("at-rest", evidenceID), plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectQuery(`(?s)FROM replica_conflict_sources source.*replica_conflict_manifest_pages`).
+		WithArgs("conflict", int64(8)).
+		WillReturnRows(sqlmock.NewRows([]string{"encrypted_payload"}).AddRow(ciphertext))
+	entriesJSON, _ := json.Marshal(entries)
+	digest := sha256.Sum256(entriesJSON)
+	source := store.ReplicaConflictSource{
+		NodeID: 8, EvidenceID: evidenceID, EvidenceState: "ready", EvidenceSHA256: digest[:],
+		EvidenceFileCount:  sql.NullInt64{Int64: 1, Valid: true},
+		EvidenceTotalBytes: sql.NullInt64{Int64: 5, Valid: true},
+	}
+	got, err := server.loadConflictEvidenceEntries(context.Background(), "conflict", source)
+	if err != nil || len(got) != 1 || got[0].Path != "settings.json" {
+		t.Fatalf("entries=%+v err=%v", got, err)
+	}
+	if err := validateConflictEvidenceEntries([]protocol.ManifestEntry{
+		{Path: "../escape", Size: 1, SHA256: strings.Repeat("a", 64)},
+	}, 1); err == nil {
+		t.Fatal("unsafe persisted path was accepted")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestConflictSessionCanOnlyReachConflictRoute(t *testing.T) {
 	t.Parallel()
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
@@ -86,8 +167,10 @@ func TestConflictSessionCanOnlyReachConflictRoute(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"node_id", "node_name", "node_role", "snapshot_id", "source_kind", "replica_state",
 			"authoritative", "manifest", "files", "bytes", "published", "data_version", "checksum", "captured",
+			"evidence_id", "evidence_state", "evidence_basis", "evidence_sha", "evidence_files", "evidence_bytes",
 		}).AddRow(int64(8), "compute-a", "compute", nil, "active", "conflict", true,
-			nil, nil, nil, nil, int64(8), "legacy", now))
+			nil, nil, nil, nil, int64(8), "legacy", now,
+			"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "pending", nil, nil, nil, nil))
 	server := &Server{
 		Cfg:   &config.ControllerConfig{PublicURL: "https://control.example"},
 		Store: &store.Store{DB: db}, secretKey: []byte("01234567890123456789012345678901"),

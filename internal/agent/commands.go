@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -22,11 +23,13 @@ type encryptedCommandEnvelope struct {
 }
 
 type safeCommandResult struct {
-	OK          bool                              `json:"ok"`
-	Code        string                            `json:"code,omitempty"`
-	LocalUserID string                            `json:"local_user_id,omitempty"`
-	Users       []protocol.ScanExistingUser       `json:"users,omitempty"`
-	Snapshot    *protocol.SnapshotTransferReceipt `json:"snapshot,omitempty"`
+	OK               bool                              `json:"ok"`
+	Code             string                            `json:"code,omitempty"`
+	LocalUserID      string                            `json:"local_user_id,omitempty"`
+	Users            []protocol.ScanExistingUser       `json:"users,omitempty"`
+	Snapshot         *protocol.SnapshotTransferReceipt `json:"snapshot,omitempty"`
+	ConflictEvidence *protocol.ConflictEvidenceReceipt `json:"conflict_evidence,omitempty"`
+	Ciphertext       string                            `json:"ciphertext,omitempty"`
 }
 
 // StartCommandLoop maintains the Agent-initiated control channel. It never
@@ -101,15 +104,21 @@ func (a *Agent) pollAndRunCommand(ctx context.Context) error {
 }
 
 func (a *Agent) executeAndReportCommand(ctx context.Context, workerID string, command protocol.AgentCommand) error {
-	result, ok := a.cachedResult(command.ID)
+	cacheResult := shouldCacheCommandResult(command.CommandType)
+	result, ok := cachedCommandResult{}, false
+	if cacheResult {
+		result, ok = a.cachedResult(command.ID)
+	}
 	if !ok {
 		succeeded, summary := a.executeCommand(ctx, command)
 		result = cachedCommandResult{
 			Succeeded: succeeded, Result: summary,
 			ControllerGeneration: command.ControllerGeneration, CompletedAt: time.Now().UTC(),
 		}
-		if err := a.rememberResult(command.ID, result); err != nil {
-			return fmt.Errorf("persist command result: %w", err)
+		if cacheResult {
+			if err := a.rememberResult(command.ID, result); err != nil {
+				return fmt.Errorf("persist command result: %w", err)
+			}
 		}
 	}
 	payload := protocol.FinishCommandRequest{
@@ -133,6 +142,10 @@ func (a *Agent) executeAndReportCommand(ctx context.Context, workerID string, co
 		}
 	}
 	return fmt.Errorf("controller did not confirm command result")
+}
+
+func shouldCacheCommandResult(commandType string) bool {
+	return commandType != "read_conflict_evidence_page"
 }
 
 func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentCommand) (bool, json.RawMessage) {
@@ -255,9 +268,53 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "snapshot_receipt_unavailable"})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, Snapshot: receipt})
+	case "capture_conflict_evidence":
+		var payload protocol.CaptureConflictEvidenceRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil || !validConflictEvidenceRequest(payload) {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		receipt, err := a.captureConflictEvidence(ctx, payload)
+		if err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "conflict_evidence_capture_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, ConflictEvidence: &receipt})
+	case "read_conflict_evidence_page":
+		var payload protocol.ReadConflictEvidencePageRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil || !validConflictEvidencePageRequest(payload) {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		ciphertext, err := a.readConflictEvidencePage(payload)
+		if err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "conflict_evidence_page_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, Ciphertext: ciphertext})
 	default:
 		return false, marshalSafeResult(safeCommandResult{OK: false, Code: "unsupported_command"})
 	}
+}
+
+func validConflictEvidenceRequest(req protocol.CaptureConflictEvidenceRequest) bool {
+	if !validUUID(req.ConflictID) || !validUUID(req.EvidenceID) || req.GlobalUserID <= 0 ||
+		!validHandle(req.Handle) {
+		return false
+	}
+	switch req.SourceKind {
+	case "archive":
+		return validUUID(req.SourceSnapshotID) && validCapabilityHash(req.SourceManifestSHA256)
+	case "active", "hot_standby":
+		return req.SourceSnapshotID == "" || validUUID(req.SourceSnapshotID)
+	default:
+		return false
+	}
+}
+
+func validConflictEvidencePageRequest(req protocol.ReadConflictEvidencePageRequest) bool {
+	if !validUUID(req.ConflictID) || !validUUID(req.EvidenceID) || req.Cursor < 0 ||
+		req.MaxBytes < 4<<10 || req.MaxBytes > 512<<10 {
+		return false
+	}
+	key, err := base64.StdEncoding.DecodeString(req.ResponseKey)
+	return err == nil && len(key) == 32
 }
 
 func definitiveProvisionError(code string) bool {

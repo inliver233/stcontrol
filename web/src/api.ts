@@ -97,6 +97,53 @@ export interface RegistrationStatus {
   username?: string
 }
 
+export interface ConflictSource {
+  node_id: number
+  node_name: string
+  node_role: 'compute' | 'storage'
+  source_kind: 'active' | 'hot_standby' | 'archive'
+  replica_state: string
+  is_authoritative: boolean
+  source_snapshot_state: 'immutable' | 'live_capture_required'
+  evidence_state: 'pending' | 'capturing' | 'retry_wait' | 'ready' | 'failed'
+  capture_basis?: 'verified_archive' | 'frozen_live'
+  file_count?: number
+  total_bytes?: number
+  published_at?: string
+  legacy_data_version?: number
+}
+
+export interface ReplicaConflict {
+  id: string
+  state: 'detected' | 'inspecting' | 'awaiting_decision' | 'resolving'
+  protection_version: number
+  version: number
+  detected_at: string
+  updated_at: string
+  inspection_state: 'capture_required' | 'evidence_failed' | 'identical' | 'differences_ready'
+  source_count: number
+  ready_evidence_count: number
+  sources: ConflictSource[]
+}
+
+export interface ConflictDifference {
+  path: string
+  category: 'chat_or_log' | 'structured_json' | 'text' | 'binary_or_unknown'
+  difference: 'only_on_some_sources' | 'different_at_same_path'
+  policy: 'auto_merge_disjoint_path' | 'choose_source_or_preserve_both'
+  sources: Array<{ node_id: number; node_name: string; present: boolean; size?: number }>
+}
+
+export interface ConflictDifferences {
+  conflict_id: string
+  offset: number
+  limit: number
+  total: number
+  only_on_some_sources: number
+  different_at_same_path: number
+  files: ConflictDifference[]
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
 	const method = (options?.method || 'GET').toUpperCase()
 	const headers = new Headers(options?.headers)
@@ -137,7 +184,7 @@ export const api = {
   register: (body: { operation_id: string; username: string; display_name: string; password: string; node_id: number; invitation_code?: string }) =>
     request<RegistrationStatus>('/api/auth/register', { method: 'POST', body: JSON.stringify(body) }),
   login: (body: { username: string; password: string }) =>
-    request<{ ok: boolean }>('/api/auth/login', { method: 'POST', body: JSON.stringify(body) }),
+    request<{ ok: boolean; recovery_required: boolean }>('/api/auth/login', { method: 'POST', body: JSON.stringify(body) }),
 	adminLogin: (body: { username: string; password: string }) =>
 	  request<{ ok: boolean; is_admin: boolean }>('/api/auth/admin/login', { method: 'POST', body: JSON.stringify(body) }),
   completeOAuth: (node_id: number, operation_id: string, invitation_code?: string) =>
@@ -147,6 +194,10 @@ export const api = {
   registrationStatus: () => request<RegistrationStatus>('/api/auth/registration/status'),
   logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
   me: () => request<Me>('/api/users/me'),
+  conflict: () => request<ReplicaConflict>('/api/conflicts/me'),
+  conflictDifferences: (offset = 0, limit = 50) =>
+    request<ConflictDifferences>(`/api/conflicts/me/differences?offset=${offset}&limit=${limit}`),
+  conflictLogout: () => request<{ ok: boolean }>('/api/conflicts/auth/logout', { method: 'POST' }),
 
   // 节点
   availableNodes: () => request<{ nodes: Node[] }>('/api/nodes/available'),

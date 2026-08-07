@@ -193,7 +193,7 @@ func (a *Agent) scanUserActivityAndSize() ([]protocol.UserStatus, int64, error) 
 			continue
 		}
 		name := e.Name()
-		if excludedDirs[name] {
+		if excludedDirs[name] || strings.HasPrefix(name, ".") {
 			continue
 		}
 		info, err := e.Info()

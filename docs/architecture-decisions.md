@@ -69,3 +69,10 @@
 - 决定：冲突不再撤销尚有效的 Controller 身份令牌。普通 session 查询仍严格要求 global/legacy 用户均为 active；单独的 conflict session 查询同时要求两层状态均为 conflict、存在开放案件、令牌未撤销/未过期且属于 active controller generation。该认证只挂载 `/api/conflicts`，不能访问改密、身份绑定、登录交接、恢复或其他普通写操作。
 - 决定：冲突发生后仍允许用户用既有密码或 OAuth 身份重新认证，但生成的令牌仍只能通过上述恢复边界。禁用、删除、recovering 等其他状态不会因此获得会话。
 - 影响：用户能够在不重新开放节点写入的前提下查看冲突来源；既有已被旧版本撤销的令牌可通过身份重新登录恢复。当前批次只建立案件/来源和最小只读 API；逐文件证据捕获、可理解差异、来源选择、不同路径有限合并和最终原子解冻仍需后续实现，不能把 manifest 摘要差异冒充内容差异。
+
+## ADR-011：冲突差异来自不可变逐文件证据，路径只以密文持久化
+
+- 决定：每个检测时来源获得稳定 evidence ID。compute Agent 将冻结时用户树复制到数据分区内独立、不可变、同文件系统证据目录；storage Agent 必须先把私有 archive metadata 重新绑定 Controller 保存的 source snapshot/manifest 摘要并逐文件复核，再复制为冲突证据。符号链接、非普通文件、路径越界、保留元数据名、数量/单文件/总量越界、源在两遍扫描/复制间变化或磁盘余量不足均失败关闭；重放只能接受作用域完全一致且全树复核通过的既有证据。
+- 决定：文件清单不以明文进入 `agent_commands.result_summary`。Controller 通过加密命令下发用途隔离、可从主密钥恢复的一次性响应密钥；Agent 按序分页并仅返回 AES-GCM ciphertext，且这类只读命令不写入 Agent 的通用完成结果缓存。Controller 解密后重新校验严格路径、全局排序、摘要、大小、总数和 entries digest，再以 evidence ID 派生的独立 at-rest key 重新加密每页写入 PostgreSQL；同一事务把已摄取命令结果替换为无路径摘要，避免命令表长期保留重复 ciphertext。文件名只会在 conflict 专用、`no-store` 的响应正文中返回认证用户，不进入 URL、审计或错误信息。
+- 决定：差异分类只承诺文件级事实。同一路径且大小/摘要相同视为相同；只在部分来源出现的路径可进入后续“不同路径自动并入”；同路径摘要或大小不同必须由用户选源或保留双份。聊天/JSON/文本/二进制分类只帮助解释风险，不承诺任何通用语义合并。
+- 影响：重启后可从持久命令结果和 encrypted manifest pages 继续，全部来源 ready 后案件进入 `awaiting_decision`。当前已提供分页差异 UI；来源选择、合并结果发布、原件保留策略和最终原子解冻仍是下一阶段，证据捕获成功不能冒充冲突已解决。

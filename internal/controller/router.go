@@ -85,6 +85,7 @@ func (s *Server) routes(r *chi.Mux) {
 	r.Route("/api/conflicts", func(r chi.Router) {
 		r.Use(s.conflictAuthMiddleware)
 		r.Get("/me", s.handleMyReplicaConflict)
+		r.Get("/me/differences", s.handleMyReplicaConflictDifferences)
 		r.Post("/auth/logout", s.handleLogout)
 	})
 
