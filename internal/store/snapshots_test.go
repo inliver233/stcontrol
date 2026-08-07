@@ -123,7 +123,7 @@ func TestCompleteSnapshotWorkflowPublishesFactsAfterVerification(t *testing.T) {
 	now := time.Date(2026, 8, 7, 21, 0, 0, 0, time.UTC)
 	p := CompleteSnapshotWorkflowParams{
 		WorkflowID: "workflow", SnapshotID: "snapshot", CapabilityHash: make([]byte, 32),
-		TargetNodeID: 9, ReplicaKind: "archive", ManifestSHA256: make([]byte, 32),
+		TargetNodeID: 9, ReplicaKind: "archive", ReplicaOrigin: "configured", ManifestSHA256: make([]byte, 32),
 		ArchiveSHA256: make([]byte, 32), FileCount: 2, TotalBytes: 30, Now: now,
 	}
 	mock.ExpectBegin()
@@ -141,6 +141,12 @@ func TestCompleteSnapshotWorkflowPublishesFactsAfterVerification(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"data_version"}).AddRow(int64(5)))
 	mock.ExpectExec(`INSERT INTO replica_copies`).
 		WithArgs(int64(70), int64(9), "snapshot", "archive", "configured", now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE replica_copies SET state='stale'`).
+		WithArgs(int64(70), int64(9), now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE user_replicas SET state='stale'`).
+		WithArgs(int64(7), int64(9)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE snapshot_transfer_capabilities`).
 		WithArgs("workflow", now, p.CapabilityHash).
@@ -169,7 +175,7 @@ func TestCompleteSnapshotWorkflowReplaysCommittedResult(t *testing.T) {
 	defer closeDB()
 	p := CompleteSnapshotWorkflowParams{
 		WorkflowID: "workflow", SnapshotID: "snapshot", CapabilityHash: make([]byte, 32),
-		TargetNodeID: 9, ReplicaKind: "archive", ManifestSHA256: make([]byte, 32),
+		TargetNodeID: 9, ReplicaKind: "archive", ReplicaOrigin: "configured", ManifestSHA256: make([]byte, 32),
 		ArchiveSHA256: make([]byte, 32),
 	}
 	mock.ExpectBegin()

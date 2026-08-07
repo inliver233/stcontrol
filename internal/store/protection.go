@@ -51,6 +51,12 @@ type ProtectionAlert struct {
 	LastSeenAt  time.Time `json:"last_seen_at"`
 }
 
+type StorageRepairCandidate struct {
+	LegacyUserID int64
+	GlobalUserID int64
+	HomeNodeID   int64
+}
+
 type ConfirmReplicaTakeoverParams struct {
 	OperationID        string
 	RequestDigest      []byte
@@ -377,6 +383,71 @@ func (s *Store) ListVisibleProtectionAlerts(ctx context.Context, limit int, now 
 		alerts = append(alerts, alert)
 	}
 	return alerts, rows.Err()
+}
+
+// ListStorageRepairCandidates returns users whose current writer is safe to
+// snapshot but who have no healthy pure-storage protection. The workflow
+// creation transaction rechecks the lease before any Agent mutation.
+func (s *Store) ListStorageRepairCandidates(
+	ctx context.Context,
+	limit int,
+	now time.Time,
+) ([]StorageRepairCandidate, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT legacy.id,global_user.id,legacy.home_node_id
+		FROM user_protection_states protection
+		JOIN global_users global_user ON global_user.id=protection.user_id AND global_user.status='active'
+		JOIN users legacy ON legacy.id=global_user.legacy_user_id AND legacy.status='active'
+		JOIN nodes home ON home.id=legacy.home_node_id AND home.role='compute'
+		  AND home.connectivity_state='online' AND home.operational_state='active'
+		  AND home.compatibility_state='compatible'
+		JOIN user_replicas home_replica ON home_replica.user_id=legacy.id
+		  AND home_replica.node_id=legacy.home_node_id AND home_replica.kind='home'
+		  AND home_replica.state='ready'
+		WHERE protection.state IN ('temporary','unprotected')
+		  AND NOT EXISTS (
+		    SELECT 1 FROM replica_copies archive_copy
+		    JOIN snapshot_manifests archive_snapshot ON archive_snapshot.id=archive_copy.snapshot_id
+		      AND archive_snapshot.user_id=global_user.id AND archive_snapshot.state='immutable'
+		    JOIN nodes archive_node ON archive_node.id=archive_copy.node_id AND archive_node.role='storage'
+		      AND archive_node.connectivity_state='online' AND archive_node.operational_state='active'
+		      AND archive_node.compatibility_state='compatible'
+		    JOIN user_replicas archive_legacy ON archive_legacy.user_id=legacy.id
+		      AND archive_legacy.node_id=archive_copy.node_id AND archive_legacy.kind='archive'
+		      AND archive_legacy.state='ready'
+		    WHERE archive_copy.user_id=global_user.id AND archive_copy.replica_kind='archive'
+		      AND archive_copy.state='ready' AND archive_copy.compatibility_state='compatible'
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM user_activity_leases lease WHERE lease.user_id=global_user.id
+		      AND (lease.lease_expires_at>$2 OR lease.in_flight_reads<>0 OR lease.in_flight_writes<>0
+		        OR lease.state IN ('independent','quiescing'))
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM workflows workflow WHERE workflow.user_id=global_user.id
+		      AND workflow.workflow_type='snapshot'
+		      AND workflow.state NOT IN ('succeeded','cancelled','failed')
+		  )
+		ORDER BY protection.changed_at,protection.user_id LIMIT $1`, limit, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var candidates []StorageRepairCandidate
+	for rows.Next() {
+		var candidate StorageRepairCandidate
+		if err := rows.Scan(&candidate.LegacyUserID, &candidate.GlobalUserID, &candidate.HomeNodeID); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates, rows.Err()
 }
 
 // GetImmutableHotStandbyRecoveryPoint returns the exact recovery point that a

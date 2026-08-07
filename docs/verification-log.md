@@ -205,4 +205,15 @@
 - 单元测试覆盖保护投影事务、冲突锁存/失败关闭 SQL、告警宽限、公开模型脱敏、所有产品状态、接管 HMAC 绑定、显式风险确认、活动租约拒绝、跨用户快照校验条件、完整原子晋升和精确 operation replay。
 - `go test -coverprofile=coverage/protection_takeover.coverprofile ./...`：通过；总覆盖率 `40.2%`（`internal/agent 44.8%`、`internal/controller 21.5%`、`internal/store 59.2%`），仍低于最终 80% 门禁。
 - `go vet ./...`、`GOOS=linux GOARCH=amd64 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。
-- 尚未完成且未冒充完成：当前没有可用的真实 PostgreSQL 服务，因此迁移、data-modifying CTE、行锁和并发接管仅有 SQL mock/静态语义证据；存储自动修复与恢复、冲突差异/来源选择/有限合并、节点退役/升级/损坏状态机和 SillyTavern 逐请求写门闭环仍待实现，R19 保持 `部分`。
+- 尚未完成且未冒充完成：当前没有可用的真实 PostgreSQL 服务，因此迁移、data-modifying CTE、行锁和并发接管仅有 SQL mock/静态语义证据；纯存储到计算恢复、冲突差异/来源选择/有限合并、节点退役/升级/损坏状态机和 SillyTavern 逐请求写门闭环仍待实现，R19 保持 `部分`。
+
+## 2026-08-08：纯存储保护自动修复批次
+
+- 新增持久事实驱动的修复候选查询：只选 `temporary/unprotected`、active 用户、健康 ready home，排除有效写租约、在途读写、independent/quiescing 和活动 snapshot workflow；同时直接复核不存在属于该用户的健康 compatible immutable archive，避免保护投影延迟造成重复修复。
+- 调度器每 30 秒优先处理存储修复，并复用全局快照并发槽。目标只允许启用备份、具有数据面、连通/运营/兼容/容量合格的纯存储节点；优先 `open` 再选 `busy`，没有目标时保持未保护和告警，不降级到计算节点。
+- 修复完全复用既有单用户写门、不可变 snapshot、短期 capability、端到端校验和原子发布流程，`backup_jobs.trigger=storage_repair` 映射为副本来源 `temporary_failure_protection`。
+- `CompleteSnapshotWorkflow` 只有在新 archive manifest/归档摘要、capability 和数据库发布全部通过后，才把其他 ready archive 降为 stale；不可达旧节点的物理数据与 manifest 保留，避免在故障期间盲删唯一可用原件。
+- 单元测试覆盖无 writer/无 archive 候选 SQL、纯存储角色门禁、open 优先及 busy 回退、自动修复来源和“新发布后旧副本才 stale”的原子事务顺序。
+- `go test -coverprofile=coverage/storage_repair.coverprofile ./...`：通过；总覆盖率 `40.3%`（`internal/agent 44.8%`、`internal/controller 21.6%`、`internal/store 59.3%`），仍低于最终 80% 门禁。
+- `go vet ./...`、`GOOS=linux GOARCH=amd64 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。
+- 尚未完成且未冒充完成：真实 PostgreSQL 并发调度、存储掉线/回归和完整 Agent-to-Agent 修复尚未故障注入；SillyTavern adapter 未挂载时活动事实仍不完整。纯存储到计算恢复、旧 archive 的受审计物理清理和稳定后的临时计算副本清理待后续实现，R09/R19 保持 `部分`。

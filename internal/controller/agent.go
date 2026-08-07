@@ -312,12 +312,15 @@ func (s *Server) runNodeMaintenance(ctx context.Context, timeout time.Duration) 
 func (s *Server) backupScheduler(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+	_ = s.scheduleStorageRepairs(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.scheduleOfflineBackups(ctx)
+			if !s.scheduleStorageRepairs(ctx) {
+				s.scheduleOfflineBackups(ctx)
+			}
 		}
 	}
 }

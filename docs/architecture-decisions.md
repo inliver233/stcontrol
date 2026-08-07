@@ -45,4 +45,12 @@
 - 决定：Controller 在 serializable 事务中锁定 global user，校验 active controller generation 和源租约；用户看到的精确恢复时间同时进入请求 HMAC 和事务条件。随后撤销未消费短码，原子地把旧 home 标为 stale、目标标为唯一 authoritative home，并写入稳定 operation ID、保护投影和安全审计。完全相同的操作可重放原结果，不同事实复用操作 ID 冲突关闭。
 - 决定：真实副本冲突是锁存状态；调和器同时冻结用户状态、Controller 会话、未消费短码和写租约。只有后续显式差异/来源选择流程可以解锁，任何周期性调和都不得自行清除冲突或覆盖原始副本。
 - 依据：PostgreSQL [`SELECT`](https://www.postgresql.org/docs/18/sql-select.html) 的 locking clause 会锁住所选行并阻止并发修改；[`INSERT`](https://www.postgresql.org/docs/current/sql-insert.html) 允许 `ON CONFLICT DO UPDATE` 同时引用既有目标行和 `excluded` 新行，并保证原子 insert-or-update 结果。
-- 影响：保护状态区分纯存储已保护、仅计算临时保护、未保护、可接管、需存储恢复、不可恢复和冲突；短暂未保护按配置宽限后告警，紧急故障立即告警。存储自动修复、存储到计算恢复、冲突差异/选择/合并和节点生命周期仍须独立实现，不能由本决策冒充完成。
+- 影响：保护状态区分纯存储已保护、仅计算临时保护、未保护、可接管、需存储恢复、不可恢复和冲突；短暂未保护按配置宽限后告警，紧急故障立即告警。存储到计算恢复、冲突差异/选择/合并和节点生命周期仍须独立实现，不能由本决策冒充完成。
+
+## ADR-008：存储保护修复复用安全快照，不降级到计算节点
+
+- 决定：保护投影为 `temporary/unprotected` 时，调度器还必须现场确认不存在健康、兼容且属于该用户的 immutable archive；投影延迟不能触发重复修复。
+- 决定：只有当前 home 节点及其副本均 ready、没有有效写租约/在途请求、没有活动 snapshot workflow 时才进入修复。工作流创建事务仍会再次锁定用户并复核租约，调度查询不是授权边界。
+- 决定：修复目标只允许 `role=storage`、启用备份、数据面可用且通过连通/运营/兼容/容量门禁的节点；优先 `open`，其次 `busy`。没有纯存储目标时保持未保护并由宽限告警升级，绝不把数据静默塞进计算节点冒充正常保护。
+- 决定：修复复用现有写门、不可变 snapshot、短期 capability、端到端校验和原子发布流程，并把副本来源记为 `temporary_failure_protection`。新 archive 完整发布后，其他 ready archive 才降为 `stale`；不可达节点上的旧物理数据不盲删，等待后续受审计清理。
+- 影响：存储节点故障不打断当前用户，用户安全离线后自动收敛纯存储保护。纯存储到计算恢复、旧副本物理清理和修复故障注入仍是后续门禁。

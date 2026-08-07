@@ -54,6 +54,7 @@ type SnapshotWorkflowExecution struct {
 	CapabilityExpires    time.Time
 	CapabilityState      string
 	LegacyBackupJobID    int64
+	Trigger              string
 	DestinationKind      string
 }
 
@@ -180,7 +181,7 @@ func (s *Store) GetSnapshotWorkflowExecution(ctx context.Context, workflowID str
 		  workflow.controller_generation, workflow.user_id, global_user.legacy_user_id,
 		  legacy_user.username, workflow.source_node_id, workflow.target_node_id,
 		  capability.id, capability.token_hash, capability.expires_at, capability.state,
-		  job.id,
+		  job.id,job.trigger,
 		  COALESCE(replica.kind, CASE WHEN target.role='storage' THEN 'archive' ELSE 'hot_standby' END)
 		FROM workflows workflow
 		JOIN snapshot_manifests snapshot ON snapshot.workflow_id=workflow.id
@@ -201,7 +202,8 @@ func (s *Store) GetSnapshotWorkflowExecution(ctx context.Context, workflowID str
 			&execution.ControllerGeneration, &execution.GlobalUserID, &execution.LegacyUserID,
 			&execution.Handle, &execution.SourceNodeID, &execution.TargetNodeID,
 			&execution.CapabilityID, &execution.CapabilityHash, &execution.CapabilityExpires,
-			&execution.CapabilityState, &execution.LegacyBackupJobID, &execution.DestinationKind,
+			&execution.CapabilityState, &execution.LegacyBackupJobID, &execution.Trigger,
+			&execution.DestinationKind,
 		)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -486,6 +488,7 @@ type CompleteSnapshotWorkflowParams struct {
 	CapabilityHash []byte
 	TargetNodeID   int64
 	ReplicaKind    string
+	ReplicaOrigin  string
 	ManifestSHA256 []byte
 	ArchiveSHA256  []byte
 	FileCount      int64
@@ -496,6 +499,7 @@ type CompleteSnapshotWorkflowParams struct {
 func (s *Store) CompleteSnapshotWorkflow(ctx context.Context, p CompleteSnapshotWorkflowParams) (int64, error) {
 	if p.WorkflowID == "" || p.SnapshotID == "" || len(p.CapabilityHash) != 32 || p.TargetNodeID <= 0 ||
 		(p.ReplicaKind != "archive" && p.ReplicaKind != "hot_standby") || len(p.ManifestSHA256) != 32 ||
+		(p.ReplicaOrigin != "configured" && p.ReplicaOrigin != "temporary_failure_protection") ||
 		len(p.ArchiveSHA256) != 32 || p.FileCount < 0 || p.TotalBytes < 0 {
 		return 0, ErrInvalidSnapshotWorkflow
 	}
@@ -568,7 +572,6 @@ func (s *Store) CompleteSnapshotWorkflow(ctx context.Context, p CompleteSnapshot
 		  SELECT legacy_user_id FROM global_users WHERE id=$1)`, userID).Scan(&dataVersion); err != nil {
 		return 0, err
 	}
-	origin := "configured"
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO replica_copies (
 		  id, user_id, node_id, snapshot_id, replica_kind, state, origin,
@@ -578,8 +581,22 @@ func (s *Store) CompleteSnapshotWorkflow(ctx context.Context, p CompleteSnapshot
 		  snapshot_id=EXCLUDED.snapshot_id, replica_kind=EXCLUDED.replica_kind,
 		  state='ready', origin=EXCLUDED.origin, compatibility_state='compatible',
 		  published_at=EXCLUDED.published_at, verified_at=EXCLUDED.verified_at,
-		  updated_at=EXCLUDED.updated_at`, userID, p.TargetNodeID, p.SnapshotID, p.ReplicaKind, origin, p.Now); err != nil {
+		  updated_at=EXCLUDED.updated_at`, userID, p.TargetNodeID, p.SnapshotID, p.ReplicaKind, p.ReplicaOrigin, p.Now); err != nil {
 		return 0, err
+	}
+	if p.ReplicaKind == "archive" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE replica_copies SET state='stale',updated_at=$3
+			WHERE user_id=$1 AND node_id<>$2 AND replica_kind='archive' AND state='ready'`,
+			userID, p.TargetNodeID, p.Now); err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE user_replicas SET state='stale'
+			WHERE user_id=$1 AND node_id<>$2 AND kind='archive' AND state='ready'`,
+			legacyUserID, p.TargetNodeID); err != nil {
+			return 0, err
+		}
 	}
 	if oldSnapshotID.Valid && oldSnapshotID.String != p.SnapshotID {
 		if _, err := tx.ExecContext(ctx, `UPDATE snapshot_manifests SET state='deleted' WHERE id=$1`, oldSnapshotID.String); err != nil {

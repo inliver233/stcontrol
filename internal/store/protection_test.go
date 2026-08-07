@@ -99,6 +99,22 @@ func TestGetImmutableHotStandbyRecoveryPointRequiresOwnedEligibleSnapshot(t *tes
 	assertMockExpectations(t, mock)
 }
 
+func TestListStorageRepairCandidatesRequiresSafeHomeAndNoWriter(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)FROM user_protection_states protection.*home_replica.state='ready'.*archive_snapshot.state='immutable'.*lease.lease_expires_at>\$2.*workflow.workflow_type='snapshot'`).
+		WithArgs(50, now).
+		WillReturnRows(sqlmock.NewRows([]string{"legacy_user_id", "global_user_id", "home_node_id"}).
+			AddRow(int64(7), int64(70), int64(8)))
+	candidates, err := st.ListStorageRepairCandidates(context.Background(), 0, now)
+	if err != nil || len(candidates) != 1 || candidates[0].GlobalUserID != 70 || candidates[0].HomeNodeID != 8 {
+		t.Fatalf("candidates=%+v err=%v", candidates, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
 func TestConfirmReplicaTakeoverReplaysExactOperation(t *testing.T) {
 	t.Parallel()
 	st, mock, closeDB := newMockStore(t)

@@ -64,8 +64,17 @@ func (s *Server) TriggerUserBackup(ctx context.Context, userID, srcNodeID int64,
 		return err
 	}
 
-	// 选择备份目标节点
-	dstNode, dstKind := s.pickBackupTarget(ctx, userID, srcNodeID)
+	// 存储故障修复只允许纯存储目标；普通离线备份仍可使用显式热备。
+	var dstNode *store.Node
+	dstKind := ""
+	if trigger == "storage_repair" {
+		dstNode = s.pickStorageRepairTarget(ctx, srcNodeID)
+		if dstNode != nil {
+			dstKind = "archive"
+		}
+	} else {
+		dstNode, dstKind = s.pickBackupTarget(ctx, userID, srcNodeID)
+	}
 	if dstNode == nil {
 		return nil // 无可用备份目标, 跳过
 	}
@@ -260,10 +269,18 @@ func (s *Server) completeSnapshotExecution(
 	_, err = s.Store.CompleteSnapshotWorkflow(ctx, store.CompleteSnapshotWorkflowParams{
 		WorkflowID: execution.WorkflowID, SnapshotID: execution.SnapshotID,
 		CapabilityHash: execution.CapabilityHash, TargetNodeID: execution.TargetNodeID,
-		ReplicaKind: execution.DestinationKind, ManifestSHA256: manifestDigest, ArchiveSHA256: archiveDigest,
+		ReplicaKind: execution.DestinationKind, ReplicaOrigin: snapshotReplicaOrigin(execution.Trigger),
+		ManifestSHA256: manifestDigest, ArchiveSHA256: archiveDigest,
 		FileCount: receipt.FileCount, TotalBytes: receipt.TotalBytes, Now: time.Now().UTC(),
 	})
 	return err
+}
+
+func snapshotReplicaOrigin(trigger string) string {
+	if trigger == "storage_repair" {
+		return "temporary_failure_protection"
+	}
+	return "configured"
 }
 
 func (s *Server) rotateSnapshotExecutionCapability(ctx context.Context, execution *store.SnapshotWorkflowExecution) error {
@@ -359,6 +376,37 @@ func (s *Server) resumeSnapshotWorkflows(ctx context.Context) {
 	}
 }
 
+func (s *Server) scheduleStorageRepairs(ctx context.Context) bool {
+	candidates, err := s.Store.ListStorageRepairCandidates(ctx, 50, time.Now().UTC())
+	if err != nil {
+		return false
+	}
+	nodes, err := s.Store.ListNodes(ctx)
+	if err != nil {
+		return false
+	}
+	scheduled := false
+	for _, candidate := range candidates {
+		candidate := candidate
+		if chooseStorageRepairTarget(nodes, candidate.HomeNodeID) == nil {
+			continue
+		}
+		select {
+		case s.snapshotSlots <- struct{}{}:
+			scheduled = true
+			go func() {
+				defer func() { <-s.snapshotSlots }()
+				_ = s.TriggerUserBackup(
+					ctx, candidate.LegacyUserID, candidate.HomeNodeID, "storage_repair",
+				)
+			}()
+		default:
+			return scheduled
+		}
+	}
+	return scheduled
+}
+
 func (s *Server) failSnapshotWorkflow(ctx context.Context, job *store.BackupJob, workflowID, code, summary string) {
 	if current, _ := s.Store.GetBackupJob(ctx, job.ID); current != nil && current.Status == "aborted" {
 		_ = s.Store.CancelSnapshotWorkflow(ctx, workflowID, "用户恢复使用，取消未发布快照", time.Now().UTC())
@@ -422,4 +470,27 @@ func (s *Server) pickBackupTarget(ctx context.Context, userID, srcNodeID int64) 
 		}
 	}
 	return nil, ""
+}
+
+func (s *Server) pickStorageRepairTarget(ctx context.Context, srcNodeID int64) *store.Node {
+	nodes, err := s.Store.ListNodes(ctx)
+	if err != nil {
+		return nil
+	}
+	return chooseStorageRepairTarget(nodes, srcNodeID)
+}
+
+func chooseStorageRepairTarget(nodes []*store.Node, srcNodeID int64) *store.Node {
+	var best *store.Node
+	for _, node := range nodes {
+		if node == nil || node.ID == srcNodeID || node.Role != "storage" || !node.IsBackupTarget ||
+			node.TransferURL == "" || !nodeAcceptsNewData(node) {
+			continue
+		}
+		if best == nil || (best.CapacityState == "busy" && node.CapacityState == "open") ||
+			(best.CapacityState == node.CapacityState && node.ID < best.ID) {
+			best = node
+		}
+	}
+	return best
 }
