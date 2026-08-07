@@ -80,17 +80,55 @@ type NodeInfo struct {
 
 // RegisterAgentRequest 子控首次向总控注册（携带一次性令牌）。
 type RegisterAgentRequest struct {
-	Token    string   `json:"token"` // 一次性注册令牌
-	Name     string   `json:"name"`
-	Role     string   `json:"role"` // compute|storage
-	Info     NodeInfo `json:"info"`
-	AgentURL string   `json:"agent_url"` // 子控回调地址
+	Token       string   `json:"token"` // 一次性注册令牌
+	Role        string   `json:"role"`  // compute|storage
+	Fingerprint string   `json:"fingerprint"`
+	Info        NodeInfo `json:"info"`
 }
 
 // RegisterAgentResponse 总控返回分配的身份。
 type RegisterAgentResponse struct {
-	NodeID   int64  `json:"node_id"`
-	AgentPSK string `json:"agent_psk"` // 该节点专属预共享密钥
+	NodeID               int64  `json:"node_id"`
+	AgentPSK             string `json:"agent_psk"` // 该节点专属预共享密钥
+	CredentialVersion    int64  `json:"credential_version"`
+	ControllerGeneration int64  `json:"controller_generation"`
+}
+
+// NodeFingerprint returns a stable, non-secret enrollment fingerprint from
+// facts the Agent can probe before it owns a credential.
+func NodeFingerprint(info NodeInfo) string {
+	value := info.OS + "\n" + info.Arch + "\n" + info.DataRoot + "\n" + info.TavernVersion
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+type LeaseCommandRequest struct {
+	WorkerID          string `json:"worker_id"`
+	HighestGeneration int64  `json:"highest_generation"`
+}
+
+type AgentCommand struct {
+	ID                   string          `json:"id"`
+	OperationID          string          `json:"operation_id"`
+	CommandType          string          `json:"command_type"`
+	EncryptedPayload     json.RawMessage `json:"encrypted_payload"`
+	PayloadSHA256        string          `json:"payload_sha256"`
+	Attempt              int             `json:"attempt"`
+	ControllerGeneration int64           `json:"controller_generation"`
+	LeaseUntil           time.Time       `json:"lease_until"`
+	ExpiresAt            time.Time       `json:"expires_at"`
+}
+
+type AckCommandRequest struct {
+	WorkerID             string `json:"worker_id"`
+	ControllerGeneration int64  `json:"controller_generation"`
+}
+
+type FinishCommandRequest struct {
+	WorkerID             string          `json:"worker_id"`
+	ControllerGeneration int64           `json:"controller_generation"`
+	Succeeded            bool            `json:"succeeded"`
+	Result               json.RawMessage `json:"result"`
 }
 
 // ScanExistingUser 子控扫描到的既有用户目录。
@@ -105,15 +143,26 @@ type ScanExistingUser struct {
 type ProvisionUserRequest struct {
 	Handle         string `json:"handle"`
 	Name           string `json:"name"`
-	Password       string `json:"password"`                  // 账号密码用户为真实密码, OAuth 用户为随机占位
-	InvitationCode string `json:"invitation_code,omitempty"` // 若节点要求
+	PasswordHash   string `json:"password_hash,omitempty"`
+	PasswordSalt   string `json:"password_salt,omitempty"`
+	OAuthProvider  string `json:"oauth_provider,omitempty"`
+	OAuthSubject   string `json:"oauth_subject,omitempty"`
+	InvitationCode string `json:"invitation_code,omitempty"`
 }
 
 // ProvisionUserResponse 子控返回代注册结果。
 type ProvisionUserResponse struct {
-	OK     bool   `json:"ok"`
-	Handle string `json:"handle,omitempty"`
-	Error  string `json:"error,omitempty"`
+	OK          bool   `json:"ok"`
+	Handle      string `json:"handle,omitempty"`
+	LocalUserID string `json:"local_user_id,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+type SetPasswordRequest struct {
+	Handle       string `json:"handle"`
+	PasswordHash string `json:"password_hash"`
+	PasswordSalt string `json:"password_salt"`
+	Version      int64  `json:"version"`
 }
 
 // ---------- 备份 ----------

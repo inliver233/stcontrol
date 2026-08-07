@@ -113,8 +113,8 @@ func RandomPassword(n int) (string, error) {
 
 // TicketClaims 票据载荷。
 type TicketClaims struct {
-	Handle string `json:"sub"`   // 节点上的 handle
-	Node   string `json:"aud"`   // 目标节点 base_url
+	Handle string `json:"sub"` // 节点上的 handle
+	Node   string `json:"aud"` // 目标节点 base_url
 	Nonce  string `json:"nonce"`
 	jwt.RegisteredClaims
 }
@@ -163,4 +163,11 @@ func VerifyTicket(secret []byte, tokenStr string) (*TicketClaims, error) {
 func DeriveTicketSecret(psk string) []byte {
 	h := sha256Of([]byte("stcontrol-ticket:" + psk))
 	return h
+}
+
+// DeriveAgentCommandKey derives an AES-256 key used only for queued command
+// payloads. It prevents credentials/password material from appearing in the
+// command table as plaintext.
+func DeriveAgentCommandKey(psk string) []byte {
+	return sha256Of([]byte("stcontrol-agent-command:v1:" + psk))
 }

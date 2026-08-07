@@ -3,6 +3,7 @@ package controller
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
@@ -56,21 +57,8 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 同步到节点(若配置了家节点)
-	if user.HomeNodeID.Valid {
-		node, err := s.Store.GetNodeByID(ctx, user.HomeNodeID.Int64)
-		if err == nil && node != nil && node.Status == "online" {
-			body := map[string]string{"handle": user.Username, "password": req.NewPassword}
-			_, status, callErr := s.agent.callAgent(ctx, node.ID, node.AgentPSK, node.AgentURL,
-				http.MethodPost, "/agent/set-password", body)
-			if callErr != nil || status != http.StatusOK {
-				protocol.WriteError(w, http.StatusBadGateway, "同步密码到节点失败")
-				return
-			}
-		}
-	}
-
-	// 更新总控凭据
+	// Update the authoritative verifier first. Managed nodes reject their native
+	// password route, so a lagging node copy cannot become an alternate login.
 	pwHash, err := crypto.HashPassword(req.NewPassword)
 	if err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "密码哈希失败")
@@ -79,6 +67,34 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if err := s.Store.UpdateUserPassword(ctx, userID, pwHash); err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "更新密码失败")
 		return
+	}
+	nodePasswordHash, nodePasswordSalt, err := crypto.SillyTavernPasswordMaterial(req.NewPassword)
+	if err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "密码材料生成失败")
+		return
+	}
+	if user.HomeNodeID.Valid {
+		node, err := s.Store.GetNodeByID(ctx, user.HomeNodeID.Int64)
+		if err == nil && node != nil && node.Status == "online" {
+			version, err := s.Store.SetNodeAccountProvisioning(
+				ctx, user.GlobalID, node.ID, nodePasswordHash, nodePasswordSalt, "", "", time.Now().UTC(),
+			)
+			if err != nil {
+				protocol.WriteError(w, http.StatusInternalServerError, "记录节点密码版本失败")
+				return
+			}
+			if _, err := s.runAgentCommand(ctx, node, "set_password", protocol.SetPasswordRequest{
+				Handle: user.Username, PasswordHash: nodePasswordHash, PasswordSalt: nodePasswordSalt, Version: version,
+			}, 45*time.Second); err != nil {
+				_ = s.Store.MarkNodeAccountError(ctx, user.GlobalID, node.ID, time.Now().UTC())
+				protocol.WriteError(w, http.StatusServiceUnavailable, "密码已更新，节点同步待重试")
+				return
+			}
+			if err := s.Store.ActivateNodeAccount(ctx, user.ID, user.GlobalID, node.ID, "", time.Now().UTC()); err != nil {
+				protocol.WriteError(w, http.StatusInternalServerError, "节点密码状态更新失败")
+				return
+			}
+		}
 	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

@@ -6,40 +6,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
 	"stcontrol/internal/protocol"
 )
 
-// RegisterToController 子控首次向总控注册（用一次性令牌）, 获取 node_id + agent_psk。
+// RegisterToController 子控首次向总控注册（用一次性、节点/角色限定令牌）。
 // 成功后回填到配置。
-func (a *Agent) RegisterToController(ctx context.Context, token, name, agentURL string) error {
+func (a *Agent) RegisterToController(ctx context.Context, token string) error {
 	info, err := ProbeTavern(a.Cfg.TavernDir)
 	if err != nil {
 		info = &protocol.NodeInfo{}
 	}
 
 	reqBody := protocol.RegisterAgentRequest{
-		Token:    token,
-		Name:     name,
-		Role:     a.Cfg.Role,
-		Info:     *info,
-		AgentURL: agentURL,
+		Token: token, Role: a.Cfg.Role, Info: *info,
+		Fingerprint: protocol.NodeFingerprint(*info),
 	}
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return err
 	}
 
-	url := a.Cfg.ControllerURL + "/api/agent/register"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	endpoint, err := a.controllerEndpoint("/api/agent/register")
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := a.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("连接总控失败: %w", err)
 	}
@@ -54,5 +52,7 @@ func (a *Agent) RegisterToController(ctx context.Context, token, name, agentURL 
 	}
 	a.Cfg.NodeID = out.NodeID
 	a.Cfg.AgentPSK = out.AgentPSK
+	a.Cfg.CredentialVersion = out.CredentialVersion
+	a.Cfg.ControllerGeneration = out.ControllerGeneration
 	return nil
 }

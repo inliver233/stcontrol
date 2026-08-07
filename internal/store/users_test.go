@@ -39,7 +39,7 @@ func TestCreateUserWritesNormalizedFactsWithoutReversiblePassword(t *testing.T) 
 		WithArgs(int64(70), "password", "alice", "bcrypt-hash").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(`INSERT INTO node_accounts`).
-		WithArgs(int64(70), int64(12), "alice").
+		WithArgs(int64(70), int64(12), "alice", "active").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -93,6 +93,53 @@ func TestUpdateUserPasswordClearsLegacyCiphertextAndVersionsIdentity(t *testing.
 
 	if err := store.UpdateUserPassword(context.Background(), 7, "new-hash"); err != nil {
 		t.Fatalf("UpdateUserPassword: %v", err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestNodeAccountProvisioningVersionsMaterialAndActivatesAtomically(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 7, 19, 30, 0, 0, time.UTC)
+	mock.ExpectQuery(`UPDATE node_accounts`).
+		WithArgs(int64(70), int64(12), "node-hash", "node-salt", []byte(`{}`), now).
+		WillReturnRows(sqlmock.NewRows([]string{"password_material_version"}).AddRow(int64(4)))
+	version, err := st.SetNodeAccountProvisioning(
+		context.Background(), 70, 12, "node-hash", "node-salt", "", "", now,
+	)
+	if err != nil || version != 4 {
+		t.Fatalf("version=%d err=%v", version, err)
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE node_accounts SET status='active'`).
+		WithArgs(int64(70), int64(12), "local-user-id", now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE users SET status='active'`).WithArgs(int64(7)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE global_users SET status='active'`).WithArgs(int64(70), now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	if err := st.ActivateNodeAccount(context.Background(), 7, 70, 12, "local-user-id", now); err != nil {
+		t.Fatalf("ActivateNodeAccount: %v", err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestOAuthNodeAccountProvisioningHasNoPasswordMaterial(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 7, 19, 30, 0, 0, time.UTC)
+	mock.ExpectQuery(`UPDATE node_accounts`).
+		WithArgs(int64(70), int64(12), nil, nil, []byte(`{"discord":"stable-subject"}`), now).
+		WillReturnRows(sqlmock.NewRows([]string{"password_material_version"}).AddRow(int64(0)))
+	version, err := st.SetNodeAccountProvisioning(
+		context.Background(), 70, 12, "", "", "discord", "stable-subject", now,
+	)
+	if err != nil || version != 0 {
+		t.Fatalf("version=%d err=%v", version, err)
 	}
 	assertMockExpectations(t, mock)
 }

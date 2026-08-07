@@ -1,13 +1,13 @@
 package controller
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
@@ -75,10 +75,8 @@ func (s *Server) handleAdminCreateNode(w http.ResponseWriter, r *http.Request) {
 	if n.Role != "compute" && n.Role != "storage" {
 		n.Role = "compute"
 	}
-	if n.AgentPSK == "" {
-		psk, _ := crypto.RandomPassword(48)
-		n.AgentPSK = psk
-	}
+	n.AgentPSK = ""
+	n.AgentURL = ""
 	n.Status = "pending"
 	if err := s.Store.CreateNode(r.Context(), &n); err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "创建节点失败")
@@ -110,18 +108,43 @@ func (s *Server) handleAdminUpdateNode(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminNodeRegisterToken 为节点生成一次性注册令牌 + 安装命令。
 func (s *Server) handleAdminNodeRegisterToken(w http.ResponseWriter, r *http.Request) {
+	nodeID, err := parseID(chi.URLParam(r, "id"))
+	if err != nil || nodeID <= 0 {
+		protocol.WriteError(w, http.StatusBadRequest, "非法节点 ID")
+		return
+	}
+	node, err := s.Store.GetNodeByID(r.Context(), nodeID)
+	if err != nil || node == nil || (node.Role != "compute" && node.Role != "storage") {
+		protocol.WriteError(w, http.StatusNotFound, "节点不存在")
+		return
+	}
 	token, err := randomBearerToken()
 	if err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "生成令牌失败")
 		return
 	}
-	expires := time.Now().Add(24 * time.Hour)
-	if err := s.Store.CreateRegisterToken(r.Context(), token, "admin 生成", expires); err != nil {
+	tokenID, err := newUUID()
+	if err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "生成令牌失败")
+		return
+	}
+	operationID, err := newUUID()
+	if err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "生成令牌失败")
+		return
+	}
+	now := time.Now().UTC()
+	expires := now.Add(15 * time.Minute)
+	tokenHash := sha256.Sum256([]byte(token))
+	if err := s.Store.CreateEnrollmentToken(r.Context(), store.CreateEnrollmentTokenParams{
+		ID: tokenID, OperationID: operationID, TokenHash: tokenHash[:],
+		ExpectedNodeID: node.ID, ExpectedRole: node.Role, ExpiresAt: expires, Now: now,
+	}); err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "生成令牌失败")
 		return
 	}
 	installCmd := "curl -sSL " + s.Cfg.PublicURL + "/install.sh | bash -s -- --controller " +
-		s.Cfg.PublicURL + " --token " + token + " --role compute"
+		s.Cfg.PublicURL + " --token " + token + " --role " + node.Role
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{
 		"token": token, "expires_at": expires, "install_cmd": installCmd,
 	})
@@ -140,12 +163,12 @@ func (s *Server) handleAdminScanExisting(w http.ResponseWriter, r *http.Request)
 		protocol.WriteError(w, http.StatusNotFound, "节点不存在")
 		return
 	}
-	users, err := s.agent.scanExisting(r.Context(), node.ID, node.AgentPSK, node.AgentURL)
+	result, err := s.runAgentCommand(r.Context(), node, "scan_existing", struct{}{}, 30*time.Second)
 	if err != nil {
-		protocol.WriteError(w, http.StatusBadGateway, "扫描失败: "+err.Error())
+		protocol.WriteError(w, http.StatusBadGateway, "扫描失败，节点命令通道暂不可用")
 		return
 	}
-	protocol.WriteJSON(w, http.StatusOK, map[string]any{"users": users})
+	protocol.WriteJSON(w, http.StatusOK, map[string]any{"users": result.Users})
 }
 
 // handleAdminListUsers 列出用户。
@@ -221,10 +244,18 @@ func (s *Server) handleAdminAbortBackup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	node, err := s.Store.GetNodeByID(r.Context(), job.SrcNodeID)
-	if err == nil && node != nil {
-		_ = s.agent.abortBackup(r.Context(), node.ID, node.AgentPSK, node.AgentURL, job.ID)
+	if err != nil || node == nil {
+		protocol.WriteError(w, http.StatusConflict, "源节点不可用")
+		return
 	}
-	_ = s.Store.UpdateBackupJobStatus(r.Context(), job.ID, "aborted", 0, 0, 0, "管理员中止")
+	if _, err := s.runAgentCommand(r.Context(), node, "abort_backup", map[string]int64{"job_id": job.ID}, 30*time.Second); err != nil {
+		protocol.WriteError(w, http.StatusBadGateway, "中止命令未被节点确认")
+		return
+	}
+	if err := s.Store.UpdateBackupJobStatus(r.Context(), job.ID, "aborted", 0, 0, 0, "管理员中止"); err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "更新任务状态失败")
+		return
+	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

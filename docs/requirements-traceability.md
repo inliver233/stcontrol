@@ -25,12 +25,12 @@
 | R07 | 快照工作流为 `scheduled -> quiescing -> drained -> snapshotting -> transferring -> verifying -> publishing -> succeeded`，并支持 `retry_wait/cancelled/failed` | 合法状态机、租约认领、恢复调度 | 本地持久状态、幂等步骤、双端取消与清理 | 冻结/快照内部能力 | 管理员可见阶段与安全错误摘要 | workflows、workflow_steps、operation ID、snapshot ID | 每一分支、重复投递、重启恢复 | 现有 `pending/running/verifying/done` 且 Agent 任务只在内存，`错误` |
 | R08 | 使用任务临时目录、不可变 snapshot ID、manifest、端到端校验；验证成功后同文件系统原子发布；旧副本后删 | 保存快照与发布事实，拒绝半副本 | 安全打包、限额解包、manifest 重算、原子换代 | 提供受控快照边界 | 显示同步/恢复进度 | snapshot_manifests、replica_copies、发布世代 | 路径穿越、符号链接、炸弹、超大文件、磁盘满、校验失败 | 接收端没有实际验签/manifest 校验，直接覆盖正式目录并留下 `.bak-*`，`错误` |
 | R09 | 默认活动计算副本 + 一个纯存储副本；只保留最新成功副本，不提供 PITR/误删回退 | 角色/配额调度、高低水位、冷却期 | 上报实际可用字节和分配配额 | 无额外核心改造 | 显示保护状态，不承诺历史恢复 | 副本来源、保留原因、保护级别、清理条件 | 存储满、迁移失败、旧副本保留、稳定后清理 | 配置仍保留 4 个历史版本；目标取第一台在线节点，无配额/滞回，`错误` |
-| R10 | 直连 Agent-to-Agent 优先，无法直连才用受控、加密、短期中转；控制面与数据面隔离 | 下发每任务短期传输授权和路径选择 | 主动控制连接；数据面用任务能力凭证/TLS | 仅本机内部接口 | 管理员查看路径和进度，不暴露密钥 | Agent 连接、命令 ACK、任务 capability、nonce 消费 | NAT、断线重连、重放、过期授权、中转清理 | Controller 直接访问 `agent_url`，并把目标永久 PSK交给源节点；`错误` |
-| R11 | Agent 一次性短期 enrollment 后自动接入；高权限但仅固定能力、路径 allowlist、可取消、可审计，绝不任意 shell | 绑定角色/任务/指纹原子消费 token；轮换凭证 | 主动出站、固定命令、路径根校验、本地审计 | loopback/Unix socket 能力 API | 一行安装及清晰诊断 | enrollment、credential version、revocation、capability | token 重放/错角色/路径越权/任意命令 | token 只存明文且先消费后建节点；角色/指纹未绑定；安装脚本开放 `0.0.0.0:9100`，`错误` |
+| R10 | 直连 Agent-to-Agent 优先，无法直连才用受控、加密、短期中转；控制面与数据面隔离 | 下发每任务短期传输授权和路径选择 | 主动控制连接；数据面用任务能力凭证/TLS | 仅本机内部接口 | 管理员查看路径和进度，不暴露密钥 | Agent 连接、命令 ACK、任务 capability、nonce 消费 | NAT、断线重连、重放、过期授权、中转清理 | 控制命令已改为 Agent 主动长轮询、持久租约/ACK/结果和世代围栏，扫描、账号供应、改密、中止备份均只入队；但旧备份数据面仍向源节点转发目标永久 PSK，必须由每任务 capability 替换，故整体仍为 `错误` |
+| R11 | Agent 一次性短期 enrollment 后自动接入；高权限但仅固定能力、路径 allowlist、可取消、可审计，绝不任意 shell | 绑定角色/任务/指纹原子消费 token；轮换凭证 | 主动出站、固定命令、路径根校验、本地审计 | loopback/Unix socket 能力 API | 一行安装及清晰诊断 | enrollment、credential version、revocation、capability | token 重放/错角色/路径越权/任意命令 | enrollment token 仅存 SHA-256、15 分钟、绑定预建节点/角色/可选指纹并在 serializable 事务单次消费；凭据加密存储且带版本/世代。Agent 持久保存最高世代、worker ID 和最近 1000 个命令结果，固定命令拒绝未知类型；安装/TLS、本地审计和传输 capability 未完成，`部分` |
 | R12 | 单活动主控 + 可选被动副控；单调 `controller_generation`，更高世代才接管，恢复后对账/轮换/撤票 | 控制世代事务和 rebuild 状态 | 持久保存最高世代并拒绝旧命令 | 节点模式与票据世代检查 | 管理员接管/重建状态 | controller_epochs、恢复锁、key version | 双主、旧命令、数据库恢复、凭证轮换 | 已持久化唯一 active generation，登录短码、活动租约和 Controller session 均绑定 active generation，旧世代会话/票据失败关闭；被动副控、原子晋升、恢复对账与密钥轮换仍待实现，`部分` |
 | R13 | 短失联维持合法会话但暂停新登录/选点/备份；确认长期失联进入独立模式；恢复为 `independent-draining` | 失联状态机与新操作门禁 | 多信号确认、最后活动归属、有限同伴协调 | managed/independent/draining 状态机 | 简明灾难提示和接管确认 | 模式世代、证据、用户接管事件 | 抖动、分区、长期失联、drain、双故障 | 完全缺失，`缺失` |
-| R14 | 统一身份支持密码/Discord/LinuxDo，最多绑定三种且至少一种，无邮箱；密码同步兼容 scrypt hash/salt，不存可逆明文 | 身份表、绑定/解绑、管理员恢复、版本化改密 saga | 精确读写兼容密码材料 | 内部账号供应/查询/改密；受控模式禁原生改密 | 三种登录、绑定管理、无邮箱文案 | auth_identities、node_accounts、password material version | 三种注册登录、绑定上限、部分改密失败 | 已建立 normalized identity/node account 表、新注册不写可逆密码并清空旧 ciphertext。Discord/LinuxDo state 和待选节点注册已持久化、一次性、绑定主控世代；Discord 可校验公会。多身份绑定/解绑、scrypt 同步和改密 saga 仍缺，`部分` |
-| R15 | 注册由用户选择合格节点；邀请码策略属于节点，未知/过期/读取失败时禁止注册；不确定结果幂等查询/重试 | 注册 saga，不静默换节点 | 上报策略版本并幂等供应账号 | 内部供应接口复用真实校验且 operation ID 单次消费 | 重新选节点、pending/确认中/冲突状态 | registration workflows、policy version、node account mapping | 响应丢失、重复请求、邀请码只消费一次 | 当前总控自己管理邀请码，远程调用公开注册，先建节点后建总控用户且无幂等，`错误` |
+| R14 | 统一身份支持密码/Discord/LinuxDo，最多绑定三种且至少一种，无邮箱；密码同步兼容 scrypt hash/salt，不存可逆明文 | 身份表、绑定/解绑、管理员恢复、版本化改密 saga | 精确读写兼容密码材料 | 内部账号供应/查询/改密；受控模式禁原生改密 | 三种登录、绑定管理、无邮箱文案 | auth_identities、node_accounts、password material version | 三种注册登录、绑定上限、部分改密失败 | 密码账号同时生成总控 bcrypt verifier 与兼容 Node `scryptSync(password.normalize(), salt, 64)` 的 NFC+scrypt 材料；队列仅存 Agent 专用 AES-GCM envelope，OAuth 节点账号无占位密码。节点材料版本和 pending/active/error 已落库；多身份绑定/解绑、持久改密重试和 SillyTavern adapter 接入仍缺，`部分` |
+| R15 | 注册由用户选择合格节点；邀请码策略属于节点，未知/过期/读取失败时禁止注册；不确定结果幂等查询/重试 | 注册 saga，不静默换节点 | 上报策略版本并幂等供应账号 | 内部供应接口复用真实校验且 operation ID 单次消费 | 重新选节点、pending/确认中/冲突状态 | registration workflows、policy version、node account mapping | 响应丢失、重复请求、邀请码只消费一次 | 节点账号现在先以 recovering/pending 事实落库，再通过密文持久命令调用仅 loopback 的签名 adapter，成功才原子激活，失败标记 error；但邀请码仍由总控消费、注册 workflow/reconciler 和 adapter 真实实现未完成，`部分` |
 | R16 | 老节点自动扫描账号库；OAuth stable subject 自动关联；同名密码账号必须证明控制权；UUID 是全局主键 | 导入批次、歧义状态、认领/合并工作流 | 扫描 `_storage` 账号、OAuth、管理员与目录摘要 | 安全内部扫描接口 | 冲突/认领/合并 UI | node_accounts、import_batches、identity conflicts | 多节点同名、OAuth 关联、不可覆盖旧账号 | 只扫用户目录且结果仅写审计，`缺失` |
 | R17 | 多个同级总控管理员；节点原生管理员逐节点可撤销关联；短期管理员票据进入后台，不保存明文密码 | 持久管理员会话、关联验证、撤销和审计 | 校验节点当前管理员权限 | 管理员用途专用票据 | 管理员/节点关联状态与跳转 | admins、admin_node_links、admin tickets | 权限降级、撤销、票据类型混淆 | Controller session 已改为数据库持久化、仅存 token/CSRF hash、绑定主控世代并支持撤销/清理；管理员登录、多管理员管理、节点关联和专用票据仍待实现，`部分` |
 | R18 | 健康分离连通性、角色、容量、兼容、用户副本、运营状态；约 50% 降权，持续 60% 硬门槛并有滞回/冷却/磁盘水位 | 窗口指标、准入原因、可解释推荐 | 上报窗口/峰值/字节/配额/在线数/队列/延迟/版本指纹 | 能力/版本/插件指纹 | 用户只看开放/繁忙/满载/维护/备份/故障 | metrics windows、policy version、compatibility | 波动、滞回、磁盘余量、容量压测 | 仅三个瞬时百分比和一个 status，`错误` |
@@ -41,10 +41,10 @@
 
 ## 当前基线证据
 
-- `go test ./...`：通过，但只有 7 个低层往返测试，绝大多数 package 显示 `[no test files]`。
+- `go test ./...`：通过；已覆盖持久会话/OAuth、活动租约/票据、enrollment、命令租约/围栏、Agent 重启去重、密文载荷和兼容 scrypt 材料，但尚未达到最终 80% 覆盖率。
 - `npm run build`：通过，只证明 TypeScript/Vite 能构建，不证明页面行为、权限、错误状态或后端接线。
 - `Sillytarven-online` 当前存在既有未提交 `src/server-main.js`、`src/endpoints/federated-login.js`、`简要开发思路.md`；它们按协作规则视为其他工具的 WIP，尚未覆盖或提交。
-- `stcontrol` 指定远端 `https://github.com/inliver233/stcontrol.git` 当前 `ls-remote` 无分支引用；本地目录在接手时没有 `.git`。
+- `stcontrol` 已建立 `main` 并持续推送至指定远端 `https://github.com/inliver233/stcontrol.git`。
 
 ## 完成判定规则
 

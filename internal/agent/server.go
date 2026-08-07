@@ -95,15 +95,12 @@ func (a *Agent) handleProvisionUser(w http.ResponseWriter, r *http.Request) {
 
 // handleSetPassword 改密同步。
 func (a *Agent) handleSetPassword(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Handle   string `json:"handle"`
-		Password string `json:"password"`
-	}
+	var req protocol.SetPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	if err := a.setPassword(r.Context(), req.Handle, req.Password); err != nil {
+	if err := a.setPassword(r.Context(), &req); err != nil {
 		protocol.WriteError(w, http.StatusNotImplemented, err.Error())
 		return
 	}
@@ -196,4 +193,3 @@ func (a *Agent) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
-

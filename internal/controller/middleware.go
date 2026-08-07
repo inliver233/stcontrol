@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	controlcrypto "stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
@@ -80,7 +81,12 @@ func (s *Server) agentAuthMiddleware(next http.Handler) http.Handler {
 		_ = r.Body.Close()
 		r.Body = io.NopCloser(bytes.NewReader(body))
 
-		if err := protocol.VerifyRequest(r, node.AgentPSK, body); err != nil {
+		psk, err := s.agentPSK(r.Context(), node)
+		if err != nil {
+			protocol.WriteError(w, http.StatusServiceUnavailable, "节点认证暂不可用")
+			return
+		}
+		if psk == "" || protocol.VerifyRequest(r, psk, body) != nil {
 			protocol.WriteError(w, http.StatusUnauthorized, "签名校验失败")
 			return
 		}
@@ -106,6 +112,24 @@ func (s *Server) agentAuthMiddleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), ctxKey("stcontrol-node"), node)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (s *Server) agentPSK(ctx context.Context, node *store.Node) (string, error) {
+	if node == nil {
+		return "", nil
+	}
+	if node.AgentPSK != "" {
+		return node.AgentPSK, nil
+	}
+	ciphertext, _, _, err := s.Store.GetActiveAgentCredential(ctx, node.ID)
+	if err != nil || len(ciphertext) == 0 {
+		return "", err
+	}
+	plaintext, err := controlcrypto.Decrypt(s.secretKey, string(ciphertext))
+	if err != nil {
+		return "", err
+	}
+	return string(plaintext), nil
 }
 
 // currentNode 从上下文取节点。

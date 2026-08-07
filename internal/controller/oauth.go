@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
@@ -267,7 +266,7 @@ func (s *Server) clearOAuthPendingCookie(w http.ResponseWriter, r *http.Request)
 	s.setOAuthPendingCookie(w, r, "", -1)
 }
 
-// provisionOAuthUser 为 OAuth 新用户生成 handle、随机占位密码, 代注册到节点并建总控用户。
+// provisionOAuthUser creates a passwordless node identity for an OAuth user.
 func (s *Server) provisionOAuthUser(ctx context.Context, provider, oauthID, displayName, avatarURL string, nodeID int64) (*store.User, error) {
 	node, err := s.Store.GetNodeByID(ctx, nodeID)
 	if err != nil || node == nil {
@@ -297,17 +296,6 @@ func (s *Server) provisionOAuthUser(ctx context.Context, provider, oauthID, disp
 		}
 		handle = fmt.Sprintf("%s-%s", base, suffix)
 	}
-	// 随机占位密码(节点侧, 用户用不到)
-	randPw, err := crypto.RandomPassword(24)
-	if err != nil {
-		return nil, err
-	}
-	provReq := &protocol.ProvisionUserRequest{
-		Handle: handle, Name: displayName, Password: randPw,
-	}
-	if _, err := s.agent.provisionUser(ctx, node.ID, node.AgentPSK, node.AgentURL, provReq); err != nil {
-		return nil, err
-	}
 	user := &store.User{
 		Username:     handle,
 		DisplayName:  displayName,
@@ -315,9 +303,25 @@ func (s *Server) provisionOAuthUser(ctx context.Context, provider, oauthID, disp
 		OAuthID:      sql.NullString{String: oauthID, Valid: true},
 		AvatarURL:    sql.NullString{String: avatarURL, Valid: avatarURL != ""},
 		HomeNodeID:   sql.NullInt64{Int64: node.ID, Valid: true},
-		Status:       "active",
+		Status:       "recovering",
 	}
 	if err := s.Store.CreateUser(ctx, user); err != nil {
+		return nil, err
+	}
+	if _, err := s.Store.SetNodeAccountProvisioning(
+		ctx, user.GlobalID, node.ID, "", "", provider, oauthID, time.Now().UTC(),
+	); err != nil {
+		return nil, err
+	}
+	provReq := &protocol.ProvisionUserRequest{
+		Handle: handle, Name: displayName, OAuthProvider: provider, OAuthSubject: oauthID,
+	}
+	result, err := s.runAgentCommand(ctx, node, "provision_user", provReq, 45*time.Second)
+	if err != nil {
+		_ = s.Store.MarkNodeAccountError(ctx, user.GlobalID, node.ID, time.Now().UTC())
+		return nil, fmt.Errorf("节点账号创建未完成")
+	}
+	if err := s.Store.ActivateNodeAccount(ctx, user.ID, user.GlobalID, node.ID, result.LocalUserID, time.Now().UTC()); err != nil {
 		return nil, err
 	}
 	_ = s.Store.UpsertReplica(ctx, &store.UserReplica{

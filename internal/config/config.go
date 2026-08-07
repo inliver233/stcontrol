@@ -76,16 +76,18 @@ type AdminConfig struct {
 
 // AgentConfig 子控配置。
 type AgentConfig struct {
-	ControllerURL string `yaml:"controller_url"` // 总控地址
-	Listen        string `yaml:"listen"`         // 子控监听 127.0.0.1:9100
-	Role          string `yaml:"role"`           // compute|storage
-	NodeID        int64  `yaml:"node_id"`        // 注册后写入
-	AgentPSK      string `yaml:"agent_psk"`      // 注册后写入
-	TavernDir     string `yaml:"tavern_dir"`     // 酒馆安装目录(含 config.yaml/data)
-	TavernURL     string `yaml:"tavern_url"`     // 酒馆本地地址 http://127.0.0.1:8000
-	BackupDir     string `yaml:"backup_dir"`     // 存储节点备份存放目录
-	HeartbeatSec  int    `yaml:"heartbeat_sec"`  // 默认15
-	DataDir       string `yaml:"data_dir"`       // 子控自身数据目录(状态/临时)
+	ControllerURL        string `yaml:"controller_url"` // 总控地址
+	Listen               string `yaml:"listen"`         // 子控监听 127.0.0.1:9100
+	Role                 string `yaml:"role"`           // compute|storage
+	NodeID               int64  `yaml:"node_id"`        // 注册后写入
+	AgentPSK             string `yaml:"agent_psk"`      // 注册后写入
+	CredentialVersion    int64  `yaml:"credential_version"`
+	ControllerGeneration int64  `yaml:"controller_generation"`
+	TavernDir            string `yaml:"tavern_dir"`    // 酒馆安装目录(含 config.yaml/data)
+	TavernURL            string `yaml:"tavern_url"`    // 酒馆本地地址 http://127.0.0.1:8000
+	BackupDir            string `yaml:"backup_dir"`    // 存储节点备份存放目录
+	HeartbeatSec         int    `yaml:"heartbeat_sec"` // 默认15
+	DataDir              string `yaml:"data_dir"`      // 子控自身数据目录(状态/临时)
 }
 
 // Default 总控默认配置。

@@ -84,13 +84,18 @@ func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Existing direct abort behavior is retained until the outbound-command
-	// migration lands; failure is deliberately best-effort and never changes the
-	// atomic lease/ticket transaction below.
+	// Backup mutation must stop before a writer lease is handed to the browser.
+	// The abort is delivered over the Agent-initiated command channel.
 	if s.Cfg.Backup.AbortOnLogin {
 		if job, _ := s.Store.FindRunningBackupForUserOnNode(ctx, legacyUserID, node.ID); job != nil {
-			_ = s.agent.abortBackup(ctx, node.ID, node.AgentPSK, node.AgentURL, job.ID)
-			_ = s.Store.UpdateBackupJobStatus(ctx, job.ID, "aborted", 0, 0, 0, "用户登录,中止备份")
+			if _, err := s.runAgentCommand(ctx, node, "abort_backup", map[string]int64{"job_id": job.ID}, 15*time.Second); err != nil {
+				protocol.WriteError(w, http.StatusConflict, "节点正在结束备份，请稍后重试")
+				return
+			}
+			if err := s.Store.UpdateBackupJobStatus(ctx, job.ID, "aborted", 0, 0, 0, "用户登录,中止备份"); err != nil {
+				protocol.WriteError(w, http.StatusInternalServerError, "备份状态更新失败")
+				return
+			}
 		}
 	}
 

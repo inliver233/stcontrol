@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // CreateUser 创建用户。
@@ -54,13 +56,116 @@ func (s *Store) CreateUser(ctx context.Context, u *User) error {
 	}
 
 	if u.HomeNodeID.Valid {
+		nodeAccountStatus := "active"
+		if u.Status == "recovering" {
+			nodeAccountStatus = "pending"
+		}
 		if _, err := tx.ExecContext(ctx, `
 		  INSERT INTO node_accounts (user_id, node_id, local_handle, status)
-		  VALUES ($1,$2,$3,'active')`, u.GlobalID, u.HomeNodeID.Int64, u.Username); err != nil {
+		  VALUES ($1,$2,$3,$4)`, u.GlobalID, u.HomeNodeID.Int64, u.Username, nodeAccountStatus); err != nil {
 			return fmt.Errorf("create node account mapping: %w", err)
 		}
 	}
 	return tx.Commit()
+}
+
+// SetNodeAccountProvisioning records desired node-local authentication
+// material before dispatch. It returns the fenced password material version.
+func (s *Store) SetNodeAccountProvisioning(
+	ctx context.Context,
+	globalUserID, nodeID int64,
+	passwordHash, passwordSalt, oauthProvider, oauthSubject string,
+	now time.Time,
+) (int64, error) {
+	passwordMode := passwordHash != "" && passwordSalt != "" && oauthProvider == "" && oauthSubject == ""
+	oauthMode := passwordHash == "" && passwordSalt == "" &&
+		(oauthProvider == "discord" || oauthProvider == "linuxdo") && oauthSubject != ""
+	if globalUserID <= 0 || nodeID <= 0 || (!passwordMode && !oauthMode) {
+		return 0, fmt.Errorf("invalid node account material")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var hashValue, saltValue any
+	oauthSubjects := map[string]string{}
+	if passwordMode {
+		hashValue = passwordHash
+		saltValue = passwordSalt
+	} else {
+		oauthSubjects[oauthProvider] = oauthSubject
+	}
+	oauthJSON, err := json.Marshal(oauthSubjects)
+	if err != nil {
+		return 0, err
+	}
+	var version int64
+	err = s.DB.QueryRowContext(ctx, `
+		UPDATE node_accounts
+		SET status='pending', password_hash=$3, password_salt=$4,
+		  oauth_subjects=$5,
+		  password_material_version=CASE WHEN $3 IS NULL
+		    THEN password_material_version ELSE password_material_version+1 END,
+		  account_version=account_version+1, updated_at=$6
+		WHERE user_id=$1 AND node_id=$2
+		RETURNING password_material_version`,
+		globalUserID, nodeID, hashValue, saltValue, oauthJSON, now).Scan(&version)
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("node account mapping not found")
+	}
+	return version, err
+}
+
+func (s *Store) ActivateNodeAccount(
+	ctx context.Context,
+	legacyUserID, globalUserID, nodeID int64,
+	localUserID string,
+	now time.Time,
+) error {
+	if legacyUserID <= 0 || globalUserID <= 0 || nodeID <= 0 {
+		return fmt.Errorf("invalid node account activation")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE node_accounts SET status='active', local_user_id=COALESCE($3, local_user_id),
+		  verified_at=$4, updated_at=$4
+		WHERE user_id=$1 AND node_id=$2 AND status IN ('pending','error','active')`,
+		globalUserID, nodeID, nullIfEmpty(localUserID), now)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("node account mapping not found")
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET status='active' WHERE id=$1`, legacyUserID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE global_users SET status='active', updated_at=$2 WHERE id=$1`, globalUserID, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) MarkNodeAccountError(ctx context.Context, globalUserID, nodeID int64, now time.Time) error {
+	if globalUserID <= 0 || nodeID <= 0 {
+		return fmt.Errorf("invalid node account")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE node_accounts SET status='error', updated_at=$3
+		WHERE user_id=$1 AND node_id=$2`, globalUserID, nodeID, now)
+	return err
 }
 
 // GetUserByUsername 按用户名查找。

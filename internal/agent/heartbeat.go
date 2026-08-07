@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"stcontrol/internal/protocol"
@@ -55,18 +60,35 @@ func (a *Agent) sendHeartbeat(ctx context.Context) {
 
 // callController 向总控发起签名请求。respOut 若非 nil 则解析 JSON 响应。
 func (a *Agent) callController(ctx context.Context, method, path string, body any, respOut any) error {
+	status, _, data, err := a.doControllerRequest(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("controller returned status %d", status)
+	}
+	if respOut != nil && len(data) > 0 {
+		return json.Unmarshal(data, respOut)
+	}
+	return nil
+}
+
+func (a *Agent) doControllerRequest(ctx context.Context, method, path string, body any) (int, http.Header, []byte, error) {
 	var payload []byte
 	var err error
 	if body != nil {
 		payload, err = json.Marshal(body)
 		if err != nil {
-			return err
+			return 0, nil, nil, err
 		}
 	}
-	url := a.Cfg.ControllerURL + path
-	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(payload))
+	endpoint, err := a.controllerEndpoint(path)
 	if err != nil {
-		return err
+		return 0, nil, nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return 0, nil, nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -75,11 +97,30 @@ func (a *Agent) callController(ctx context.Context, method, path string, body an
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return err
+		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
-	if respOut != nil {
-		return json.NewDecoder(resp.Body).Decode(respOut)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, nil, nil, err
 	}
-	return nil
+	return resp.StatusCode, resp.Header.Clone(), data, nil
+}
+
+func (a *Agent) controllerEndpoint(path string) (string, error) {
+	base, err := url.Parse(a.Cfg.ControllerURL)
+	if err != nil || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+		return "", fmt.Errorf("invalid controller URL")
+	}
+	host := base.Hostname()
+	ip := net.ParseIP(host)
+	loopback := strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback())
+	if base.Scheme != "https" && !(base.Scheme == "http" && loopback) {
+		return "", fmt.Errorf("controller URL must use HTTPS")
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "", fmt.Errorf("invalid controller path")
+	}
+	base.Path = strings.TrimRight(base.Path, "/") + path
+	return base.String(), nil
 }

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	stdsha256 "crypto/sha256"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -11,53 +12,58 @@ import (
 	"stcontrol/internal/store"
 )
 
-// handleAgentRegister 子控首次注册：核销一次性令牌 → 分配 node_id + agent_psk。
+// handleAgentRegister consumes a pre-created node-scoped enrollment token and
+// rotates an encrypted Agent credential. The controller never needs agent_url.
 func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 	var req protocol.RegisterAgentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
 	ctx := r.Context()
-
-	ok, err := s.Store.ConsumeRegisterToken(ctx, req.Token)
-	if err != nil || !ok {
+	if req.Token == "" || req.Fingerprint == "" || req.Fingerprint != protocol.NodeFingerprint(req.Info) {
 		protocol.WriteError(w, http.StatusForbidden, "注册令牌无效或已过期")
 		return
 	}
-
 	psk, err := crypto.RandomPassword(48)
 	if err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "生成密钥失败")
 		return
 	}
-	role := req.Role
-	if role != "compute" && role != "storage" {
-		role = "compute"
-	}
-	name := req.Name
-	if name == "" {
-		name = "节点-" + psk[:6]
-	}
-
-	node := &store.Node{
-		Name:      name,
-		Role:      role,
-		BaseURL:   req.Info.BaseURLGuess, // 可能为空, 由管理员后台补
-		AgentURL:  req.AgentURL,
-		AgentPSK:  psk,
-		Status:    "pending",
-		CreatedAt: time.Now(),
-	}
-	if err := s.Store.CreateNode(ctx, node); err != nil {
-		protocol.WriteError(w, http.StatusInternalServerError, "创建节点失败")
+	if req.Role != "compute" && req.Role != "storage" {
+		protocol.WriteError(w, http.StatusForbidden, "注册令牌与节点角色不匹配")
 		return
 	}
-	_ = s.Store.Audit(ctx, "agent", "register", name, nil)
+	credentialID, err := newUUID()
+	if err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "生成凭据失败")
+		return
+	}
+	ciphertext, err := crypto.Encrypt(s.secretKey, []byte(psk))
+	if err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "加密凭据失败")
+		return
+	}
+	tokenHash := stdsha256.Sum256([]byte(req.Token))
+	enrollment, err := s.Store.EnrollAgent(ctx, store.EnrollAgentParams{
+		TokenHash: tokenHash[:], PresentedRole: req.Role,
+		PresentedFingerprint: req.Fingerprint, CredentialID: credentialID,
+		CredentialCiphertext: []byte(ciphertext), AgentVersion: req.Info.OS + "/" + req.Info.Arch,
+		TavernVersion: req.Info.TavernVersion, BaseURLGuess: req.Info.BaseURLGuess,
+		Now: time.Now().UTC(),
+	})
+	if err != nil {
+		protocol.WriteError(w, http.StatusForbidden, "注册令牌无效或已过期")
+		return
+	}
+	_ = s.Store.Audit(ctx, "agent", "enroll", req.Role, nil)
 
 	protocol.WriteJSON(w, http.StatusOK, protocol.RegisterAgentResponse{
-		NodeID:   node.ID,
-		AgentPSK: psk,
+		NodeID: enrollment.NodeID, AgentPSK: psk,
+		CredentialVersion:    enrollment.CredentialVersion,
+		ControllerGeneration: enrollment.ControllerGeneration,
 	})
 }
 

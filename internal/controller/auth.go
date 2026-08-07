@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
@@ -82,36 +83,47 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 生成总控侧不可逆验证凭据。节点兼容的 scrypt 材料由后续账号供应协议产生，
-	// 总控不保存可逆明文密码。
+	// The controller retains only its verifier plus node-compatible scrypt
+	// material. Plaintext never enters the durable command queue.
 	pwHash, err := crypto.HashPassword(req.Password)
 	if err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "密码哈希失败")
 		return
 	}
-	// 代注册到节点
-	provReq := &protocol.ProvisionUserRequest{
-		Handle:         handle,
-		Name:           displayName,
-		Password:       req.Password, // 节点密码 = 用户密码
-		InvitationCode: req.InvitationCode,
-	}
-	if _, err := s.agent.provisionUser(ctx, node.ID, node.AgentPSK, node.AgentURL, provReq); err != nil {
-		protocol.WriteError(w, http.StatusBadGateway, "在节点上创建账号失败: "+err.Error())
+	nodePasswordHash, nodePasswordSalt, err := crypto.SillyTavernPasswordMaterial(req.Password)
+	if err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "密码材料生成失败")
 		return
 	}
-
-	// 总控建用户
 	user := &store.User{
-		Username:     handle,
-		DisplayName:  displayName,
-		PasswordHash: sql.NullString{String: pwHash, Valid: true},
-		AuthProvider: "password",
-		HomeNodeID:   sql.NullInt64{Int64: node.ID, Valid: true},
-		Status:       "active",
+		Username: handle, DisplayName: displayName,
+		PasswordHash: sql.NullString{String: pwHash, Valid: true}, AuthProvider: "password",
+		HomeNodeID: sql.NullInt64{Int64: node.ID, Valid: true}, Status: "recovering",
 	}
 	if err := s.Store.CreateUser(ctx, user); err != nil {
 		protocol.WriteError(w, http.StatusConflict, "创建用户失败（用户名可能已被占用）")
+		return
+	}
+	version, err := s.Store.SetNodeAccountProvisioning(
+		ctx, user.GlobalID, node.ID, nodePasswordHash, nodePasswordSalt, "", "", time.Now().UTC(),
+	)
+	if err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "创建节点账号任务失败")
+		return
+	}
+	provReq := &protocol.ProvisionUserRequest{
+		Handle: handle, Name: displayName,
+		PasswordHash: nodePasswordHash, PasswordSalt: nodePasswordSalt,
+		InvitationCode: req.InvitationCode,
+	}
+	result, err := s.runAgentCommand(ctx, node, "provision_user", provReq, 45*time.Second)
+	if err != nil {
+		_ = s.Store.MarkNodeAccountError(ctx, user.GlobalID, node.ID, time.Now().UTC())
+		protocol.WriteError(w, http.StatusBadGateway, "节点账号创建未完成")
+		return
+	}
+	if version <= 0 || s.Store.ActivateNodeAccount(ctx, user.ID, user.GlobalID, node.ID, result.LocalUserID, time.Now().UTC()) != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "节点账号激活失败")
 		return
 	}
 
