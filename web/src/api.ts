@@ -35,6 +35,16 @@ export interface Me {
   home_node_id: number
 }
 
+export interface LoginHandoff {
+  ok: boolean
+  post_url: string
+  field_name: string
+  code: string
+  expires_at: string
+  target_node_id: number
+  existing_writer: boolean
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const resp = await fetch(path, {
     credentials: 'include',
@@ -64,12 +74,38 @@ export const api = {
   // 节点
   availableNodes: () => request<{ nodes: Node[] }>('/api/nodes/available'),
   myNodes: () => request<{ nodes: MyNode[] }>('/api/users/me/nodes'),
-  loginRedirect: (node_id: number) =>
-    request<{ ok: boolean; redirect_url: string }>('/api/login/redirect', { method: 'POST', body: JSON.stringify({ node_id }) }),
+  loginHandoff: (node_id: number, operation_id: string) =>
+    request<LoginHandoff>('/api/login/redirect', {
+      method: 'POST',
+      body: JSON.stringify({ node_id, operation_id }),
+    }),
 
   // 改密
   changePassword: (old_password: string, new_password: string) =>
     request<{ ok: boolean }>('/api/users/me/password', { method: 'POST', body: JSON.stringify({ old_password, new_password }) }),
+}
+
+// Submit the bearer code in a request body. The form is deliberately ephemeral
+// and never puts the code into history, referrers, access logs, or query strings.
+export function submitLoginHandoff(handoff: LoginHandoff): void {
+  const destination = new URL(handoff.post_url, window.location.origin)
+  if (destination.protocol !== 'https:' && destination.hostname !== 'localhost' && destination.hostname !== '127.0.0.1') {
+    throw new Error('节点登录地址必须使用 HTTPS')
+  }
+  const form = document.createElement('form')
+  form.method = 'POST'
+  form.action = destination.toString()
+  form.acceptCharset = 'UTF-8'
+  form.setAttribute('referrerpolicy', 'no-referrer')
+  form.style.display = 'none'
+
+  const input = document.createElement('input')
+  input.type = 'hidden'
+  input.name = handoff.field_name
+  input.value = handoff.code
+  form.appendChild(input)
+  document.body.appendChild(form)
+  form.submit()
 }
 
 // 测量到某节点的延迟(浏览器对各节点 ping-public 端点测 RTT)

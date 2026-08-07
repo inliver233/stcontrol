@@ -142,11 +142,11 @@ type BackupStatusResponse struct {
 
 // BackupReceiveMeta 目标节点接收备份时的元信息（通过查询参数或头传递）。
 type BackupReceiveMeta struct {
-	JobID      int64  `json:"job_id"`
-	Handle     string `json:"handle"`
-	DstKind    string `json:"dst_kind"`
-	Manifest   string `json:"manifest"`    // SHA256 清单(JSON, 见 ManifestEntry)
-	DataVer    int64  `json:"data_version"`
+	JobID    int64  `json:"job_id"`
+	Handle   string `json:"handle"`
+	DstKind  string `json:"dst_kind"`
+	Manifest string `json:"manifest"` // SHA256 清单(JSON, 见 ManifestEntry)
+	DataVer  int64  `json:"data_version"`
 }
 
 // ManifestEntry 单个文件的校验条目。
@@ -195,6 +195,10 @@ func VerifyRequest(r *http.Request, psk string, body []byte) error {
 	sig := r.Header.Get(HeaderSignature)
 	if ts == "" || nonce == "" || sig == "" {
 		return fmt.Errorf("missing signature headers")
+	}
+	nonceBytes, err := hex.DecodeString(nonce)
+	if err != nil || len(nonceBytes) != 16 {
+		return fmt.Errorf("invalid nonce")
 	}
 	// 防重放: 时间戳必须在允许偏移内
 	tsInt, err := strconv.ParseInt(ts, 10, 64)

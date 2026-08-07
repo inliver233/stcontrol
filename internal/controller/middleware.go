@@ -6,10 +6,13 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
+
+const maxAgentRequestBody = 1 << 20
 
 // userAuthMiddleware 要求用户登录。
 func (s *Server) userAuthMiddleware(next http.Handler) http.Handler {
@@ -52,7 +55,7 @@ func (s *Server) agentAuthMiddleware(next http.Handler) http.Handler {
 			protocol.WriteError(w, http.StatusUnauthorized, "未知节点")
 			return
 		}
-		body, err := io.ReadAll(r.Body)
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAgentRequestBody))
 		if err != nil {
 			protocol.WriteError(w, http.StatusBadRequest, "读取请求体失败")
 			return
@@ -61,7 +64,25 @@ func (s *Server) agentAuthMiddleware(next http.Handler) http.Handler {
 		r.Body = io.NopCloser(bytes.NewReader(body))
 
 		if err := protocol.VerifyRequest(r, node.AgentPSK, body); err != nil {
-			protocol.WriteError(w, http.StatusUnauthorized, "签名校验失败: "+err.Error())
+			protocol.WriteError(w, http.StatusUnauthorized, "签名校验失败")
+			return
+		}
+		signedUnix, err := strconv.ParseInt(r.Header.Get(protocol.HeaderTimestamp), 10, 64)
+		if err != nil {
+			protocol.WriteError(w, http.StatusUnauthorized, "签名校验失败")
+			return
+		}
+		signedAt := time.Unix(signedUnix, 0).UTC()
+		accepted, err := s.Store.ConsumeAgentNonce(
+			r.Context(), node.ID, r.Header.Get(protocol.HeaderNonce),
+			signedAt, signedAt.Add(2*protocol.MaxClockSkew),
+		)
+		if err != nil {
+			protocol.WriteError(w, http.StatusServiceUnavailable, "节点认证暂不可用")
+			return
+		}
+		if !accepted {
+			protocol.WriteError(w, http.StatusUnauthorized, "请求签名已使用")
 			return
 		}
 		// 把节点放进上下文

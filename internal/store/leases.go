@@ -56,8 +56,7 @@ type AcquireActivityLeaseResult struct {
 // cannot both observe an absent lease, and records the result under a stable
 // operation ID for safe retries.
 func (s *Store) AcquireActivityLease(ctx context.Context, p AcquireActivityLeaseParams) (AcquireActivityLeaseResult, error) {
-	if p.OperationID == "" || p.SessionID == "" || p.UserID <= 0 || p.WriterNodeID <= 0 ||
-		p.ControllerGeneration <= 0 || p.TTL <= 0 {
+	if err := validateActivityLeaseParams(p); err != nil {
 		return AcquireActivityLeaseResult{}, ErrInvalidLeaseInput
 	}
 	if p.Now.IsZero() {
@@ -70,37 +69,62 @@ func (s *Store) AcquireActivityLease(ctx context.Context, p AcquireActivityLease
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var userID int64
-	if err := tx.QueryRowContext(ctx,
-		`SELECT id FROM global_users WHERE id=$1 FOR UPDATE`, p.UserID).Scan(&userID); err != nil {
-		if err == sql.ErrNoRows {
-			return AcquireActivityLeaseResult{}, ErrGlobalUserNotFound
-		}
-		return AcquireActivityLeaseResult{}, fmt.Errorf("lock global user: %w", err)
-	}
-
-	if result, ok, err := getLeaseOperation(ctx, tx, p.OperationID); err != nil {
+	if err := lockGlobalUser(ctx, tx, p.UserID); err != nil {
 		return AcquireActivityLeaseResult{}, err
-	} else if ok {
-		if err := tx.Commit(); err != nil {
-			return AcquireActivityLeaseResult{}, err
+	}
+	result, _, err := acquireActivityLeaseLocked(ctx, tx, p)
+	if err != nil {
+		return AcquireActivityLeaseResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return AcquireActivityLeaseResult{}, err
+	}
+	return result, nil
+}
+
+func validateActivityLeaseParams(p AcquireActivityLeaseParams) error {
+	if p.OperationID == "" || p.SessionID == "" || p.UserID <= 0 || p.WriterNodeID <= 0 ||
+		p.ControllerGeneration <= 0 || p.TTL <= 0 {
+		return ErrInvalidLeaseInput
+	}
+	return nil
+}
+
+func lockGlobalUser(ctx context.Context, tx *sql.Tx, userID int64) error {
+	var lockedID int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id FROM global_users WHERE id=$1 FOR UPDATE`, userID).Scan(&lockedID); err != nil {
+		if err == sql.ErrNoRows {
+			return ErrGlobalUserNotFound
 		}
-		return result, nil
+		return fmt.Errorf("lock global user: %w", err)
+	}
+	return nil
+}
+
+// acquireActivityLeaseLocked applies the lease transition inside a caller-owned
+// serializable transaction. The global user row must already be locked.
+func acquireActivityLeaseLocked(
+	ctx context.Context,
+	tx *sql.Tx,
+	p AcquireActivityLeaseParams,
+) (AcquireActivityLeaseResult, bool, error) {
+	if result, ok, err := getLeaseOperation(ctx, tx, p.OperationID); err != nil {
+		return AcquireActivityLeaseResult{}, false, err
+	} else if ok {
+		return result, true, nil
 	}
 
 	lease, found, err := getActivityLeaseForUpdate(ctx, tx, p.UserID)
 	if err != nil {
-		return AcquireActivityLeaseResult{}, err
+		return AcquireActivityLeaseResult{}, false, err
 	}
 	if found && leaseBlocksNewWriter(lease, p.Now) {
 		result := AcquireActivityLeaseResult{Lease: lease, Existing: true}
 		if err := recordLeaseOperation(ctx, tx, p, "existing", lease); err != nil {
-			return AcquireActivityLeaseResult{}, err
+			return AcquireActivityLeaseResult{}, false, err
 		}
-		if err := tx.Commit(); err != nil {
-			return AcquireActivityLeaseResult{}, err
-		}
-		return result, nil
+		return result, false, nil
 	}
 
 	nextEpoch := int64(1)
@@ -139,15 +163,12 @@ func (s *Store) AcquireActivityLease(ctx context.Context, p AcquireActivityLease
 		  updated_at=EXCLUDED.updated_at`,
 		p.UserID, p.WriterNodeID, p.SessionID, nextEpoch, lease.LeaseExpiresAt, p.Now,
 		p.ControllerGeneration); err != nil {
-		return AcquireActivityLeaseResult{}, fmt.Errorf("upsert activity lease: %w", err)
+		return AcquireActivityLeaseResult{}, false, fmt.Errorf("upsert activity lease: %w", err)
 	}
 	if err := recordLeaseOperation(ctx, tx, p, "acquired", lease); err != nil {
-		return AcquireActivityLeaseResult{}, err
+		return AcquireActivityLeaseResult{}, false, err
 	}
-	if err := tx.Commit(); err != nil {
-		return AcquireActivityLeaseResult{}, err
-	}
-	return AcquireActivityLeaseResult{Lease: lease, Acquired: true}, nil
+	return AcquireActivityLeaseResult{Lease: lease, Acquired: true}, false, nil
 }
 
 // RenewActivityLease extends exactly the currently fenced session and epoch.

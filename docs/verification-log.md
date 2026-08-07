@@ -32,7 +32,17 @@
 
 剩余风险：
 
-- Controller 登录选点尚未调用新活动租约，Agent/SillyTavern 尚未执行 session fencing。
+- Agent/SillyTavern 尚未执行 session fencing，真实 PostgreSQL 并发语义仍待环境验证。
+
+## 2026-08-07：安全登录交接批次
+
+- 浏览器交接改为短命、不透明、一次性 POST 短码；前端不再使用查询参数或 `window.location.href` 携带凭证。
+- 登录租约和严格 control ticket 在同一 serializable 事务提交；operation ID 重试返回原 JTI，A 的未过期 writer 不会被 B 覆盖。
+- 核销路由强制节点 HMAC 认证，并校验节点、票据类型、时窗、活动 epoch、session、controller generation、撤销/消费状态。
+- Agent HMAC nonce 摘要持久化并一次性插入，补上时间窗内重放缺口；请求体限制为 1 MiB，认证错误不回显内部原因。
+- `go test ./...`：通过。
+- `go vet ./...`：通过。
+- `npm run build`：通过。
+- 新增测试覆盖租约/票据同事务提交与回滚、operation ID 重试、单次核销、nonce 重放、短码解析与错误输入。
 - 旧 demo 表仍作为 API 兼容层；后续 endpoint 迁移完成前不能删除。
 - 真实 PostgreSQL 集成环境、并发争抢测试和 migration upgrade/rollback 演练必须在提交后续功能前补齐。
-

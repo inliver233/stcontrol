@@ -35,7 +35,7 @@ stcontrol/
 ├── internal/
 │   ├── config/          # 配置加载(YAML)
 │   ├── protocol/        # 总控↔子控协议 + HMAC 签名
-│   ├── crypto/          # AES-GCM 凭据/bcrypt/JWT 票据
+│   ├── crypto/          # AES-GCM 凭据/bcrypt（旧 JWT 辅助仅供迁移测试）
 │   ├── store/           # PostgreSQL 数据访问 + 迁移
 │   ├── controller/      # 总控 HTTP 服务(注册/登录/节点/票据/备份调度/后台)
 │   └── agent/           # 子控(探针/心跳/代注册/备份引擎)
@@ -115,14 +115,14 @@ federated:
 ## 核心流程
 
 - **注册**：总控注册页选节点（显示状态徽章 + 实测延迟，负载全 <50% 可选）→ 总控代注册到节点（节点无感知）→ 绑定家节点。
-- **登录跳转**：总控登录 → 可用节点（家 + 就绪热备）→ 一次性票据(60s, 服务端核销防重放) → `https://节点/federated-login?ticket=...` → 写 session → `/app` 落地即登录态。
+- **登录交接**：总控登录 → 可用节点（家 + 就绪热备）→ 原子取得单写租约并创建一次性短码(60s) → 浏览器自动 `POST /federated-login` → 节点用 HMAC 身份向总控核销 → 写 session → `/app`。短码不进入 URL、历史记录或 referrer。
 - **备份**：用户离线（心跳停 + 超过保护期）→ 子控打包 `data/<handle>` 为 tar.zst 流式推到备份目标（默认存储节点，可配热备计算节点）→ SHA256 校验 → 版本+1。备份中用户登录 → 自动中止，不阻塞。
 - **热备切换**：家节点宕机 → 自动切到已同步完成的热备；脑裂防护：同一时刻一个用户只有一个可写 home。
 
 ## 安全
 
-- 总控↔子控：HMAC-SHA256 签名 + 时间戳 + nonce 防重放，每节点独立 PSK，建议 HTTPS/mTLS。
-- 票据：短命(60s) + 一次性(服务端核销) + 绑定节点(aud) + 仅 HTTPS。
+- 总控↔子控：HMAC-SHA256 签名 + 时间戳 + 数据库一次性 nonce，每节点独立 PSK，生产环境必须使用 HTTPS/mTLS。
+- 登录短码：短命(60s) + 一次性原子核销 + 绑定节点/会话/活动世代/主控世代 + `no-store`/`no-referrer` + 仅通过 POST body 传递。
 - 用户密码：总控只保存不可逆登录 hash；节点密码同步使用酒馆兼容的 scrypt hash/salt，不保存可逆明文。`CONTROLLER_SECRET_KEY` 只用于控制面凭证等必须可恢复的机器密钥材料。
 - 备份数据含明文 API key(secrets.json) → 传输 TLS，存储节点备份目录权限 0700。
 

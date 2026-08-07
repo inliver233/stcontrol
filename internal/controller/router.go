@@ -41,8 +41,11 @@ func (s *Server) routes(r *chi.Mux) {
 	// 节点公开信息（注册页用）
 	r.Get("/api/nodes/available", s.handleAvailableNodes)
 
-	// 票据核销（节点调用, 无需用户登录, 用节点 PSK 签名）
-	r.Post("/api/tickets/verify", s.handleTicketVerify)
+	// 票据核销（仅已认证节点可调用；节点身份不接受请求体声明）
+	r.Route("/api/tickets", func(r chi.Router) {
+		r.Use(s.agentAuthMiddleware)
+		r.Post("/redeem", s.handleTicketRedeem)
+	})
 
 	// 子控注册（一次性令牌, 无需 PSK）
 	r.Post("/api/agent/register", s.handleAgentRegister)

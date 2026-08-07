@@ -32,6 +32,21 @@ func TestHMACRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHMACRejectsMalformedNonce(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"hello":"world"}`)
+	req, _ := http.NewRequest(http.MethodPost, "http://agent/agent/heartbeat", bytes.NewReader(body))
+	protocol.SignRequest(req, 7, "test-psk", body)
+	req.Header.Set(protocol.HeaderNonce, "not-hex")
+	req.Header.Set(protocol.HeaderSignature, protocol.Sign(
+		"test-psk", req.Method, req.URL.Path,
+		req.Header.Get(protocol.HeaderTimestamp), "not-hex", body,
+	))
+	if err := protocol.VerifyRequest(req, "test-psk", body); err == nil {
+		t.Fatal("malformed nonce unexpectedly verified")
+	}
+}
+
 // TestGetHMACEmptyBody 验证 GET 请求(nil body) 的签名验签。
 func TestGetHMACEmptyBody(t *testing.T) {
 	psk := "psk-for-get"

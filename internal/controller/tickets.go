@@ -1,30 +1,61 @@
 package controller
 
 import (
+	"crypto/hmac"
+	cryptorand "crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
-	"stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
 
-// handleLoginRedirect 用户选定节点后, 签发一次性票据并返回跳转 URL。
+const (
+	loginHandoffField = "stcontrol_code"
+	activityLeaseTTL  = 15 * time.Minute
+	handoffKeyID      = "controller-master-v1"
+)
+
+type loginHandoffRequest struct {
+	NodeID      int64  `json:"node_id"`
+	OperationID string `json:"operation_id"`
+}
+
+type loginHandoffResponse struct {
+	OK             bool      `json:"ok"`
+	PostURL        string    `json:"post_url"`
+	FieldName      string    `json:"field_name"`
+	Code           string    `json:"code"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	TargetNodeID   int64     `json:"target_node_id"`
+	ExistingWriter bool      `json:"existing_writer"`
+}
+
+// handleLoginRedirect preserves the legacy API path while implementing the
+// confirmed protocol: an opaque, one-use code returned to the browser and sent
+// to the selected node in a POST body. No credential is placed in a URL.
 func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		NodeID int64 `json:"node_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	setHandoffNoStoreHeaders(w)
+	var req loginHandoffRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil || !isUUID(req.OperationID) || req.NodeID <= 0 {
 		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	ctx := r.Context()
-	userID, _ := CurrentUser(r)
 
-	user, err := s.Store.GetUserByID(ctx, userID)
-	if err != nil || user == nil {
-		protocol.WriteError(w, http.StatusUnauthorized, "用户不存在")
+	ctx := r.Context()
+	legacyUserID, _ := CurrentUser(r)
+	user, err := s.Store.GetUserByID(ctx, legacyUserID)
+	if err != nil || user == nil || user.GlobalID <= 0 || user.Status != "active" {
+		protocol.WriteError(w, http.StatusUnauthorized, "用户不存在或不可用")
 		return
 	}
 	node, err := s.Store.GetNodeByID(ctx, req.NodeID)
@@ -33,8 +64,9 @@ func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 校验该节点对当前用户可用
-	replica, err := s.Store.GetReplica(ctx, userID, node.ID)
+	// The legacy replica table remains the compatibility read model until the
+	// snapshot workflow cut-over. It authorizes which node the user may request.
+	replica, err := s.Store.GetReplica(ctx, legacyUserID, node.ID)
 	if err != nil || replica == nil {
 		protocol.WriteError(w, http.StatusForbidden, "该节点不是你的可用节点")
 		return
@@ -52,65 +84,167 @@ func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 若有进行中的备份任务 → 中止(不阻塞用户登录)
+	// Existing direct abort behavior is retained until the outbound-command
+	// migration lands; failure is deliberately best-effort and never changes the
+	// atomic lease/ticket transaction below.
 	if s.Cfg.Backup.AbortOnLogin {
-		if job, _ := s.Store.FindRunningBackupForUserOnNode(ctx, userID, node.ID); job != nil {
+		if job, _ := s.Store.FindRunningBackupForUserOnNode(ctx, legacyUserID, node.ID); job != nil {
 			_ = s.agent.abortBackup(ctx, node.ID, node.AgentPSK, node.AgentURL, job.ID)
 			_ = s.Store.UpdateBackupJobStatus(ctx, job.ID, "aborted", 0, 0, 0, "用户登录,中止备份")
 		}
 	}
 
-	// 生成票据
-	jti := randToken()
-	ttl := time.Duration(s.Cfg.Ticket.TTLSec) * time.Second
-	secret := crypto.DeriveTicketSecret(node.AgentPSK)
-	token, err := crypto.IssueTicket(secret, user.Username, node.BaseURL, jti, ttl)
+	jti, err := newUUID()
 	if err != nil {
-		protocol.WriteError(w, http.StatusInternalServerError, "票据签发失败")
+		protocol.WriteError(w, http.StatusInternalServerError, "安全随机数生成失败")
 		return
 	}
-	if err := s.Store.CreateTicket(ctx, &store.Ticket{
-		JTI: jti, UserID: userID, NodeID: node.ID,
-		ExpiresAt: time.Now().Add(ttl),
-	}); err != nil {
-		protocol.WriteError(w, http.StatusInternalServerError, "票据记录失败")
+	sessionID, err := newUUID()
+	if err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "安全随机数生成失败")
+		return
+	}
+	secret := deriveLoginHandoffSecret(s.secretKey, jti)
+	secretHash := sha256.Sum256(secret)
+	ticketTTL := time.Duration(s.Cfg.Ticket.TTLSec) * time.Second
+	if ticketTTL <= 0 {
+		ticketTTL = time.Minute
+	}
+	issuer := strings.TrimRight(s.Cfg.PublicURL, "/")
+
+	handoff, err := s.Store.CreateLoginHandoff(ctx, store.CreateLoginHandoffParams{
+		OperationID:     req.OperationID,
+		JTI:             jti,
+		SecretHash:      secretHash[:],
+		UserID:          user.GlobalID,
+		RequestedNodeID: node.ID,
+		SessionID:       sessionID,
+		Issuer:          issuer,
+		Subject:         user.Username,
+		KeyID:           handoffKeyID,
+		TicketTTL:       ticketTTL,
+		LeaseTTL:        activityLeaseTTL,
+		Now:             time.Now().UTC(),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrLoginHandoffUnavailable), errors.Is(err, store.ErrStaleControllerLease):
+			protocol.WriteError(w, http.StatusConflict, "当前活动会话暂不可交接")
+		case errors.Is(err, store.ErrNoActiveController):
+			protocol.WriteError(w, http.StatusServiceUnavailable, "总控当前为只读状态")
+		default:
+			protocol.WriteError(w, http.StatusInternalServerError, "登录交接创建失败")
+		}
 		return
 	}
 
-	redirectURL := node.BaseURL + "/federated-login?ticket=" + token
-	protocol.WriteJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "redirect_url": redirectURL,
+	// On an idempotent retry the store returns the original JTI. Re-derivation
+	// reproduces the same code without ever storing its bearer secret.
+	secret = deriveLoginHandoffSecret(s.secretKey, handoff.JTI)
+	code := handoff.JTI + "." + base64.RawURLEncoding.EncodeToString(secret)
+	postURL := strings.TrimRight(handoff.NodeBaseURL, "/") + "/federated-login"
+	protocol.WriteJSON(w, http.StatusOK, loginHandoffResponse{
+		OK:             true,
+		PostURL:        postURL,
+		FieldName:      loginHandoffField,
+		Code:           code,
+		ExpiresAt:      handoff.ExpiresAt,
+		TargetNodeID:   handoff.TargetNodeID,
+		ExistingWriter: handoff.Existing,
 	})
 }
 
-// handleTicketVerify 节点调用: 核销票据。节点用其 PSK 对请求签名。
-// 这里不强制 agentAuth 中间件, 而是手动校验(因为 body 含 jti + node_id)。
-func (s *Server) handleTicketVerify(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		JTI    string `json:"jti"`
-		NodeID int64  `json:"node_id"`
+type redeemLoginHandoffRequest struct {
+	Code string `json:"code"`
+}
+
+// handleTicketRedeem is reachable only behind agentAuthMiddleware. The node
+// identity comes from the authenticated context and is never trusted from JSON.
+func (s *Server) handleTicketRedeem(w http.ResponseWriter, r *http.Request) {
+	setHandoffNoStoreHeaders(w)
+	node := currentNode(r)
+	if node == nil {
+		protocol.WriteError(w, http.StatusUnauthorized, "节点认证失败")
+		return
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var req redeemLoginHandoffRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	ctx := r.Context()
-
-	userID, nodeID, ok, err := s.Store.ConsumeTicket(ctx, req.JTI, time.Now())
+	jti, suppliedSecret, ok := parseLoginHandoffCode(req.Code)
+	if !ok {
+		protocol.WriteError(w, http.StatusForbidden, "登录短码无效、已使用或已过期")
+		return
+	}
+	expectedSecret := deriveLoginHandoffSecret(s.secretKey, jti)
+	if !hmac.Equal(suppliedSecret, expectedSecret) {
+		protocol.WriteError(w, http.StatusForbidden, "登录短码无效、已使用或已过期")
+		return
+	}
+	secretHash := sha256.Sum256(suppliedSecret)
+	redemption, consumed, err := s.Store.ConsumeLoginHandoff(
+		r.Context(), jti, secretHash[:], node.ID, time.Now().UTC(), activityLeaseTTL,
+	)
 	if err != nil {
-		protocol.WriteError(w, http.StatusInternalServerError, "核销失败")
+		protocol.WriteError(w, http.StatusInternalServerError, "登录短码核销失败")
 		return
 	}
-	if !ok || nodeID != req.NodeID {
-		protocol.WriteError(w, http.StatusForbidden, "票据无效、已使用或已过期")
-		return
-	}
-	user, err := s.Store.GetUserByID(ctx, userID)
-	if err != nil || user == nil {
-		protocol.WriteError(w, http.StatusForbidden, "用户不存在")
+	if !consumed {
+		protocol.WriteError(w, http.StatusForbidden, "登录短码无效、已使用或已过期")
 		return
 	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "handle": user.Username, "user_id": userID,
+		"ok":                    true,
+		"handle":                redemption.Handle,
+		"user_id":               redemption.UserID,
+		"session_id":            redemption.SessionID,
+		"activity_epoch":        redemption.ActivityEpoch,
+		"controller_generation": redemption.ControllerGeneration,
 	})
+}
+
+func deriveLoginHandoffSecret(key []byte, jti string) []byte {
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte("stcontrol-login-handoff:v1:" + jti))
+	return mac.Sum(nil)
+}
+
+func parseLoginHandoffCode(code string) (string, []byte, bool) {
+	jti, encoded, found := strings.Cut(code, ".")
+	if !found || !isUUID(jti) || encoded == "" {
+		return "", nil, false
+	}
+	secret, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(secret) != sha256.Size {
+		return "", nil, false
+	}
+	return jti, secret, true
+}
+
+func newUUID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := cryptorand.Read(b); err != nil {
+		return "", err
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	encoded := hex.EncodeToString(b)
+	return fmt.Sprintf("%s-%s-%s-%s-%s", encoded[:8], encoded[8:12], encoded[12:16], encoded[16:20], encoded[20:]), nil
+}
+
+func isUUID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
+		return false
+	}
+	decoded, err := hex.DecodeString(strings.ReplaceAll(value, "-", ""))
+	return err == nil && len(decoded) == 16
+}
+
+func setHandoffNoStoreHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 }

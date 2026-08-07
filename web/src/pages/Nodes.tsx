@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { api, MyNode, measureLatency } from '../api'
+import { useEffect, useRef, useState } from 'react'
+import { api, MyNode, measureLatency, submitLoginHandoff } from '../api'
 import { useAuth } from '../App'
 import { useNavigate } from 'react-router-dom'
 
@@ -8,6 +8,7 @@ export default function NodesPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [jumping, setJumping] = useState(false)
+	const handoffOperations = useRef(new Map<number, string>())
   const { me, setMe } = useAuth()
   const navigate = useNavigate()
 
@@ -28,7 +29,8 @@ export default function NodesPage() {
         if (ready.length === 1) {
           enterNode(ready[0].node_id)
         }
-      } catch {
+		} catch (err: unknown) {
+		  setError(err instanceof Error ? err.message : '加载节点失败')
         setLoading(false)
       }
     })()
@@ -39,10 +41,15 @@ export default function NodesPage() {
     setJumping(true)
     setError('')
     try {
-      const { redirect_url } = await api.loginRedirect(nodeId)
-      window.location.href = redirect_url
-    } catch (err: any) {
-      setError(err.message)
+		let operationId = handoffOperations.current.get(nodeId)
+		if (!operationId) {
+		  operationId = crypto.randomUUID()
+		  handoffOperations.current.set(nodeId, operationId)
+		}
+		const handoff = await api.loginHandoff(nodeId, operationId)
+		submitLoginHandoff(handoff)
+	  } catch (err: unknown) {
+		setError(err instanceof Error ? err.message : '登录交接失败')
       setJumping(false)
     }
   }
