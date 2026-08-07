@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"stcontrol/internal/config"
 	"stcontrol/internal/protocol"
@@ -56,5 +57,42 @@ func TestTavernAdapterRejectsNonLoopbackTarget(t *testing.T) {
 	err := a.callTavernAdapter(context.Background(), "/api/stcontrol/internal/users/provision", struct{}{}, nil)
 	if err == nil {
 		t.Fatal("non-loopback adapter target was accepted")
+	}
+}
+
+func TestRegistrationPolicyRequiresFreshVersionedAdapterFact(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/stcontrol/internal/registration-policy" {
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(adapterRegistrationPolicy{
+			OK: true, Mode: "invitation_required", Version: 8,
+		})
+	}))
+	defer server.Close()
+	a, err := New(&config.AgentConfig{
+		TavernURL: server.URL, AgentPSK: "secret", NodeID: 12,
+		DataDir: t.TempDir(), HeartbeatSec: 15,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().UTC()
+	report := a.registrationPolicy(context.Background())
+	if report.State != "invitation_required" || report.Version != 8 ||
+		!report.ExpiresAt.After(before.Add(59*time.Second)) {
+		t.Fatalf("report=%+v", report)
+	}
+}
+
+func TestRegistrationPolicyFailsClosedWhenAdapterCannotBeRead(t *testing.T) {
+	t.Parallel()
+	a := &Agent{Cfg: &config.AgentConfig{
+		TavernURL: "https://not-loopback.example", AgentPSK: "secret", NodeID: 12,
+	}}
+	report := a.registrationPolicy(context.Background())
+	if report.State != "error" || report.Version != 0 || report.ErrorCode != "adapter_unavailable" {
+		t.Fatalf("report=%+v", report)
 	}
 }

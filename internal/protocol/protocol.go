@@ -57,14 +57,25 @@ type UserStatus struct {
 
 // HeartbeatRequest 子控定期上报。
 type HeartbeatRequest struct {
-	NodeID        int64        `json:"node_id"`
-	AgentVersion  string       `json:"agent_version"`
-	TavernVersion string       `json:"tavern_version"`
-	CPUPct        float64      `json:"cpu_pct"`
-	MemPct        float64      `json:"mem_pct"`
-	DiskPct       float64      `json:"disk_pct"`
-	TransferURL   string       `json:"transfer_url,omitempty"`
-	Users         []UserStatus `json:"users,omitempty"`
+	NodeID             int64                    `json:"node_id"`
+	AgentVersion       string                   `json:"agent_version"`
+	TavernVersion      string                   `json:"tavern_version"`
+	CPUPct             float64                  `json:"cpu_pct"`
+	MemPct             float64                  `json:"mem_pct"`
+	DiskPct            float64                  `json:"disk_pct"`
+	TransferURL        string                   `json:"transfer_url,omitempty"`
+	RegistrationPolicy RegistrationPolicyReport `json:"registration_policy"`
+	Users              []UserStatus             `json:"users,omitempty"`
+}
+
+// RegistrationPolicyReport is a fresh read of the node-owned registration
+// policy. The Controller treats every unrecognized, stale, or error report as
+// fail-closed and never infers policy from its own invitation tables.
+type RegistrationPolicyReport struct {
+	State     string    `json:"state"`
+	Version   int64     `json:"version"`
+	ExpiresAt time.Time `json:"expires_at"`
+	ErrorCode string    `json:"error_code,omitempty"`
 }
 
 // NodeInfo 子控探测到的节点自身信息（注册/心跳时上报）。

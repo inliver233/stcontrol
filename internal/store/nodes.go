@@ -23,11 +23,15 @@ func (s *Store) GetNodeByID(ctx context.Context, id int64) (*Node, error) {
 	err := s.DB.QueryRowContext(ctx, `
 	  SELECT id, name, role, base_url, transfer_url, region,
 	    cpu_pct, mem_pct, disk_pct, agent_version, tavern_version, last_seen_at,
-	    status, allow_register, is_backup_target, created_at
+	    status, allow_register, is_backup_target, registration_policy_state,
+	    registration_policy_version, registration_policy_expires_at,
+	    registration_policy_observed_at, registration_policy_error_code, created_at
 	  FROM nodes WHERE id=$1`, id).
 		Scan(&n.ID, &n.Name, &n.Role, &n.BaseURL, &n.TransferURL, &n.Region,
 			&n.CPUPct, &n.MemPct, &n.DiskPct, &n.AgentVersion, &n.TavernVersion, &n.LastSeenAt,
-			&n.Status, &n.AllowRegister, &n.IsBackupTarget, &n.CreatedAt)
+			&n.Status, &n.AllowRegister, &n.IsBackupTarget, &n.RegistrationPolicyState,
+			&n.RegistrationPolicyVersion, &n.RegistrationPolicyExpiresAt,
+			&n.RegistrationPolicyObservedAt, &n.RegistrationPolicyErrorCode, &n.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -39,7 +43,9 @@ func (s *Store) ListNodes(ctx context.Context) ([]*Node, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 	  SELECT id, name, role, base_url, transfer_url, region,
 	    cpu_pct, mem_pct, disk_pct, agent_version, tavern_version, last_seen_at,
-	    status, allow_register, is_backup_target, created_at
+	    status, allow_register, is_backup_target, registration_policy_state,
+	    registration_policy_version, registration_policy_expires_at,
+	    registration_policy_observed_at, registration_policy_error_code, created_at
 	  FROM nodes ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -50,7 +56,9 @@ func (s *Store) ListNodes(ctx context.Context) ([]*Node, error) {
 		n := &Node{}
 		if err := rows.Scan(&n.ID, &n.Name, &n.Role, &n.BaseURL, &n.TransferURL, &n.Region,
 			&n.CPUPct, &n.MemPct, &n.DiskPct, &n.AgentVersion, &n.TavernVersion, &n.LastSeenAt,
-			&n.Status, &n.AllowRegister, &n.IsBackupTarget, &n.CreatedAt); err != nil {
+			&n.Status, &n.AllowRegister, &n.IsBackupTarget, &n.RegistrationPolicyState,
+			&n.RegistrationPolicyVersion, &n.RegistrationPolicyExpiresAt,
+			&n.RegistrationPolicyObservedAt, &n.RegistrationPolicyErrorCode, &n.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -59,13 +67,32 @@ func (s *Store) ListNodes(ctx context.Context) ([]*Node, error) {
 }
 
 // UpdateNodeHeartbeat 更新节点心跳与负载。
-func (s *Store) UpdateNodeHeartbeat(ctx context.Context, id int64, cpu, mem, disk float64, tavernVer, agentVer, transferURL string) error {
+func (s *Store) UpdateNodeHeartbeat(
+	ctx context.Context,
+	id int64,
+	cpu, mem, disk float64,
+	tavernVer, agentVer, transferURL string,
+	policy NodeRegistrationPolicy,
+) error {
 	_, err := s.DB.ExecContext(ctx, `
 	  UPDATE nodes SET cpu_pct=$2, mem_pct=$3, disk_pct=$4,
 	    tavern_version=$5, agent_version=$6, transfer_url=$7,
-	    last_seen_at=$8, status='online'
+	    last_seen_at=$8, status='online',
+	    registration_policy_state=CASE
+	      WHEN $10 IN ('open','invitation_required','closed') AND $11>=registration_policy_version THEN $10
+	      ELSE 'error' END,
+	    registration_policy_version=GREATEST(registration_policy_version,$11),
+	    registration_policy_expires_at=CASE
+	      WHEN $10 IN ('open','invitation_required','closed') AND $11>=registration_policy_version THEN $12
+	      ELSE $8 END,
+	    registration_policy_observed_at=$9,
+	    registration_policy_error_code=CASE
+	      WHEN $10 IN ('open','invitation_required','closed') AND $11>=registration_policy_version THEN NULL
+	      WHEN $11<registration_policy_version THEN 'version_rollback'
+	      ELSE $13 END
 	  WHERE id=$1`,
-		id, cpu, mem, disk, tavernVer, agentVer, transferURL, time.Now())
+		id, cpu, mem, disk, tavernVer, agentVer, transferURL, policy.ObservedAt,
+		policy.ObservedAt, policy.State, policy.Version, policy.ExpiresAt, policy.ErrorCode)
 	return err
 }
 

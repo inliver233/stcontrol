@@ -10,11 +10,18 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"stcontrol/internal/protocol"
 )
 
 const tavernAdapterBodyLimit = 1 << 20
+
+type adapterRegistrationPolicy struct {
+	OK      bool   `json:"ok"`
+	Mode    string `json:"mode"`
+	Version int64  `json:"version"`
+}
 
 // collectUserStatuses is replaced by the authenticated adapter's session
 // telemetry when managed-mode integration is enabled. Disk activity remains a
@@ -45,6 +52,36 @@ func (a *Agent) setPassword(ctx context.Context, req *protocol.SetPasswordReques
 		return fmt.Errorf("node adapter rejected password update")
 	}
 	return nil
+}
+
+func (a *Agent) registrationPolicy(ctx context.Context) protocol.RegistrationPolicyReport {
+	now := time.Now().UTC()
+	report := protocol.RegistrationPolicyReport{
+		State: "error", ExpiresAt: now, ErrorCode: "adapter_unavailable",
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var response adapterRegistrationPolicy
+	if err := a.callTavernAdapter(
+		probeCtx, "/api/stcontrol/internal/registration-policy", struct{}{}, &response,
+	); err != nil {
+		return report
+	}
+	if !response.OK || response.Version <= 0 ||
+		(response.Mode != "open" && response.Mode != "invitation_required" && response.Mode != "closed") {
+		report.ErrorCode = "invalid_policy"
+		return report
+	}
+	freshness := 3 * time.Duration(a.Cfg.HeartbeatSec) * time.Second
+	if freshness < time.Minute {
+		freshness = time.Minute
+	}
+	if freshness > 5*time.Minute {
+		freshness = 5 * time.Minute
+	}
+	return protocol.RegistrationPolicyReport{
+		State: response.Mode, Version: response.Version, ExpiresAt: now.Add(freshness),
+	}
 }
 
 func (a *Agent) callTavernAdapter(ctx context.Context, path string, body any, out any) error {

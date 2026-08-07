@@ -11,6 +11,7 @@ export interface Node {
   cpu_pct: number
   mem_pct: number
   disk_pct: number
+  invitation_required: boolean
   // 前端实测延迟(非后端字段)
   latency_ms?: number
 }

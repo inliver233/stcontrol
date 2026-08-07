@@ -45,6 +45,7 @@ export function NodeCard({ node, selected, onSelect }: {
       <div className="node-region">{node.region || '默认区域'}</div>
       <div className="node-meta">
         <span className={`badge ${badgeClass(node.status_label)}`}>{node.status_label}</span>
+        {node.invitation_required && <span className="badge gray">需邀请码</span>}
         <span className={`latency ${latencyClass(node.latency_ms)}`}>{latencyText(node.latency_ms)}</span>
       </div>
       <div className="load-bars">

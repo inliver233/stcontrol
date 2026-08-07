@@ -97,7 +97,9 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req protocol.HeartbeatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
@@ -108,8 +110,12 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	policy := normalizeRegistrationPolicy(req.RegistrationPolicy, time.Now().UTC())
+	if policy.State == "error" && policy.Version < node.RegistrationPolicyVersion {
+		policy.Version = node.RegistrationPolicyVersion
+	}
 	if err := s.Store.UpdateNodeHeartbeat(ctx, node.ID, req.CPUPct, req.MemPct, req.DiskPct,
-		req.TavernVersion, req.AgentVersion, transferURL); err != nil {
+		req.TavernVersion, req.AgentVersion, transferURL, policy); err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "更新心跳失败")
 		return
 	}
@@ -118,6 +124,34 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	s.trackUserActivity(node.ID, req.Users)
 
 	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func normalizeRegistrationPolicy(
+	report protocol.RegistrationPolicyReport,
+	now time.Time,
+) store.NodeRegistrationPolicy {
+	fact := store.NodeRegistrationPolicy{
+		State: report.State, Version: report.Version, ExpiresAt: report.ExpiresAt,
+		ObservedAt: now, ErrorCode: report.ErrorCode,
+	}
+	validState := report.State == "open" || report.State == "invitation_required" || report.State == "closed"
+	if validState && report.Version > 0 && report.ExpiresAt.After(now) &&
+		!report.ExpiresAt.After(now.Add(10*time.Minute)) {
+		fact.ErrorCode = ""
+		return fact
+	}
+	fact.State = "error"
+	if fact.Version < 0 {
+		fact.Version = 0
+	}
+	fact.ExpiresAt = now
+	switch report.ErrorCode {
+	case "adapter_unavailable", "invalid_policy":
+		fact.ErrorCode = report.ErrorCode
+	default:
+		fact.ErrorCode = "invalid_policy_report"
+	}
+	return fact
 }
 
 // ---------- 离线备份调度辅助 ----------

@@ -43,16 +43,18 @@ func (a *Agent) sendHeartbeat(ctx context.Context) {
 	info, _ := ProbeTavern(a.Cfg.TavernDir)
 	cpu, mem, disk, _ := CollectMetrics(a.Cfg.TavernDir)
 	users := a.collectUserStatuses()
+	registrationPolicy := a.registrationPolicy(ctx)
 
 	reqBody := protocol.HeartbeatRequest{
-		NodeID:        a.Cfg.NodeID,
-		AgentVersion:  Version,
-		TavernVersion: info.TavernVersion,
-		CPUPct:        cpu,
-		MemPct:        mem,
-		DiskPct:       disk,
-		TransferURL:   a.Cfg.TransferPublicURL,
-		Users:         users,
+		NodeID:             a.Cfg.NodeID,
+		AgentVersion:       Version,
+		TavernVersion:      info.TavernVersion,
+		CPUPct:             cpu,
+		MemPct:             mem,
+		DiskPct:            disk,
+		TransferURL:        a.Cfg.TransferPublicURL,
+		RegistrationPolicy: registrationPolicy,
+		Users:              users,
 	}
 	if err := a.callController(ctx, http.MethodPost, "/api/agent/heartbeat", reqBody, nil); err != nil {
 		log.Printf("心跳上报失败: %v", err)

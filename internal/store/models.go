@@ -25,22 +25,35 @@ type User struct {
 
 // Node 节点。
 type Node struct {
-	ID             int64           `json:"id"`
-	Name           string          `json:"name"`
-	Role           string          `json:"role"`
-	BaseURL        string          `json:"base_url"`
-	TransferURL    string          `json:"-"`
-	Region         sql.NullString  `json:"region"`
-	CPUPct         sql.NullFloat64 `json:"cpu_pct"`
-	MemPct         sql.NullFloat64 `json:"mem_pct"`
-	DiskPct        sql.NullFloat64 `json:"disk_pct"`
-	AgentVersion   sql.NullString  `json:"agent_version"`
-	TavernVersion  sql.NullString  `json:"tavern_version"`
-	LastSeenAt     sql.NullTime    `json:"last_seen_at"`
-	Status         string          `json:"status"`
-	AllowRegister  bool            `json:"allow_register"`
-	IsBackupTarget bool            `json:"is_backup_target"`
-	CreatedAt      time.Time       `json:"created_at"`
+	ID                           int64           `json:"id"`
+	Name                         string          `json:"name"`
+	Role                         string          `json:"role"`
+	BaseURL                      string          `json:"base_url"`
+	TransferURL                  string          `json:"-"`
+	Region                       sql.NullString  `json:"region"`
+	CPUPct                       sql.NullFloat64 `json:"cpu_pct"`
+	MemPct                       sql.NullFloat64 `json:"mem_pct"`
+	DiskPct                      sql.NullFloat64 `json:"disk_pct"`
+	AgentVersion                 sql.NullString  `json:"agent_version"`
+	TavernVersion                sql.NullString  `json:"tavern_version"`
+	LastSeenAt                   sql.NullTime    `json:"last_seen_at"`
+	Status                       string          `json:"status"`
+	AllowRegister                bool            `json:"allow_register"`
+	IsBackupTarget               bool            `json:"is_backup_target"`
+	RegistrationPolicyState      string          `json:"registration_policy_state"`
+	RegistrationPolicyVersion    int64           `json:"registration_policy_version"`
+	RegistrationPolicyExpiresAt  sql.NullTime    `json:"registration_policy_expires_at"`
+	RegistrationPolicyObservedAt sql.NullTime    `json:"registration_policy_observed_at"`
+	RegistrationPolicyErrorCode  sql.NullString  `json:"registration_policy_error_code"`
+	CreatedAt                    time.Time       `json:"created_at"`
+}
+
+type NodeRegistrationPolicy struct {
+	State      string
+	Version    int64
+	ExpiresAt  time.Time
+	ObservedAt time.Time
+	ErrorCode  string
 }
 
 // UserReplica 用户在某节点的副本。
