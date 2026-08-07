@@ -217,3 +217,14 @@
 - `go test -coverprofile=coverage/storage_repair.coverprofile ./...`：通过；总覆盖率 `40.3%`（`internal/agent 44.8%`、`internal/controller 21.6%`、`internal/store 59.3%`），仍低于最终 80% 门禁。
 - `go vet ./...`、`GOOS=linux GOARCH=amd64 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。
 - 尚未完成且未冒充完成：真实 PostgreSQL 并发调度、存储掉线/回归和完整 Agent-to-Agent 修复尚未故障注入；SillyTavern adapter 未挂载时活动事实仍不完整。纯存储到计算恢复、旧 archive 的受审计物理清理和稳定后的临时计算副本清理待后续实现，R09/R19 保持 `部分`。
+
+## 2026-08-08：纯存储到计算恢复批次
+
+- 新增 `0017_restore_workflows.sql`：`restore_operations` 保存稳定 operation ID、32-byte keyed 请求摘要、源/结果两个不可变 snapshot ID、源/目标、用户确认的精确恢复时间和完成时间；`node_accounts.provisioning_workflow_id` 将恢复账号与通用密码同步 worker 隔离。
+- 恢复目标查询只公开连通、运营、兼容和容量合格的计算节点，并排除冲突副本、禁用/冲突账号、同 handle 账号占用及无法供应账号的用户。创建事务锁定 global user，要求保护状态仍为 `restore_required`、恢复时间未变化、源为用户自己的 compatible immutable ready archive、无有效/在途写租约；相同 operation/HMAC 重放原 workflow，不同请求复用 ID 冲突关闭。
+- workflow 持久步骤为 `provision_account -> prepare_target -> transfer -> verify -> publish`。目标没有 active 账号时，使用已持久化节点 scrypt 材料或 active OAuth identity 下发专用、幂等、固定能力 `restore_user_account` 命令；账号确认后才准备数据接收。active controller generation、worker lease、指数退避、重启扫描和短期 capability 轮换均复用既有围栏。
+- storage Agent 在 archive 原子发布时写入只读私有元数据。恢复时重新序列化原 manifest 并与 Controller 的原 digest 比对，再逐文件重算大小/SHA-256；缺元数据、未知/尾随 JSON、额外文件、重复路径、符号链接、非普通文件、越界或内容漂移均失败。新 restore manifest/snapshot 独立作用域后，通过 Authorization capability 直传 compute Agent；目标限额验证并同文件系统原子发布。
+- Controller 只有取得目标持久回执后才在一个 serializable 事务内固化结果 manifest、降级旧 home、晋升唯一 authoritative home、更新 legacy/normalized 副本与节点账号、结束旧租约、撤销未消费短码、写保护状态和审计。终止失败会撤 capability、把结果 manifest 标 invalid、把未纳管目标标 error，并保留旧 home/archive；不会删除可能有取证价值的数据。
+- 用户 API 提供恢复目标、提交和按用户/operation 查询状态，不公开 workflow/snapshot/capability。节点页展示目标加载/空态、精确恢复点、显式数据丢失确认及准备/传输/校验/发布/重试/失败状态；浏览器 session 保存稳定 operation ID，只有后端 `succeeded` 才刷新副本并登录。
+- `go test ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。`go test -coverprofile=coverage/archive_restore.coverprofile ./...`：通过，总覆盖率 `40.8%`（`internal/agent 46.0%`、`internal/controller 20.2%`、`internal/store 60.1%`）。
+- Windows race 构建因主机安装的 `cc1.exe` 不支持 64 位而未执行；本机仍没有可用真实 PostgreSQL，因此 serializable/行锁/迁移和双 Agent 崩溃只能以 SQL mock、静态语义和单进程测试为证据。SillyTavern 专用 `/api/stcontrol/internal/users/restore` adapter 因既有未提交 WIP 冲突尚未挂载；冲突差异/来源选择、节点退役/升级/损坏和物理清理仍缺，R19/R20 保持 `部分`。

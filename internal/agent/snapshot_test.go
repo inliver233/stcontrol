@@ -93,6 +93,44 @@ func TestFailedTransferRequiresAReplacedCapability(t *testing.T) {
 	}
 }
 
+func TestRestoreTransferAllowsControllerFencedCapabilityReplacement(t *testing.T) {
+	t.Parallel()
+	a, err := New(&config.AgentConfig{DataDir: t.TempDir(), NodeID: 9, Role: "compute"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := sha256.Sum256([]byte("first-restore-token"))
+	transfer := pendingTransfer{
+		WorkflowID: testWorkflowID, SnapshotID: testSnapshotID, GlobalUserID: 70, TargetNodeID: 9,
+		Handle: "alice", DestinationKind: "restore", SourceNodeID: 8, ActivityEpoch: 4,
+		CapabilityHash: hex.EncodeToString(first[:]), ExpiresAt: time.Now().Add(time.Minute),
+	}
+	if err := a.prepareTransfer(transfer); err != nil {
+		t.Fatal(err)
+	}
+	replacement := sha256.Sum256([]byte("replacement-restore-token"))
+	transfer.CapabilityHash = hex.EncodeToString(replacement[:])
+	if err := a.prepareTransfer(transfer); err != nil {
+		t.Fatalf("prepared restore capability replacement rejected: %v", err)
+	}
+	if _, err := a.consumeTransfer(testSnapshotID, testWorkflowID, "replacement-restore-token", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	third := sha256.Sum256([]byte("third-restore-token"))
+	transfer.CapabilityHash = hex.EncodeToString(third[:])
+	if err := a.prepareTransfer(transfer); err == nil {
+		t.Fatal("unexpired consumed restore capability was replaced")
+	}
+	a.stateMu.Lock()
+	existing := a.state.Transfers[testSnapshotID]
+	existing.ExpiresAt = time.Now().Add(-time.Second)
+	a.state.Transfers[testSnapshotID] = existing
+	a.stateMu.Unlock()
+	if err := a.prepareTransfer(transfer); err != nil {
+		t.Fatalf("expired consumed restore capability was not recoverable: %v", err)
+	}
+}
+
 func TestAgentHTTPClientRejectsRedirects(t *testing.T) {
 	t.Parallel()
 	a, err := New(&config.AgentConfig{DataDir: t.TempDir(), NodeID: 9})
@@ -147,7 +185,7 @@ func TestSnapshotArchiveVerificationAndPublish(t *testing.T) {
 		context.Background(), archivePath, taskRoot, finalPath,
 		pendingTransfer{
 			WorkflowID: testWorkflowID, SnapshotID: testSnapshotID, GlobalUserID: 70, TargetNodeID: 9,
-			Handle: "alice", SourceNodeID: 8, ActivityEpoch: 4,
+			Handle: "alice", DestinationKind: "archive", SourceNodeID: 8, ActivityEpoch: 4,
 		}, archiveDigest[:], func() error { progressed = true; return nil },
 	)
 	if err != nil {
@@ -159,6 +197,72 @@ func TestSnapshotArchiveVerificationAndPublish(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(finalPath, "old.txt")); !os.IsNotExist(err) {
 		t.Fatal("previous replica was retained after successful publish")
+	}
+	metadata, err := readArchiveReplicaMetadata(finalPath)
+	if err != nil || metadata.Manifest.SnapshotID != testSnapshotID ||
+		metadata.Receipt.ManifestSHA256 != receipt.ManifestSHA256 {
+		t.Fatalf("metadata=%+v err=%v", metadata, err)
+	}
+	verifiedBytes, err := verifyArchiveReplica(context.Background(), finalPath, metadata.Manifest.Files)
+	if err != nil || verifiedBytes != int64(len(content)) {
+		t.Fatalf("verified=%d err=%v", verifiedBytes, err)
+	}
+}
+
+func TestArchiveRestoreVerificationRejectsTamperingAndExtraFiles(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	content := []byte("immutable")
+	path := filepath.Join(root, "settings.json")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	entries := []protocol.ManifestEntry{{
+		Path: "settings.json", Size: int64(len(content)), SHA256: hex.EncodeToString(digest[:]),
+	}}
+	if total, err := verifyArchiveReplica(context.Background(), root, entries); err != nil || total != int64(len(content)) {
+		t.Fatalf("total=%d err=%v", total, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "extra.json"), []byte("extra"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyArchiveReplica(context.Background(), root, entries); err == nil {
+		t.Fatal("unlisted archive file was accepted")
+	}
+	if err := os.Remove(filepath.Join(root, "extra.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyArchiveReplica(context.Background(), root, entries); err == nil {
+		t.Fatal("tampered archive file was accepted")
+	}
+}
+
+func TestArchiveRecoveryMetadataRejectsTrailingJSONAndSymlink(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	metadataPath := filepath.Join(root, archiveMetadataPath)
+	if err := os.WriteFile(metadataPath, []byte(`{"format_version":1} {}`), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readArchiveReplicaMetadata(root); err == nil {
+		t.Fatal("archive metadata with trailing JSON was accepted")
+	}
+	if err := os.Remove(metadataPath); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "outside.json")
+	if err := os.WriteFile(target, []byte(`{"format_version":1}`), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, metadataPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := readArchiveReplicaMetadata(root); err == nil {
+		t.Fatal("symlinked archive metadata was accepted")
 	}
 }
 
@@ -202,7 +306,7 @@ func TestManifestMismatchNeverReplacesPreviousReplica(t *testing.T) {
 
 func TestSnapshotRejectsTraversalAndUnsupportedEntries(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{"../escape", "/absolute", `C:\\escape`, ".stcontrol/hidden", "a/../../b"} {
+	for _, path := range []string{"../escape", "/absolute", `C:\\escape`, ".stcontrol/hidden", archiveMetadataPath, "a/../../b"} {
 		if safeArchivePath(path) {
 			t.Fatalf("unsafe path accepted: %q", path)
 		}

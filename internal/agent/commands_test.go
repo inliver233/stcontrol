@@ -61,6 +61,42 @@ func TestRuntimeStateRejectsCorruptFile(t *testing.T) {
 	}
 }
 
+func TestPrepareRestoreReceiveRequiresComputeRole(t *testing.T) {
+	t.Parallel()
+	payload, err := json.Marshal(protocol.PrepareSnapshotReceiveRequest{
+		WorkflowID: testWorkflowID, SnapshotID: testSnapshotID, GlobalUserID: 70,
+		Handle: "alice", DestinationKind: "restore", SourceNodeID: 8, ActivityEpoch: 4,
+		CapabilityHash: strings.Repeat("a", 64), ExpiresAt: time.Now().UTC().Add(10 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compute, err := New(&config.AgentConfig{
+		Role: "compute", NodeID: 9, AgentPSK: "compute-secret", DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	succeeded, result := compute.executeCommand(
+		context.Background(), encryptedTestCommand(t, compute.Cfg.AgentPSK, "prepare_snapshot_receive", payload),
+	)
+	if !succeeded {
+		t.Fatalf("compute restore prepare failed: %s", result)
+	}
+	storage, err := New(&config.AgentConfig{
+		Role: "storage", NodeID: 10, AgentPSK: "storage-secret", DataDir: t.TempDir(), BackupDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	succeeded, _ = storage.executeCommand(
+		context.Background(), encryptedTestCommand(t, storage.Cfg.AgentPSK, "prepare_snapshot_receive", payload),
+	)
+	if succeeded {
+		t.Fatal("storage node accepted a restore destination")
+	}
+}
+
 func TestDecryptCommandAuthenticatesCiphertextAndDigest(t *testing.T) {
 	t.Parallel()
 	a := &Agent{Cfg: &config.AgentConfig{AgentPSK: "agent-secret"}}
@@ -264,6 +300,42 @@ func TestProvisionCommandPassesStableRegistrationAndDeliveryOperations(t *testin
 	succeeded, result := a.executeCommand(context.Background(), command)
 	if !succeeded || adapterRequest.OperationID != operationID ||
 		adapterRequest.RegistrationID != registrationID || adapterRequest.PolicyVersion != 7 {
+		t.Fatalf("succeeded=%v request=%+v result=%s", succeeded, adapterRequest, result)
+	}
+}
+
+func TestRestoreAccountCommandUsesDedicatedIdempotentAdapterCapability(t *testing.T) {
+	t.Parallel()
+	operationID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	var adapterRequest protocol.RestoreUserAccountRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/stcontrol/internal/users/restore" {
+			t.Errorf("path=%s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&adapterRequest); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(protocol.ProvisionUserResponse{
+			OK: true, Handle: "alice", LocalUserID: "local-alice",
+		})
+	}))
+	defer server.Close()
+	a, err := New(&config.AgentConfig{
+		Role: "compute", TavernURL: server.URL, AgentPSK: "agent-secret", NodeID: 12, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := encryptedTestCommand(t, a.Cfg.AgentPSK, "restore_user_account", []byte(`{
+		"workflow_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		"global_user_id":70,"handle":"alice","name":"Alice","account_version":3,
+		"password_hash":"node-hash","password_salt":"node-salt"
+	}`))
+	command.OperationID = operationID
+	succeeded, result := a.executeCommand(context.Background(), command)
+	if !succeeded || adapterRequest.OperationID != operationID ||
+		adapterRequest.WorkflowID != "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" ||
+		adapterRequest.AccountVersion != 3 {
 		t.Fatalf("succeeded=%v request=%+v result=%s", succeeded, adapterRequest, result)
 	}
 }

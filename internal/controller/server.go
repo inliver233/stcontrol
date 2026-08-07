@@ -99,6 +99,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.backupScheduler(ctx)
 	go s.sessionJanitor(ctx)
 	go s.snapshotWorkflowReconciler(ctx)
+	go s.restoreWorkflowReconciler(ctx)
 	go s.passwordSyncReconciler(ctx)
 	go s.registrationWorkflowReconciler(ctx)
 

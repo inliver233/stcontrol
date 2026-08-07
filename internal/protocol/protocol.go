@@ -205,6 +205,19 @@ type ProvisionUserResponse struct {
 	Error       string `json:"error,omitempty"`
 }
 
+type RestoreUserAccountRequest struct {
+	OperationID    string `json:"operation_id"`
+	WorkflowID     string `json:"workflow_id"`
+	GlobalUserID   int64  `json:"global_user_id"`
+	Handle         string `json:"handle"`
+	Name           string `json:"name"`
+	AccountVersion int64  `json:"account_version"`
+	PasswordHash   string `json:"password_hash,omitempty"`
+	PasswordSalt   string `json:"password_salt,omitempty"`
+	OAuthProvider  string `json:"oauth_provider,omitempty"`
+	OAuthSubject   string `json:"oauth_subject,omitempty"`
+}
+
 type SetPasswordRequest struct {
 	OperationID  string `json:"operation_id"`
 	Handle       string `json:"handle"`
@@ -239,6 +252,21 @@ type StartSnapshotRequest struct {
 	TransferCapability string    `json:"transfer_capability"`
 	CapabilityExpires  time.Time `json:"capability_expires"`
 	DestinationKind    string    `json:"destination_kind"`
+}
+
+type StartRestoreTransferRequest struct {
+	JobID                int64     `json:"job_id"`
+	WorkflowID           string    `json:"workflow_id"`
+	SourceSnapshotID     string    `json:"source_snapshot_id"`
+	RestoreSnapshotID    string    `json:"restore_snapshot_id"`
+	SourceManifestSHA256 string    `json:"source_manifest_sha256"`
+	GlobalUserID         int64     `json:"global_user_id"`
+	Handle               string    `json:"handle"`
+	ActivityEpoch        int64     `json:"activity_epoch"`
+	TargetNodeID         int64     `json:"target_node_id"`
+	TargetTransferURL    string    `json:"target_transfer_url"`
+	TransferCapability   string    `json:"transfer_capability"`
+	CapabilityExpires    time.Time `json:"capability_expires"`
 }
 
 type SnapshotManifest struct {

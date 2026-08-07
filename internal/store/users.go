@@ -209,6 +209,7 @@ func (s *Store) ListPendingPasswordSyncs(ctx context.Context, limit int, now tim
 		JOIN global_users global_user ON global_user.id=account.user_id AND global_user.status='active'
 		JOIN nodes node ON node.id=account.node_id AND node.status='online'
 		WHERE account.status IN ('pending','error')
+		  AND account.provisioning_workflow_id IS NULL
 		  AND account.password_hash IS NOT NULL AND account.password_salt IS NOT NULL
 		  AND account.updated_at<=$2
 		ORDER BY account.updated_at LIMIT $1`, limit, now.Add(-2*time.Minute))
@@ -243,6 +244,7 @@ func (s *Store) ListPendingPasswordSyncsForUser(ctx context.Context, globalUserI
 		FROM node_accounts account
 		JOIN global_users global_user ON global_user.id=account.user_id
 		WHERE account.user_id=$1 AND account.status IN ('pending','error')
+		  AND account.provisioning_workflow_id IS NULL
 		  AND account.password_hash IS NOT NULL AND account.password_salt IS NOT NULL
 		ORDER BY account.node_id`, globalUserID)
 	if err != nil {

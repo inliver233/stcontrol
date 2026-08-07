@@ -27,12 +27,20 @@ import (
 
 const (
 	snapshotManifestPath = ".stcontrol/manifest.json"
+	archiveMetadataPath  = ".stcontrol-archive.json"
 	maxSnapshotFiles     = 100_000
 	maxSnapshotBytes     = int64(100 << 30)
 	maxSnapshotFileBytes = int64(10 << 30)
 	maxManifestBytes     = int64(32 << 20)
 	maxDecoderWindow     = uint64(64 << 20)
 )
+
+type archiveReplicaMetadata struct {
+	FormatVersion int                              `json:"format_version"`
+	PublishedAt   time.Time                        `json:"published_at"`
+	Manifest      protocol.SnapshotManifest        `json:"manifest"`
+	Receipt       protocol.SnapshotTransferReceipt `json:"receipt"`
+}
 
 type snapshotGateRequest struct {
 	WorkflowID    string `json:"workflow_id"`
@@ -151,6 +159,189 @@ func validateStartSnapshotRequest(req protocol.StartSnapshotRequest) error {
 		return fmt.Errorf("invalid snapshot request")
 	}
 	return nil
+}
+
+func (a *Agent) RunRestoreTransfer(
+	ctx context.Context,
+	req protocol.StartRestoreTransferRequest,
+) (protocol.SnapshotTransferReceipt, error) {
+	if runtime.GOOS != "linux" {
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("restore publication is enabled only on Linux")
+	}
+	if a.Cfg.Role != "storage" || req.JobID <= 0 || !validUUID(req.WorkflowID) ||
+		!validUUID(req.SourceSnapshotID) || !validUUID(req.RestoreSnapshotID) ||
+		req.SourceSnapshotID == req.RestoreSnapshotID || req.GlobalUserID <= 0 ||
+		!validHandle(req.Handle) || req.ActivityEpoch <= 0 || req.TargetNodeID <= 0 ||
+		req.TargetNodeID == a.Cfg.NodeID || !validCapabilityHash(req.SourceManifestSHA256) ||
+		req.TransferCapability == "" || !req.CapabilityExpires.After(time.Now().UTC()) {
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("invalid restore transfer request")
+	}
+	restoreCtx, cancel := context.WithCancel(ctx)
+	if !a.registerSnapshotJob(req.JobID, cancel) {
+		cancel()
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("restore job already running")
+	}
+	defer func() {
+		cancel()
+		a.unregisterSnapshotJob(req.JobID)
+	}()
+
+	sourceRoot := filepath.Join(a.Cfg.BackupDir, "replicas", req.Handle)
+	metadata, err := readArchiveReplicaMetadata(sourceRoot)
+	if err != nil {
+		return protocol.SnapshotTransferReceipt{}, err
+	}
+	if metadata.FormatVersion != 1 || metadata.Manifest.SnapshotID != req.SourceSnapshotID ||
+		metadata.Manifest.GlobalUserID != req.GlobalUserID || metadata.Manifest.Handle != req.Handle ||
+		metadata.Manifest.TargetNodeID != a.Cfg.NodeID || metadata.Manifest.ActivityEpoch != req.ActivityEpoch ||
+		metadata.PublishedAt.IsZero() || !metadata.Receipt.OK ||
+		metadata.Receipt.SnapshotID != req.SourceSnapshotID {
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("archive recovery metadata mismatch")
+	}
+	originalManifestJSON, err := json.Marshal(metadata.Manifest)
+	if err != nil {
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("invalid archive recovery manifest")
+	}
+	originalManifestDigest := sha256.Sum256(originalManifestJSON)
+	if !strings.EqualFold(hex.EncodeToString(originalManifestDigest[:]), req.SourceManifestSHA256) ||
+		!strings.EqualFold(metadata.Receipt.ManifestSHA256, req.SourceManifestSHA256) {
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("archive recovery manifest mismatch")
+	}
+	totalBytes, err := verifyArchiveReplica(restoreCtx, sourceRoot, metadata.Manifest.Files)
+	if err != nil {
+		return protocol.SnapshotTransferReceipt{}, err
+	}
+	if metadata.Receipt.FileCount != int64(len(metadata.Manifest.Files)) || metadata.Receipt.TotalBytes != totalBytes {
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("archive recovery receipt mismatch")
+	}
+	manifest := protocol.SnapshotManifest{
+		FormatVersion: 1, WorkflowID: req.WorkflowID, SnapshotID: req.RestoreSnapshotID,
+		GlobalUserID: req.GlobalUserID, Handle: req.Handle, SourceNodeID: a.Cfg.NodeID,
+		TargetNodeID: req.TargetNodeID, ActivityEpoch: req.ActivityEpoch,
+		CreatedAt: time.Now().UTC(), Files: metadata.Manifest.Files,
+	}
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		return protocol.SnapshotTransferReceipt{}, err
+	}
+	manifestDigest := sha256.Sum256(manifestJSON)
+	taskRoot, err := a.sourceSnapshotTaskPath(req.WorkflowID, req.RestoreSnapshotID)
+	if err != nil {
+		return protocol.SnapshotTransferReceipt{}, err
+	}
+	if err := resetTaskDirectory(taskRoot); err != nil {
+		return protocol.SnapshotTransferReceipt{}, err
+	}
+	defer removeTaskDirectory(taskRoot)
+	archivePath := filepath.Join(taskRoot, "restore.tar.zst")
+	if err := createSnapshotArchive(restoreCtx, archivePath, sourceRoot, manifestJSON, manifest.Files); err != nil {
+		return protocol.SnapshotTransferReceipt{}, err
+	}
+	archiveDigest, err := hashFile(archivePath)
+	if err != nil {
+		return protocol.SnapshotTransferReceipt{}, err
+	}
+	receipt, err := a.streamSnapshot(restoreCtx, protocol.StartSnapshotRequest{
+		WorkflowID: req.WorkflowID, SnapshotID: req.RestoreSnapshotID,
+		TargetTransferURL: req.TargetTransferURL, TransferCapability: req.TransferCapability,
+		CapabilityExpires: req.CapabilityExpires, DestinationKind: "restore",
+	}, archivePath, archiveDigest)
+	if err != nil {
+		return protocol.SnapshotTransferReceipt{}, err
+	}
+	if receipt.SnapshotID != req.RestoreSnapshotID ||
+		receipt.ManifestSHA256 != hex.EncodeToString(manifestDigest[:]) ||
+		receipt.ArchiveSHA256 != hex.EncodeToString(archiveDigest[:]) ||
+		receipt.FileCount != int64(len(manifest.Files)) || receipt.TotalBytes != totalBytes {
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("restore target receipt mismatch")
+	}
+	return receipt, nil
+}
+
+func readArchiveReplicaMetadata(sourceRoot string) (archiveReplicaMetadata, error) {
+	var metadata archiveReplicaMetadata
+	path := filepath.Join(sourceRoot, archiveMetadataPath)
+	if !isSubPath(sourceRoot, path) {
+		return metadata, fmt.Errorf("unsafe archive metadata path")
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 ||
+		info.Size() <= 0 || info.Size() > maxManifestBytes+(1<<20) {
+		return metadata, fmt.Errorf("archive recovery metadata unavailable")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 || int64(len(data)) > maxManifestBytes+(1<<20) {
+		return metadata, fmt.Errorf("archive recovery metadata unavailable")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&metadata); err != nil {
+		return archiveReplicaMetadata{}, fmt.Errorf("invalid archive recovery metadata")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return archiveReplicaMetadata{}, fmt.Errorf("invalid archive recovery metadata")
+	}
+	return metadata, nil
+}
+
+func verifyArchiveReplica(ctx context.Context, sourceRoot string, entries []protocol.ManifestEntry) (int64, error) {
+	if len(entries) > maxSnapshotFiles {
+		return 0, fmt.Errorf("archive recovery file limit exceeded")
+	}
+	expected := make(map[string]protocol.ManifestEntry, len(entries))
+	var totalBytes int64
+	for _, entry := range entries {
+		digest, err := hex.DecodeString(entry.SHA256)
+		if !safeArchivePath(entry.Path) || entry.Size < 0 || entry.Size > maxSnapshotFileBytes ||
+			err != nil || len(digest) != sha256.Size || totalBytes+entry.Size > maxSnapshotBytes {
+			return 0, fmt.Errorf("invalid archive recovery manifest")
+		}
+		if _, exists := expected[entry.Path]; exists {
+			return 0, fmt.Errorf("duplicate archive recovery path")
+		}
+		expected[entry.Path] = entry
+		totalBytes += entry.Size
+	}
+	seen := make(map[string]bool, len(expected))
+	err := filepath.Walk(sourceRoot, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(sourceRoot, path)
+		if err != nil || rel == "." {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == archiveMetadataPath {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) {
+			return fmt.Errorf("unsupported archive recovery entry")
+		}
+		if info.IsDir() {
+			return nil
+		}
+		entry, ok := expected[rel]
+		if !ok || entry.Size != info.Size() || seen[rel] {
+			return fmt.Errorf("archive recovery tree differs from manifest")
+		}
+		digest, err := hashFile(path)
+		if err != nil || !strings.EqualFold(hex.EncodeToString(digest[:]), entry.SHA256) {
+			return fmt.Errorf("archive recovery file verification failed")
+		}
+		seen[rel] = true
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if len(seen) != len(expected) {
+		return 0, fmt.Errorf("archive recovery files missing")
+	}
+	return totalBytes, nil
 }
 
 func (a *Agent) registerSnapshotJob(jobID int64, cancel context.CancelFunc) bool {
@@ -471,7 +662,7 @@ func (a *Agent) targetSnapshotPaths(transfer pendingTransfer) (taskRoot, finalPa
 	if transfer.DestinationKind == "archive" {
 		root = a.Cfg.BackupDir
 		finalPath = filepath.Join(root, "replicas", transfer.Handle)
-	} else if transfer.DestinationKind == "hot_standby" {
+	} else if transfer.DestinationKind == "hot_standby" || transfer.DestinationKind == "restore" {
 		root = a.dataRoot()
 		finalPath = filepath.Join(root, transfer.Handle)
 	} else {
@@ -515,7 +706,10 @@ func extractVerifyAndPublish(
 	decoderJSON := json.NewDecoder(bytes.NewReader(manifestJSON))
 	decoderJSON.DisallowUnknownFields()
 	var manifest protocol.SnapshotManifest
-	if err := decoderJSON.Decode(&manifest); err != nil || !manifestMatchesTransfer(manifest, transfer) {
+	if err := decoderJSON.Decode(&manifest); err != nil {
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("snapshot manifest scope mismatch")
+	}
+	if err := decoderJSON.Decode(&struct{}{}); err != io.EOF || !manifestMatchesTransfer(manifest, transfer) {
 		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("snapshot manifest scope mismatch")
 	}
 	expected := make(map[string]protocol.ManifestEntry, len(manifest.Files))
@@ -587,18 +781,55 @@ func extractVerifyAndPublish(
 	if len(seen) != len(expected) {
 		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("snapshot files missing")
 	}
+	manifestDigest := sha256.Sum256(manifestJSON)
+	receipt := protocol.SnapshotTransferReceipt{
+		OK: true, SnapshotID: transfer.SnapshotID,
+		ManifestSHA256: hex.EncodeToString(manifestDigest[:]), ArchiveSHA256: hex.EncodeToString(archiveDigest),
+		FileCount: int64(len(manifest.Files)), TotalBytes: declaredTotal,
+	}
+	if transfer.DestinationKind == "archive" {
+		if err := writeArchiveReplicaMetadata(staging, manifest, receipt); err != nil {
+			return protocol.SnapshotTransferReceipt{}, err
+		}
+	}
 	if beforePublish == nil || beforePublish() != nil {
 		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("snapshot publish fencing failed")
 	}
 	if err := publishSnapshotDirectory(staging, finalPath, taskRoot); err != nil {
 		return protocol.SnapshotTransferReceipt{}, err
 	}
-	manifestDigest := sha256.Sum256(manifestJSON)
-	return protocol.SnapshotTransferReceipt{
-		OK: true, SnapshotID: transfer.SnapshotID,
-		ManifestSHA256: hex.EncodeToString(manifestDigest[:]), ArchiveSHA256: hex.EncodeToString(archiveDigest),
-		FileCount: int64(len(manifest.Files)), TotalBytes: declaredTotal,
-	}, nil
+	return receipt, nil
+}
+
+func writeArchiveReplicaMetadata(
+	staging string,
+	manifest protocol.SnapshotManifest,
+	receipt protocol.SnapshotTransferReceipt,
+) error {
+	metadata := archiveReplicaMetadata{
+		FormatVersion: 1, PublishedAt: time.Now().UTC(), Manifest: manifest, Receipt: receipt,
+	}
+	data, err := json.Marshal(metadata)
+	if err != nil || int64(len(data)) > maxManifestBytes+(1<<20) {
+		return fmt.Errorf("archive recovery metadata too large")
+	}
+	path := filepath.Join(staging, archiveMetadataPath)
+	if !isSubPath(staging, path) {
+		return fmt.Errorf("unsafe archive recovery metadata path")
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o400)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 func ensureSnapshotDiskCapacity(path string, snapshotBytes int64) error {
@@ -687,7 +918,7 @@ func removeTaskDirectory(path string) {
 }
 
 func safeArchivePath(path string) bool {
-	return path != "" && filepath.IsLocal(filepath.FromSlash(path)) && path == filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))) &&
+	return path != "" && path != archiveMetadataPath && filepath.IsLocal(filepath.FromSlash(path)) && path == filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))) &&
 		!strings.HasPrefix(path, ".stcontrol/")
 }
 

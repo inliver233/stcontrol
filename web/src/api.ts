@@ -43,6 +43,21 @@ export interface ProtectionState {
   version: number
 }
 
+export interface RestoreTarget {
+  node_id: number
+  name: string
+  region: string
+}
+
+export interface RestoreStatus {
+  operation_id: string
+  state: 'preparing' | 'transferring' | 'verifying' | 'publishing' | 'retrying' | 'succeeded' | 'failed'
+  target_node_id: number
+  target_node_name: string
+  latest_recovery_at: string
+  error?: string
+}
+
 export interface Me {
   username: string
   display_name: string
@@ -142,6 +157,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ target_node_id, operation_id, expected_recovery_at, acknowledge_data_loss: true }),
     }),
+  restoreTargets: () => request<{ targets: RestoreTarget[] }>('/api/users/me/restore-targets'),
+  startArchiveRestore: (target_node_id: number, operation_id: string, expected_recovery_at: string) =>
+    request<RestoreStatus>('/api/users/me/restore', {
+      method: 'POST',
+      body: JSON.stringify({ target_node_id, operation_id, expected_recovery_at, acknowledge_data_loss: true }),
+    }),
+  archiveRestoreStatus: (operation_id: string) =>
+    request<RestoreStatus>(`/api/users/me/restores/${encodeURIComponent(operation_id)}`),
   loginHandoff: (node_id: number, operation_id: string) =>
     request<LoginHandoff>('/api/login/redirect', {
       method: 'POST',

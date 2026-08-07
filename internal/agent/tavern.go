@@ -34,7 +34,7 @@ type adapterHealth struct {
 }
 
 var requiredAdapterCapabilities = []string{
-	"activity_leases", "login_handoff", "password_update", "registration_policy",
+	"account_restore", "activity_leases", "login_handoff", "password_update", "registration_policy",
 	"snapshot_boundary", "user_provision", "write_gate",
 }
 
@@ -52,6 +52,20 @@ func (a *Agent) provisionUser(ctx context.Context, req *protocol.ProvisionUserRe
 	}
 	if !out.OK {
 		return &out, fmt.Errorf("node adapter rejected user provisioning")
+	}
+	return &out, nil
+}
+
+func (a *Agent) restoreUserAccount(
+	ctx context.Context,
+	req *protocol.RestoreUserAccountRequest,
+) (*protocol.ProvisionUserResponse, error) {
+	var out protocol.ProvisionUserResponse
+	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/users/restore", req, &out); err != nil {
+		return nil, err
+	}
+	if !out.OK || out.Handle != req.Handle || out.LocalUserID == "" {
+		return &out, fmt.Errorf("node adapter rejected account restore")
 	}
 	return &out, nil
 }

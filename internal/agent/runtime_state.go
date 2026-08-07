@@ -93,7 +93,15 @@ func (a *Agent) prepareTransfer(transfer pendingTransfer) error {
 		if sameCapability && existing.State == "prepared" {
 			return nil
 		}
-		if sameCapability || (existing.State != "failed" && !(existing.State == "prepared" && !existing.ExpiresAt.After(time.Now().UTC()))) {
+		retryableExpiredRestore := existing.WorkflowID == transfer.WorkflowID &&
+			existing.DestinationKind == "restore" && transfer.DestinationKind == "restore" &&
+			existing.State == "consumed" && !existing.ExpiresAt.After(time.Now().UTC())
+		replaceablePreparedRestore := existing.WorkflowID == transfer.WorkflowID &&
+			existing.DestinationKind == "restore" && transfer.DestinationKind == "restore" &&
+			existing.State == "prepared" && !sameCapability
+		if sameCapability || (existing.State != "failed" &&
+			!(existing.State == "prepared" && !existing.ExpiresAt.After(time.Now().UTC())) &&
+			!retryableExpiredRestore && !replaceablePreparedRestore) {
 			return fmt.Errorf("snapshot transfer identity already exists")
 		}
 	}

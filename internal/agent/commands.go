@@ -178,6 +178,20 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: code})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, LocalUserID: provisioned.LocalUserID})
+	case "restore_user_account":
+		var payload protocol.RestoreUserAccountRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		payload.OperationID = command.OperationID
+		if a.Cfg.Role != "compute" || !validRestoreUserAccountRequest(payload) {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		restored, err := a.restoreUserAccount(ctx, &payload)
+		if err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "account_restore_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, LocalUserID: restored.LocalUserID})
 	case "set_password":
 		var payload protocol.SetPasswordRequest
 		if err := json.Unmarshal(plaintext, &payload); err != nil || payload.Handle == "" ||
@@ -193,7 +207,8 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		var payload protocol.PrepareSnapshotReceiveRequest
 		if err := json.Unmarshal(plaintext, &payload); err != nil || !validUUID(payload.WorkflowID) ||
 			!validUUID(payload.SnapshotID) || payload.GlobalUserID <= 0 || !validHandle(payload.Handle) || payload.SourceNodeID <= 0 ||
-			payload.ActivityEpoch <= 0 || (payload.DestinationKind != "archive" && payload.DestinationKind != "hot_standby") ||
+			payload.ActivityEpoch <= 0 || (payload.DestinationKind != "archive" && payload.DestinationKind != "hot_standby" && payload.DestinationKind != "restore") ||
+			(payload.DestinationKind == "restore" && a.Cfg.Role != "compute") ||
 			!validCapabilityHash(payload.CapabilityHash) || !payload.ExpiresAt.After(time.Now().UTC()) ||
 			payload.ExpiresAt.After(time.Now().UTC().Add(20*time.Minute)) {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
@@ -215,6 +230,16 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		receipt, err := a.RunSnapshot(ctx, payload)
 		if err != nil {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "snapshot_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, Snapshot: &receipt})
+	case "start_restore_transfer":
+		var payload protocol.StartRestoreTransferRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		receipt, err := a.RunRestoreTransfer(ctx, payload)
+		if err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "restore_transfer_failed"})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, Snapshot: &receipt})
 	case "get_snapshot_receipt":
@@ -255,6 +280,18 @@ func validProvisionRequest(req protocol.ProvisionUserRequest) bool {
 		return false
 	}
 	passwordMode := req.PasswordHash != "" && req.PasswordSalt != "" && req.OAuthProvider == "" && req.OAuthSubject == ""
+	oauthMode := req.PasswordHash == "" && req.PasswordSalt == "" &&
+		(req.OAuthProvider == "discord" || req.OAuthProvider == "linuxdo") && req.OAuthSubject != ""
+	return passwordMode || oauthMode
+}
+
+func validRestoreUserAccountRequest(req protocol.RestoreUserAccountRequest) bool {
+	if !validUUID(req.OperationID) || !validUUID(req.WorkflowID) || req.GlobalUserID <= 0 ||
+		!validHandle(req.Handle) || req.Name == "" || req.AccountVersion <= 0 {
+		return false
+	}
+	passwordMode := req.PasswordHash != "" && req.PasswordSalt != "" &&
+		req.OAuthProvider == "" && req.OAuthSubject == ""
 	oauthMode := req.PasswordHash == "" && req.PasswordSalt == "" &&
 		(req.OAuthProvider == "discord" || req.OAuthProvider == "linuxdo") && req.OAuthSubject != ""
 	return passwordMode || oauthMode

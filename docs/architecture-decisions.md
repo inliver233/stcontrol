@@ -54,3 +54,11 @@
 - 决定：修复目标只允许 `role=storage`、启用备份、数据面可用且通过连通/运营/兼容/容量门禁的节点；优先 `open`，其次 `busy`。没有纯存储目标时保持未保护并由宽限告警升级，绝不把数据静默塞进计算节点冒充正常保护。
 - 决定：修复复用现有写门、不可变 snapshot、短期 capability、端到端校验和原子发布流程，并把副本来源记为 `temporary_failure_protection`。新 archive 完整发布后，其他 ready archive 才降为 `stale`；不可达节点上的旧物理数据不盲删，等待后续受审计清理。
 - 影响：存储节点故障不打断当前用户，用户安全离线后自动收敛纯存储保护。纯存储到计算恢复、旧副本物理清理和修复故障注入仍是后续门禁。
+
+## ADR-009：纯存储恢复先供应账号，后原子晋升数据
+
+- 决定：用户只能在保护投影为 `restore_required` 时选择恢复目标；目标必须是连通、运营、兼容和容量均合格的计算节点，且不存在同 handle 账号冲突。请求必须携带稳定 operation ID、精确 immutable 恢复时间和显式数据丢失确认，三者与用户、目标一起进入 keyed HMAC 和 serializable 事务条件。
+- 决定：恢复是独立的持久 workflow，步骤为 `provision_account -> prepare_target -> transfer -> verify -> publish`，并复用 active generation、任务租约、`retry_wait/failed/succeeded` 和短期单次 capability。没有目标账号时，从已持久化的节点 scrypt 材料或 active OAuth identity 供应账号；`provisioning_workflow_id` 隔离恢复中的 pending 账号，避免通用密码同步 worker 抢占。
+- 决定：storage Agent 只从原子发布时写入的私有 archive 元数据恢复。它重新序列化原 manifest 并与 Controller 保存的 SHA-256 比对，再逐文件重算大小和摘要；旧 archive 缺元数据、尾随 JSON、额外文件、符号链接、非普通文件或内容漂移全部失败关闭。新 manifest 使用独立 restore snapshot ID，并由 storage Agent 直传 compute Agent。
+- 决定：compute Agent 在任务目录中限额解包、逐文件验证并同文件系统原子发布；Controller 只有取得匹配回执后，才在一个事务内把结果 manifest 设为 immutable、旧 home 降为 stale、目标设为唯一 authoritative home、撤销旧票据/租约、更新账号与保护事实并写审计。失败只标记未纳管副本和清理事实，不删除旧 home 或 archive，也不冒充成功。
+- 影响：用户页面只公开目标名称、恢复点和产品阶段，不公开 workflow/snapshot/capability；浏览器会话保留稳定 operation ID 以重放不确定响应，且只在 `succeeded` 后尝试登录。SillyTavern 的专用账号恢复 adapter 端点仍须在现有 WIP 冲突解除后挂载，真实 PostgreSQL/双 Agent 故障注入也仍是上线门禁。

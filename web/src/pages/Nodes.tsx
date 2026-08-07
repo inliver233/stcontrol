@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, MyNode, ProtectionState, measureLatency, submitLoginHandoff } from '../api'
+import { api, MyNode, ProtectionState, RestoreStatus, RestoreTarget, measureLatency, submitLoginHandoff } from '../api'
 import { useAuth } from '../App'
 import { Link, useNavigate } from 'react-router-dom'
 
@@ -12,6 +12,12 @@ export default function NodesPage() {
   const [takeoverNode, setTakeoverNode] = useState<MyNode | null>(null)
   const [returnNode, setReturnNode] = useState<MyNode | null>(null)
   const [takingOver, setTakingOver] = useState(false)
+	const [restoreTargets, setRestoreTargets] = useState<RestoreTarget[]>([])
+	const [restoreTargetsLoading, setRestoreTargetsLoading] = useState(false)
+	const [selectedRestoreTarget, setSelectedRestoreTarget] = useState<number | null>(null)
+	const [restoreStatus, setRestoreStatus] = useState<RestoreStatus | null>(null)
+	const [restoring, setRestoring] = useState(false)
+	const mounted = useRef(true)
   const handoffOperations = useRef(new Map<number, string>())
   const takeoverOperations = useRef(new Map<number, string>())
   const { me, setMe } = useAuth()
@@ -19,11 +25,26 @@ export default function NodesPage() {
 
   useEffect(() => {
     let cancelled = false
+		mounted.current = true
     ;(async () => {
       try {
         const [{ nodes: list }, protectionState] = await Promise.all([api.myNodes(), api.protection()])
         if (cancelled) return
         setProtection(protectionState)
+				if (protectionState.storage_restore_needed) {
+					setRestoreTargetsLoading(true)
+					try {
+						const { targets } = await api.restoreTargets()
+						if (!cancelled) {
+							setRestoreTargets(targets)
+							if (targets.length === 1) setSelectedRestoreTarget(targets[0].node_id)
+						}
+					} catch (err: unknown) {
+						if (!cancelled) setError(err instanceof Error ? err.message : '加载恢复目标失败')
+					} finally {
+						if (!cancelled) setRestoreTargetsLoading(false)
+					}
+				}
         const withLatency = await Promise.all(
           list.map(async n => ({ ...n, latency_ms: await measureLatency(n.base_url) })),
         )
@@ -40,7 +61,7 @@ export default function NodesPage() {
         setLoading(false)
       }
     })()
-    return () => { cancelled = true }
+    return () => { cancelled = true; mounted.current = false }
   }, [])
 
   const enterNode = async (nodeId: number) => {
@@ -61,7 +82,7 @@ export default function NodesPage() {
   }
 
   const chooseNode = (node: MyNode) => {
-    if (!node.ready || jumping || takingOver) return
+    if (!node.ready || jumping || takingOver || restoring) return
     if (node.requires_takeover) {
       if (protection?.active_writer_node_id && protection.active_writer_node_id !== node.node_id) {
         const writer = nodes.find(candidate => candidate.node_id === protection.active_writer_node_id)
@@ -123,6 +144,76 @@ export default function NodesPage() {
     }
   }
 
+	const restoreOperationKey = (targetNodeID: number, recoveryAt: string) =>
+		`stcontrol_restore_operation:${targetNodeID}:${recoveryAt}`
+
+	const refreshAfterRestore = async (targetNodeID: number) => {
+		const [{ nodes: list }, protectionState] = await Promise.all([api.myNodes(), api.protection()])
+		const withLatency = await Promise.all(
+			list.map(async node => ({ ...node, latency_ms: await measureLatency(node.base_url) })),
+		)
+		if (!mounted.current) return
+		setNodes(withLatency)
+		setProtection(protectionState)
+		setRestoreTargets([])
+		setSelectedRestoreTarget(null)
+		setRestoring(false)
+		const target = withLatency.find(node => node.node_id === targetNodeID && node.ready && !node.requires_takeover)
+		if (target) await enterNode(targetNodeID)
+	}
+
+	const pollArchiveRestore = async (initial: RestoreStatus, storageKey: string) => {
+		let status = initial
+		while (mounted.current && status.state !== 'succeeded' && status.state !== 'failed') {
+			await new Promise(resolve => window.setTimeout(resolve, 2000))
+			if (!mounted.current) return
+			status = await api.archiveRestoreStatus(status.operation_id)
+			if (!mounted.current) return
+			setRestoreStatus(status)
+		}
+		if (!mounted.current) return
+		if (status.state === 'succeeded') {
+			sessionStorage.removeItem(storageKey)
+			await refreshAfterRestore(status.target_node_id)
+			return
+		}
+		sessionStorage.removeItem(storageKey)
+		setRestoring(false)
+		setError(status.error || '恢复未完成，请重新选择目标后重试。')
+	}
+
+	const confirmArchiveRestore = async () => {
+		if (!selectedRestoreTarget || !protection?.latest_recovery_at || restoring) return
+		const storageKey = restoreOperationKey(selectedRestoreTarget, protection.latest_recovery_at)
+		let operationID = sessionStorage.getItem(storageKey)
+		if (!operationID) {
+			operationID = crypto.randomUUID()
+			sessionStorage.setItem(storageKey, operationID)
+		}
+		setRestoring(true)
+		setError('')
+		try {
+			const status = await api.startArchiveRestore(
+				selectedRestoreTarget, operationID, protection.latest_recovery_at,
+			)
+			setRestoreStatus(status)
+			await pollArchiveRestore(status, storageKey)
+		} catch (err: unknown) {
+			setError(err instanceof Error ? err.message : '恢复任务提交失败')
+			setRestoring(false)
+		}
+	}
+
+	const restoreStateLabel = (state: RestoreStatus['state']) => ({
+		preparing: '正在准备目标账号',
+		transferring: '正在传输恢复数据',
+		verifying: '正在逐文件校验',
+		publishing: '正在原子发布',
+		retrying: '暂时中断，正在安全重试',
+		succeeded: '恢复完成',
+		failed: '恢复未完成',
+	}[state])
+
   const logout = async () => {
     await api.logout()
     setMe(null)
@@ -170,6 +261,51 @@ export default function NodesPage() {
             <button className="btn-sm" disabled={takingOver} onClick={() => setTakeoverNode(null)}>取消</button>
           </div>
         )}
+				{protection?.storage_restore_needed && (
+					<div className="error-msg">
+						<strong>从纯存储副本恢复到计算节点</strong>
+						<p>
+							请选择恢复目标。系统会先供应并验证节点账号，再传输、逐文件校验和原子发布；
+							完成前该节点不能登录。最近完整恢复点为{' '}
+							{protection.latest_recovery_at
+								? new Date(protection.latest_recovery_at).toLocaleString()
+								: '不可用'}，此时间之后的数据可能丢失。
+						</p>
+						{restoreTargetsLoading ? (
+							<div className="loading">正在查找合格计算节点…</div>
+						) : restoreTargets.length === 0 ? (
+							<p>当前没有同时满足容量、兼容性和账号供应条件的计算节点，请稍后重试或联系管理员。</p>
+						) : (
+							<div className="restore-targets">
+								{restoreTargets.map(target => (
+									<label key={target.node_id} className={`restore-target ${selectedRestoreTarget === target.node_id ? 'selected' : ''}`}>
+										<input
+											type="radio"
+											name="restore-target"
+											checked={selectedRestoreTarget === target.node_id}
+											disabled={restoring}
+											onChange={() => setSelectedRestoreTarget(target.node_id)}
+										/>
+										<span><strong>{target.name}</strong><small>{target.region || '默认区域'}</small></span>
+									</label>
+								))}
+							</div>
+						)}
+						{restoreStatus && (
+							<div className={restoreStatus.state === 'failed' ? 'error-msg' : 'warning-msg'}>
+								{restoreStateLabel(restoreStatus.state)}
+								{restoreStatus.error && `：${restoreStatus.error}`}
+							</div>
+						)}
+						<button
+							className="btn-sm danger"
+							disabled={!selectedRestoreTarget || !protection.latest_recovery_at || restoring || restoreTargetsLoading}
+							onClick={confirmArchiveRestore}
+						>
+							{restoring ? '恢复进行中…' : '理解风险并开始恢复'}
+						</button>
+					</div>
+				)}
         {loading ? (
           <div className="loading">正在加载你的服务器…</div>
         ) : nodes.length === 0 ? (

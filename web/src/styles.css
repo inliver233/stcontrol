@@ -213,6 +213,27 @@ a:hover { color: var(--primary-hover); }
 .my-node .info { flex: 1; }
 .my-node .info .name { font-weight: 600; font-size: 16px; }
 .my-node .info .sub { font-size: 13px; color: var(--text-dim); margin-top: 3px; }
+
+.restore-targets {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+.restore-target {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text);
+  cursor: pointer;
+}
+.restore-target.selected { border-color: var(--primary); }
+.restore-target input { accent-color: var(--primary); }
+.restore-target span { display: flex; flex-direction: column; }
+.restore-target small { color: var(--text-dim); margin-top: 2px; }
 .my-node .go { font-size: 20px; color: var(--text-dim); }
 
 .section-title { font-size: 16px; font-weight: 600; margin: 20px 0 12px; }
