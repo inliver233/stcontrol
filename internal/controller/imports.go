@@ -1,0 +1,253 @@
+package controller
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	controlcrypto "stcontrol/internal/crypto"
+	"stcontrol/internal/protocol"
+	"stcontrol/internal/store"
+)
+
+type scanExistingRequest struct {
+	OperationID string `json:"operation_id"`
+}
+
+func (s *Server) handleAdminScanExisting(w http.ResponseWriter, r *http.Request) {
+	setHandoffNoStoreHeaders(w)
+	nodeID, err := parseID(chi.URLParam(r, "id"))
+	if err != nil {
+		protocol.WriteError(w, http.StatusBadRequest, "非法节点 ID")
+		return
+	}
+	var req scanExistingRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil || !isUUID(req.OperationID) {
+		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	node, err := s.Store.GetNodeByID(r.Context(), nodeID)
+	if err != nil || node == nil || node.Role != "compute" {
+		protocol.WriteError(w, http.StatusNotFound, "计算节点不存在")
+		return
+	}
+	commandOperationID := deriveWorkflowOperationID(req.OperationID, "scan-existing")
+	result, err := s.runAgentCommandWithOperation(
+		r.Context(), node, "scan_existing", struct{}{}, commandOperationID, 45*time.Second,
+	)
+	if err != nil {
+		protocol.WriteError(w, http.StatusBadGateway, "扫描结果尚未确认，请使用同一操作重试")
+		return
+	}
+	sess := currentSession(r)
+	if sess == nil || sess.AdminID <= 0 {
+		protocol.WriteError(w, http.StatusUnauthorized, "管理员会话无效")
+		return
+	}
+	batchID, err := newUUID()
+	if err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "创建导入批次失败")
+		return
+	}
+	params, err := s.buildAccountImportBatch(
+		r.Context(), node, batchID, req.OperationID, sess.AdminID, result.Users, time.Now().UTC(),
+	)
+	if err != nil {
+		if errors.Is(err, store.ErrInvalidAccountImport) {
+			protocol.WriteError(w, http.StatusConflict, "节点返回的账号库存无效")
+			return
+		}
+		protocol.WriteError(w, http.StatusServiceUnavailable, "账号身份匹配暂不可用")
+		return
+	}
+	imported, err := s.Store.IngestAccountImportBatch(r.Context(), params)
+	if err != nil {
+		if errors.Is(err, store.ErrAccountImportConflict) {
+			protocol.WriteError(w, http.StatusConflict, "重复操作的扫描内容不一致")
+			return
+		}
+		protocol.WriteError(w, http.StatusServiceUnavailable, "保存导入库存失败")
+		return
+	}
+	if imported == nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "导入库存暂不可用")
+		return
+	}
+	detail, _ := json.Marshal(map[string]int{
+		"candidates":  imported.Batch.CandidateCount,
+		"auto_linked": imported.Batch.AutoLinkedCount,
+		"unresolved":  imported.Batch.UnresolvedCount,
+	})
+	_ = s.Store.Audit(r.Context(), sess.Username, "account-import-scan", node.Name, detail)
+	protocol.WriteJSON(w, http.StatusOK, imported)
+}
+
+func (s *Server) handleAdminLatestAccountImport(w http.ResponseWriter, r *http.Request) {
+	setHandoffNoStoreHeaders(w)
+	nodeID, err := parseID(chi.URLParam(r, "id"))
+	if err != nil {
+		protocol.WriteError(w, http.StatusBadRequest, "非法节点 ID")
+		return
+	}
+	result, err := s.Store.GetLatestAccountImportBatch(r.Context(), nodeID)
+	if err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "读取导入库存失败")
+		return
+	}
+	if result == nil {
+		protocol.WriteJSON(w, http.StatusOK, map[string]any{
+			"batch": nil, "candidates": []any{},
+		})
+		return
+	}
+	protocol.WriteJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) buildAccountImportBatch(
+	ctx context.Context,
+	node *store.Node,
+	batchID, operationID string,
+	adminID int64,
+	users []protocol.ScanExistingUser,
+	now time.Time,
+) (store.CreateAccountImportBatchParams, error) {
+	if node == nil || !isUUID(batchID) || !isUUID(operationID) || adminID <= 0 ||
+		len(users) > protocol.MaxAccountInventoryUsers {
+		return store.CreateAccountImportBatchParams{}, store.ErrInvalidAccountImport
+	}
+	psk, err := s.agentPSK(ctx, node)
+	if err != nil {
+		return store.CreateAccountImportBatchParams{}, err
+	}
+	if psk == "" {
+		return store.CreateAccountImportBatchParams{}, store.ErrInvalidAccountImport
+	}
+	identitySubjects, err := s.Store.ListActiveOAuthIdentitySubjects(ctx)
+	if err != nil {
+		return store.CreateAccountImportBatchParams{}, err
+	}
+	identityMatches := make(map[string][]int64, len(identitySubjects))
+	for _, identity := range identitySubjects {
+		fingerprint := controlcrypto.AgentInventoryFingerprint(
+			psk, "oauth-subject", identity.Provider, identity.Subject,
+		)
+		key := identity.Provider + "\n" + fingerprint
+		identityMatches[key] = append(identityMatches[key], identity.GlobalUserID)
+	}
+
+	normalized := append([]protocol.ScanExistingUser(nil), users...)
+	sort.Slice(normalized, func(i, j int) bool { return normalized[i].LocalUserID < normalized[j].LocalUserID })
+	seen := make(map[string]struct{}, len(normalized))
+	candidates := make([]store.AccountImportCandidateInput, 0, len(normalized))
+	sources := make(map[string]struct{}, 2)
+	for index := range normalized {
+		user := &normalized[index]
+		sort.Slice(user.Identities, func(i, j int) bool { return user.Identities[i].Provider < user.Identities[j].Provider })
+		if !validScannedInventoryUser(*user) {
+			return store.CreateAccountImportBatchParams{}, store.ErrInvalidAccountImport
+		}
+		if _, exists := seen[user.LocalUserID]; exists {
+			return store.CreateAccountImportBatchParams{}, store.ErrInvalidAccountImport
+		}
+		seen[user.LocalUserID] = struct{}{}
+		sources[user.Source] = struct{}{}
+		candidateID, err := newUUID()
+		if err != nil {
+			return store.CreateAccountImportBatchParams{}, err
+		}
+		candidate := store.AccountImportCandidateInput{
+			ID: candidateID, LocalUserID: user.LocalUserID, LocalHandle: user.Handle,
+			SizeBytes: user.Size, DirectoryFingerprint: user.DirectoryFingerprint,
+			Source: user.Source, AccountKind: user.AccountKind, IsAdmin: user.IsAdmin,
+		}
+		matched := make(map[int64]struct{})
+		for _, identity := range user.Identities {
+			candidate.Identities = append(candidate.Identities, store.AccountImportIdentityFingerprint{
+				Provider: identity.Provider, Fingerprint: identity.Fingerprint,
+			})
+			for _, globalUserID := range identityMatches[identity.Provider+"\n"+identity.Fingerprint] {
+				matched[globalUserID] = struct{}{}
+			}
+		}
+		for globalUserID := range matched {
+			candidate.MatchedGlobalUserIDs = append(candidate.MatchedGlobalUserIDs, globalUserID)
+		}
+		sort.Slice(candidate.MatchedGlobalUserIDs, func(i, j int) bool {
+			return candidate.MatchedGlobalUserIDs[i] < candidate.MatchedGlobalUserIDs[j]
+		})
+		candidates = append(candidates, candidate)
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return store.CreateAccountImportBatchParams{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	source := "mixed"
+	if len(sources) == 1 {
+		for value := range sources {
+			source = value
+		}
+	}
+	if len(normalized) == 0 {
+		source = "adapter"
+	}
+	return store.CreateAccountImportBatchParams{
+		ID: batchID, OperationID: operationID, NodeID: node.ID,
+		InventoryDigest: digest[:], Source: source, CreatedByAdminID: adminID,
+		Candidates: candidates, Now: now,
+	}, nil
+}
+
+func validScannedInventoryUser(user protocol.ScanExistingUser) bool {
+	if !safeScannedInventoryString(user.LocalUserID, 256) ||
+		!safeScannedInventoryString(user.Handle, 128) || user.Size < 0 ||
+		(user.Source != "adapter" && user.Source != "directory_fallback") ||
+		(user.AccountKind != "password" && user.AccountKind != "oauth" &&
+			user.AccountKind != "mixed" && user.AccountKind != "unknown") ||
+		!validScannedFingerprint(user.DirectoryFingerprint) || len(user.Identities) > 2 {
+		return false
+	}
+	providers := make(map[string]struct{}, len(user.Identities))
+	for _, identity := range user.Identities {
+		if (identity.Provider != "discord" && identity.Provider != "linuxdo") ||
+			!validScannedFingerprint(identity.Fingerprint) {
+			return false
+		}
+		if _, exists := providers[identity.Provider]; exists {
+			return false
+		}
+		providers[identity.Provider] = struct{}{}
+	}
+	hasOAuth := len(user.Identities) > 0
+	if user.Source == "directory_fallback" &&
+		(user.AccountKind != "unknown" || hasOAuth || user.IsAdmin) {
+		return false
+	}
+	return (user.AccountKind == "oauth" || user.AccountKind == "mixed") == hasOAuth
+}
+
+func safeScannedInventoryString(value string, limit int) bool {
+	if value == "" || len(value) > limit || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, char := range value {
+		if char < 0x20 || char == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func validScannedFingerprint(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size
+}

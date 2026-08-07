@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,8 +132,76 @@ func TestExecuteScanExistingReturnsOnlySafeSummary(t *testing.T) {
 	if len(result.Users) != 2 || result.Users[0].Handle != "alice" || result.Users[1].Handle != "bob" {
 		t.Fatalf("users=%+v", result.Users)
 	}
+	if result.Users[0].Source != "directory_fallback" || result.Users[0].AccountKind != "unknown" ||
+		len(result.Users[0].DirectoryFingerprint) != 64 || result.Users[0].LocalUserID != "alice" {
+		t.Fatalf("unsafe fallback classification=%+v", result.Users[0])
+	}
 	if string(raw) == "" || jsonContainsKey(raw, "path") {
 		t.Fatalf("unsafe result=%s", raw)
+	}
+}
+
+func TestScanExistingUsersUsesAdapterAndRedactsOAuthSubject(t *testing.T) {
+	t.Parallel()
+	const subject = "discord-stable-subject"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/stcontrol/internal/users/scan" {
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(adapterInventoryResponse{
+			OK: true,
+			Users: []adapterInventoryUser{{
+				LocalUserID: "local-7", Handle: "alice", SizeBytes: 123,
+				DirectoryFingerprint: strings.Repeat("a", 64), HasPassword: true, IsAdmin: true,
+				OAuthIdentities: []adapterInventoryIdentity{{Provider: "discord", Subject: subject}},
+			}},
+		})
+	}))
+	defer server.Close()
+	a, err := New(&config.AgentConfig{
+		TavernURL: server.URL, AgentPSK: "agent-secret", NodeID: 12, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	users, err := a.ScanExistingUsers(context.Background())
+	if err != nil || len(users) != 1 {
+		t.Fatalf("users=%+v err=%v", users, err)
+	}
+	encoded, err := json.Marshal(users)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFingerprint := controlcrypto.AgentInventoryFingerprint(
+		"agent-secret", "oauth-subject", "discord", subject,
+	)
+	if users[0].Source != "adapter" || users[0].AccountKind != "mixed" || !users[0].IsAdmin ||
+		len(users[0].Identities) != 1 || users[0].Identities[0].Fingerprint != wantFingerprint ||
+		strings.Contains(string(encoded), subject) {
+		t.Fatalf("unsafe adapter inventory=%s", encoded)
+	}
+}
+
+func TestScanExistingUsersDoesNotFallbackAfterInvalidAdapterInventory(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(adapterInventoryResponse{OK: false})
+	}))
+	defer server.Close()
+	tavernDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tavernDir, "data", "alice"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(&config.AgentConfig{
+		TavernURL: server.URL, TavernDir: tavernDir, AgentPSK: "agent-secret",
+		NodeID: 12, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	users, err := a.ScanExistingUsers(context.Background())
+	if !errors.Is(err, errInvalidAdapterInventory) || users != nil {
+		t.Fatalf("users=%+v err=%v", users, err)
 	}
 }
 

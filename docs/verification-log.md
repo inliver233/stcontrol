@@ -158,3 +158,16 @@
 - `go test -coverprofile=coverage/registration_integration.coverprofile ./...`：通过，总覆盖率 `34.9%`（`internal/controller 16.9%`、`internal/agent 39.9%`、`internal/store 55.0%`），仍未达到最终 80% 门禁。
 - `go vet ./...`、`GOOS=linux GOARCH=amd64 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。
 - 尚未完成且未冒充完成：SillyTavern federation adapter 仍因另一个工具的未提交冲突未挂载，因此节点侧真实策略、幂等供应及邀请码单次消费尚未形成真实闭环；真实 PostgreSQL、进程崩溃和网络响应丢失集成测试也待补，R15 保持 `部分`。
+
+## 2026-08-08：老节点账号安全库存与 OAuth 自动关联批次
+
+- 新增 `account_import_batches/account_import_candidates` 持久事实：批次以 operation ID 幂等、以完整安全库存摘要拒绝不同内容重放，并绑定 active controller generation、发起管理员、节点和扫描时间。候选保存节点 local user ID、目录指纹、身份指纹、分类和关联结果，但 API 不公开本地 ID、指纹、批次/候选内部 ID或内部 reason code。
+- Agent 新增精确账号库存契约，优先从签名 loopback adapter 读取 local user ID、handle、密码存在性、OAuth stable subject、管理员标记、大小及目录摘要；原始 OAuth subject 在 Agent 进程内立即变成按节点 PSK 和用途隔离的 HMAC 指纹，durable command result 不含原 subject。adapter 读取失败只回退到目录摘要，标记 `directory_fallback/unknown` 且禁止声明 OAuth/管理员事实。
+- 单批库存上限固定为 500 个账号以满足单节点数百基线并保持 Agent durable result 在 1 MiB 认证请求上限内；超限会整批失败而非静默截断。万级跨节点容量不受影响，更大单节点所需的分页扫描仍列入容量阶段。
+- Controller 用同一节点凭据对现有 active OAuth identities 计算指纹，只允许唯一 global UUID 所属用户命中后自动关联。关联在 serializable 事务中插入 active `node_accounts`；无既有 home 时把导入节点设为 home/ready，已有其他 home 时仅建 stale hot standby，避免未经数据校验进入登录候选。
+- handle 只用于识别 `claim_required`，从不作为全局关联键；无匹配身份分别进入 `oauth_unmatched/recovery_required`，多身份命中不同全局用户、local ID/handle 冲突或同用户已有另一节点账号均进入 `identity_conflict`，不会覆盖旧映射。
+- 管理台扫描使用稳定浏览器 operation ID；响应不确定时保留同一操作重试，也可读取节点最近的持久库存。界面明确区分已管理、OAuth 自动关联、需控制权证明、需身份恢复、OAuth 未匹配和身份冲突，不提供尚未接线的假“合并成功”按钮。
+- 单元测试覆盖节点/用途隔离的库存 HMAC、adapter subject 脱敏、目录回退限制、Controller 唯一 OAuth 指纹匹配、同名账号必须证明、OAuth 自动 node-account/home replica 事务、operation digest 冲突、最新批次读取及 API 模型脱敏。
+- `go test -coverprofile=coverage/account_import.coverprofile ./...`：通过，总覆盖率 `37.1%`（`internal/controller 18.7%`、`internal/agent 42.3%`、`internal/store 56.1%`、`internal/crypto 26.5%`），继续提升但仍低于最终 80% 门禁。
+- `go vet ./...`、`GOOS=linux GOARCH=amd64 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。
+- 尚未完成且未冒充完成：SillyTavern adapter 尚未挂载，当前真实节点只能得到目录回退库存；同名账号控制权证明、OAuth 未匹配认领、冲突合并/区分和管理员人工身份恢复尚未实现，因此 R16 保持 `部分`。

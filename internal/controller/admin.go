@@ -148,27 +148,6 @@ func (s *Server) handleAdminNodeRegisterToken(w http.ResponseWriter, r *http.Req
 	})
 }
 
-// handleAdminScanExisting 让子控扫描既有用户。
-func (s *Server) handleAdminScanExisting(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	nid, err := parseID(id)
-	if err != nil {
-		protocol.WriteError(w, http.StatusBadRequest, "非法节点 ID")
-		return
-	}
-	node, err := s.Store.GetNodeByID(r.Context(), nid)
-	if err != nil || node == nil {
-		protocol.WriteError(w, http.StatusNotFound, "节点不存在")
-		return
-	}
-	result, err := s.runAgentCommand(r.Context(), node, "scan_existing", struct{}{}, 30*time.Second)
-	if err != nil {
-		protocol.WriteError(w, http.StatusBadGateway, "扫描失败，节点命令通道暂不可用")
-		return
-	}
-	protocol.WriteJSON(w, http.StatusOK, map[string]any{"users": result.Users})
-}
-
 // handleAdminListUsers 列出用户。
 func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := s.Store.ListUsers(r.Context())

@@ -146,7 +146,7 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		if err := json.Unmarshal(plaintext, &payload); err != nil {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
 		}
-		users, err := a.ScanExistingUsers()
+		users, err := a.ScanExistingUsers(ctx)
 		if err != nil {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "scan_failed"})
 		}

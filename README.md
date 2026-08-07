@@ -134,5 +134,5 @@ cd web && npm install && npm run build   # 产出 web/dist
 - SillyTavern federation control adapter 的完整挂载、受控模式绕过测试和真实活动/写门遥测
 - 无法直连时的受控加密中转、快照恢复与热备接管
 - mTLS、凭据轮换自动化和控制面灾难接管
-- 既有老节点用户的一键导入 UI（当前 scan-existing 已能扫描上报，导入逻辑待补）
+- 既有老节点账号的控制权证明/合并与管理员身份恢复（当前已持久化安全库存、OAuth 指纹自动关联和冲突分类；真实 adapter 与证明闭环待补）
 - OAuth 注册新用户的选节点流程端到端联调

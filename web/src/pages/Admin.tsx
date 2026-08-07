@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { api } from '../api'
 import { useAuth } from '../App'
@@ -39,7 +39,10 @@ const adminApi = {
   nodes: () => adminReq<{ nodes: any[] }>('/api/admin/nodes'),
   updateNode: (id: number, body: any) => adminReq<any>(`/api/admin/nodes/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   registerToken: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/register-token`, { method: 'POST' }),
-  scanExisting: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/scan-existing`, { method: 'POST' }),
+  scanExisting: (id: number, operationID: string) => adminReq<any>(`/api/admin/nodes/${id}/scan-existing`, {
+    method: 'POST', body: JSON.stringify({ operation_id: operationID }),
+  }),
+  latestImport: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/imports/latest`),
   users: () => adminReq<{ users: any[] }>('/api/admin/users'),
   triggerBackup: (id: number) => adminReq<any>(`/api/admin/users/${id}/backup`, { method: 'POST' }),
   disableUser: (id: number) => adminReq<any>(`/api/admin/users/${id}/disable`, { method: 'POST' }),
@@ -137,6 +140,8 @@ function NodesAdmin() {
   const [tokenInfo, setTokenInfo] = useState<any>(null)
   const [scanResult, setScanResult] = useState<any>(null)
   const [error, setError] = useState('')
+  const [scanningNode, setScanningNode] = useState<number>(0)
+  const scanOperations = useRef<Record<number, string>>({})
 
   const load = () => adminApi.nodes().then(d => setNodes(d.nodes)).catch(e => setError(e.message))
   useEffect(() => { load() }, [])
@@ -150,9 +155,39 @@ function NodesAdmin() {
     setTokenInfo(info)
   }
   const scan = async (id: number) => {
-    const res = await adminApi.scanExisting(id)
-    setScanResult(res)
+    setError('')
+    setScanningNode(id)
+    const operationID = scanOperations.current[id] || crypto.randomUUID()
+    scanOperations.current[id] = operationID
+    try {
+      const res = await adminApi.scanExisting(id, operationID)
+      delete scanOperations.current[id]
+      setScanResult(res)
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setScanningNode(0)
+    }
   }
+
+  const viewLatestImport = async (id: number) => {
+    setError('')
+    try {
+      setScanResult(await adminApi.latestImport(id))
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }
+
+  const importStateLabel = (state: string) => ({
+    already_managed: '已在总控管理',
+    auto_linked: 'OAuth 身份已自动关联',
+    claim_required: '同名账号，需控制权证明',
+    recovery_required: '无可用身份，需管理员恢复',
+    oauth_unmatched: '需使用原 OAuth 身份证明',
+    identity_conflict: '身份冲突，已禁止自动合并',
+    invalid: '库存无效',
+  } as Record<string, string>)[state] || state
 
   return (
     <>
@@ -160,15 +195,30 @@ function NodesAdmin() {
       {error && <div className="error-msg">{error}</div>}
       {tokenInfo && (
         <div className="success-msg">
-          一次性注册令牌（24小时内有效）：<br />
+          一次性注册令牌（15 分钟内有效）：<br />
           <div className="mono">{tokenInfo.install_cmd}</div>
           <button className="btn-sm" style={{ marginTop: 8 }} onClick={() => setTokenInfo(null)}>关闭</button>
         </div>
       )}
       {scanResult && (
         <div className="success-msg">
-          扫描到 {scanResult.users?.length || 0} 个既有用户：
-          {(scanResult.users || []).map((u: any) => <div key={u.handle} className="mono">{u.handle} ({(u.size_bytes/1048576).toFixed(1)}MB)</div>)}
+          {scanResult.batch ? (
+            <>
+              扫描到 {scanResult.batch.candidate_count} 个既有账号；自动关联 {scanResult.batch.auto_linked_count} 个，
+              待处理 {scanResult.batch.unresolved_count} 个。
+              {scanResult.batch.source === 'directory_fallback' && (
+                <div>当前为目录回退扫描，不含可靠身份事实，所有候选均禁止自动合并。</div>
+              )}
+              {(scanResult.candidates || []).map((candidate: any, index: number) => (
+                <div key={`${candidate.local_handle}-${index}`} className="mono">
+                  {candidate.local_handle} ({(candidate.size_bytes / 1048576).toFixed(1)}MB) ·
+                  {' '}{importStateLabel(candidate.resolution_state)}
+                  {candidate.identity_providers?.length ? ` · ${candidate.identity_providers.join(' / ')}` : ''}
+                  {candidate.is_admin ? ' · 节点管理员候选（尚未验证）' : ''}
+                </div>
+              ))}
+            </>
+          ) : '该节点还没有持久导入库存。'}
           <button className="btn-sm" style={{ marginTop: 8 }} onClick={() => setScanResult(null)}>关闭</button>
         </div>
       )}
@@ -196,7 +246,10 @@ function NodesAdmin() {
                   {n.is_backup_target ? '取消备份' : '设为备份'}
                 </button>{' '}
                 <button className="btn-sm primary" onClick={() => genToken(n.id)}>注册令牌</button>{' '}
-                <button className="btn-sm" onClick={() => scan(n.id)}>扫描用户</button>
+                <button className="btn-sm" disabled={scanningNode === n.id} onClick={() => scan(n.id)}>
+                  {scanningNode === n.id ? '扫描中…' : '扫描用户'}
+                </button>{' '}
+                <button className="btn-sm" onClick={() => viewLatestImport(n.id)}>查看导入</button>
               </td>
             </tr>
           ))}

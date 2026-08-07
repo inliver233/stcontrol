@@ -143,10 +143,27 @@ type FinishCommandRequest struct {
 	Result               json.RawMessage `json:"result"`
 }
 
-// ScanExistingUser 子控扫描到的既有用户目录。
+// MaxAccountInventoryUsers keeps a single durable command result below the
+// authenticated 1 MiB result limit. Larger nodes require paged inventory.
+const MaxAccountInventoryUsers = 500
+
+// ScanExistingIdentity is a node-keyed fingerprint of an OAuth stable subject.
+// The raw provider subject never leaves the Agent's process.
+type ScanExistingIdentity struct {
+	Provider    string `json:"provider"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// ScanExistingUser 子控扫描到的安全既有账号摘要。
 type ScanExistingUser struct {
-	Handle string `json:"handle"`
-	Size   int64  `json:"size_bytes"`
+	LocalUserID          string                 `json:"local_user_id"`
+	Handle               string                 `json:"handle"`
+	Size                 int64                  `json:"size_bytes"`
+	DirectoryFingerprint string                 `json:"directory_fingerprint"`
+	Source               string                 `json:"source"`
+	AccountKind          string                 `json:"account_kind"`
+	Identities           []ScanExistingIdentity `json:"identities,omitempty"`
+	IsAdmin              bool                   `json:"is_admin"`
 }
 
 // ---------- 代注册 ----------
