@@ -26,9 +26,17 @@ type ControllerConfig struct {
 
 // NodePolicy 节点策略。
 type NodePolicy struct {
-	RegisterCPU         float64 `yaml:"register_cpu"` // 可注册阈值 % (默认50)
+	RegisterCPU         float64 `yaml:"register_cpu"` // 繁忙降权阈值 % (默认50)
 	RegisterMem         float64 `yaml:"register_mem"`
 	RegisterDisk        float64 `yaml:"register_disk"`
+	AllocationHardPct   float64 `yaml:"allocation_hard_pct"`   // 持续超过后停止新分配(默认60)
+	CapacityWindowSec   int     `yaml:"capacity_window_sec"`   // 指标窗口(默认120)
+	CapacitySustainSec  int     `yaml:"capacity_sustain_sec"`  // 超载持续时间(默认120)
+	CapacityRecoverySec int     `yaml:"capacity_recovery_sec"` // 恢复低水位持续时间(默认180)
+	CapacityCooldownSec int     `yaml:"capacity_cooldown_sec"` // 满载后的最短冷却(默认300)
+	MinDiskFreeBytes    int64   `yaml:"min_disk_free_bytes"`   // 真实磁盘和配额各自保留字节
+	MaxOnlineUsers      int     `yaml:"max_online_users"`      // 新分配硬门槛
+	MaxTaskQueueDepth   int     `yaml:"max_task_queue_depth"`  // 新分配硬门槛
 	HeartbeatTimeoutSec int     `yaml:"heartbeat_timeout_sec"` // 心跳超时判离线(默认45)
 }
 
@@ -87,6 +95,7 @@ type AgentConfig struct {
 	TavernURL            string `yaml:"tavern_url"`          // 酒馆本地地址 http://127.0.0.1:8000
 	TransferPublicURL    string `yaml:"transfer_public_url"` // 可选 HTTPS 直连数据面地址
 	BackupDir            string `yaml:"backup_dir"`          // 存储节点备份存放目录
+	DiskQuotaBytes       int64  `yaml:"disk_quota_bytes"`    // 0 表示使用数据分区总容量
 	HeartbeatSec         int    `yaml:"heartbeat_sec"`       // 默认15
 	DataDir              string `yaml:"data_dir"`            // 子控自身数据目录(状态/临时)
 }
@@ -101,6 +110,9 @@ func DefaultController() *ControllerConfig {
 		StaticDir:    "./web/dist",
 		Node: NodePolicy{
 			RegisterCPU: 50, RegisterMem: 50, RegisterDisk: 50,
+			AllocationHardPct: 60, CapacityWindowSec: 120, CapacitySustainSec: 120,
+			CapacityRecoverySec: 180, CapacityCooldownSec: 300,
+			MinDiskFreeBytes: 5 << 30, MaxOnlineUsers: 500, MaxTaskQueueDepth: 50,
 			HeartbeatTimeoutSec: 45,
 		},
 		Ticket: TicketPolicy{TTLSec: 60},

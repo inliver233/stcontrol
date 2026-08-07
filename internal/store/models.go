@@ -38,6 +38,30 @@ type Node struct {
 	TavernVersion                sql.NullString  `json:"tavern_version"`
 	LastSeenAt                   sql.NullTime    `json:"last_seen_at"`
 	Status                       string          `json:"status"`
+	ConnectivityState            string          `json:"connectivity_state"`
+	OperationalState             string          `json:"operational_state"`
+	CapacityState                string          `json:"capacity_state"`
+	CapacityReasonCode           sql.NullString  `json:"capacity_reason_code"`
+	CapacityChangedAt            sql.NullTime    `json:"capacity_changed_at"`
+	CapacityCooldownUntil        sql.NullTime    `json:"capacity_cooldown_until"`
+	CompatibilityState           string          `json:"compatibility_state"`
+	CompatibilityReasonCode      sql.NullString  `json:"compatibility_reason_code"`
+	CompatibilityFingerprint     sql.NullString  `json:"compatibility_fingerprint"`
+	CompatibilityReportedAt      sql.NullTime    `json:"compatibility_reported_at"`
+	MetricsObservedAt            sql.NullTime    `json:"metrics_observed_at"`
+	CPUWindowAvg                 sql.NullFloat64 `json:"cpu_window_avg"`
+	CPUWindowPeak                sql.NullFloat64 `json:"cpu_window_peak"`
+	MemWindowAvg                 sql.NullFloat64 `json:"mem_window_avg"`
+	MemWindowPeak                sql.NullFloat64 `json:"mem_window_peak"`
+	DiskWindowAvg                sql.NullFloat64 `json:"disk_window_avg"`
+	DiskWindowPeak               sql.NullFloat64 `json:"disk_window_peak"`
+	DiskTotalBytes               sql.NullInt64   `json:"disk_total_bytes"`
+	DiskAvailableBytes           sql.NullInt64   `json:"disk_available_bytes"`
+	DiskQuotaBytes               sql.NullInt64   `json:"disk_quota_bytes"`
+	AllocatedDiskBytes           sql.NullInt64   `json:"allocated_disk_bytes"`
+	OnlineUsers                  int             `json:"online_users"`
+	TaskQueueDepth               int             `json:"task_queue_depth"`
+	TelemetrySource              string          `json:"telemetry_source"`
 	AllowRegister                bool            `json:"allow_register"`
 	IsBackupTarget               bool            `json:"is_backup_target"`
 	RegistrationPolicyState      string          `json:"registration_policy_state"`

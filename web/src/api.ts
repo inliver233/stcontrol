@@ -5,12 +5,9 @@ export interface Node {
   name: string
   region: string
   base_url: string
-  status: string
   status_label: string
   registrable: boolean
-  cpu_pct: number
-  mem_pct: number
-  disk_pct: number
+  recommended: boolean
   invitation_required: boolean
   // 前端实测延迟(非后端字段)
   latency_ms?: number

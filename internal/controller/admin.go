@@ -19,16 +19,25 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 	users, _ := s.Store.ListUsers(ctx)
 	jobs, _ := s.Store.ListBackupJobs(ctx, 200)
 
-	online, offline, full := 0, 0, 0
+	online, offline, full, busy, maintenance, faults := 0, 0, 0, 0, 0, 0
 	for _, n := range nodes {
-		switch n.Status {
+		switch n.ConnectivityState {
 		case "online":
 			online++
 		case "offline":
 			offline++
 		}
-		if !s.nodeRegistrable(n) && n.Role == "compute" {
+		if n.CapacityState == "full" && n.Role == "compute" {
 			full++
+		}
+		if n.CapacityState == "busy" && n.Role == "compute" {
+			busy++
+		}
+		if n.OperationalState == "maintenance" || n.OperationalState == "draining" {
+			maintenance++
+		}
+		if n.ConnectivityState == "offline" || n.OperationalState == "failed" || n.OperationalState == "degraded" {
+			faults++
 		}
 	}
 	running, failed := 0, 0
@@ -41,13 +50,16 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{
-		"nodes":          len(nodes),
-		"nodes_online":   online,
-		"nodes_offline":  offline,
-		"nodes_full":     full,
-		"users":          len(users),
-		"backup_running": running,
-		"backup_failed":  failed,
+		"nodes":             len(nodes),
+		"nodes_online":      online,
+		"nodes_offline":     offline,
+		"nodes_full":        full,
+		"nodes_busy":        busy,
+		"nodes_maintenance": maintenance,
+		"nodes_fault":       faults,
+		"users":             len(users),
+		"backup_running":    running,
+		"backup_failed":     failed,
 	})
 }
 
@@ -97,9 +109,21 @@ func (s *Server) handleAdminUpdateNode(w http.ResponseWriter, r *http.Request) {
 	}
 	nid, _ := parseID(id)
 	n.ID = nid
+	if n.Name == "" ||
+		(n.OperationalState != "active" && n.OperationalState != "maintenance") {
+		protocol.WriteError(w, http.StatusBadRequest, "节点配置无效")
+		return
+	}
 	if err := s.Store.UpdateNodeSettings(r.Context(), &n); err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "更新失败")
 		return
+	}
+	detail, _ := json.Marshal(map[string]any{
+		"allow_register": n.AllowRegister, "is_backup_target": n.IsBackupTarget,
+		"operational_state": n.OperationalState,
+	})
+	if sess := currentSession(r); sess != nil {
+		_ = s.Store.Audit(r.Context(), sess.Username, "node-settings", id, detail)
 	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

@@ -3,15 +3,49 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 )
+
+const nodeSelectColumns = `
+  id,name,role,base_url,transfer_url,region,
+  cpu_pct,mem_pct,disk_pct,agent_version,tavern_version,last_seen_at,status,
+  connectivity_state,operational_state,capacity_state,capacity_reason_code,
+  capacity_changed_at,capacity_cooldown_until,compatibility_state,compatibility_reason_code,
+  compatibility_fingerprint,compatibility_reported_at,metrics_observed_at,
+  cpu_window_avg,cpu_window_peak,mem_window_avg,mem_window_peak,
+  disk_window_avg,disk_window_peak,disk_total_bytes,disk_available_bytes,
+  disk_quota_bytes,allocated_disk_bytes,online_users,task_queue_depth,telemetry_source,
+  allow_register,is_backup_target,registration_policy_state,
+  registration_policy_version,registration_policy_expires_at,
+  registration_policy_observed_at,registration_policy_error_code,created_at`
+
+type nodeScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanNode(scanner nodeScanner, n *Node) error {
+	return scanner.Scan(
+		&n.ID, &n.Name, &n.Role, &n.BaseURL, &n.TransferURL, &n.Region,
+		&n.CPUPct, &n.MemPct, &n.DiskPct, &n.AgentVersion, &n.TavernVersion, &n.LastSeenAt, &n.Status,
+		&n.ConnectivityState, &n.OperationalState, &n.CapacityState, &n.CapacityReasonCode,
+		&n.CapacityChangedAt, &n.CapacityCooldownUntil, &n.CompatibilityState, &n.CompatibilityReasonCode,
+		&n.CompatibilityFingerprint, &n.CompatibilityReportedAt, &n.MetricsObservedAt,
+		&n.CPUWindowAvg, &n.CPUWindowPeak, &n.MemWindowAvg, &n.MemWindowPeak,
+		&n.DiskWindowAvg, &n.DiskWindowPeak, &n.DiskTotalBytes, &n.DiskAvailableBytes,
+		&n.DiskQuotaBytes, &n.AllocatedDiskBytes, &n.OnlineUsers, &n.TaskQueueDepth, &n.TelemetrySource,
+		&n.AllowRegister, &n.IsBackupTarget, &n.RegistrationPolicyState,
+		&n.RegistrationPolicyVersion, &n.RegistrationPolicyExpiresAt,
+		&n.RegistrationPolicyObservedAt, &n.RegistrationPolicyErrorCode, &n.CreatedAt,
+	)
+}
 
 // CreateNode 创建节点。
 func (s *Store) CreateNode(ctx context.Context, n *Node) error {
 	return s.DB.QueryRowContext(ctx, `
-	  INSERT INTO nodes (name, role, base_url, transfer_url, region,
+	  INSERT INTO nodes (uuid,name, role, base_url, transfer_url, region,
 	    status, allow_register, is_backup_target)
-	  VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, created_at`,
+	  VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, created_at`,
 		n.Name, n.Role, n.BaseURL, n.TransferURL, n.Region,
 		n.Status, n.AllowRegister, n.IsBackupTarget,
 	).Scan(&n.ID, &n.CreatedAt)
@@ -20,18 +54,7 @@ func (s *Store) CreateNode(ctx context.Context, n *Node) error {
 // GetNodeByID 按 ID 查找。
 func (s *Store) GetNodeByID(ctx context.Context, id int64) (*Node, error) {
 	n := &Node{}
-	err := s.DB.QueryRowContext(ctx, `
-	  SELECT id, name, role, base_url, transfer_url, region,
-	    cpu_pct, mem_pct, disk_pct, agent_version, tavern_version, last_seen_at,
-	    status, allow_register, is_backup_target, registration_policy_state,
-	    registration_policy_version, registration_policy_expires_at,
-	    registration_policy_observed_at, registration_policy_error_code, created_at
-	  FROM nodes WHERE id=$1`, id).
-		Scan(&n.ID, &n.Name, &n.Role, &n.BaseURL, &n.TransferURL, &n.Region,
-			&n.CPUPct, &n.MemPct, &n.DiskPct, &n.AgentVersion, &n.TavernVersion, &n.LastSeenAt,
-			&n.Status, &n.AllowRegister, &n.IsBackupTarget, &n.RegistrationPolicyState,
-			&n.RegistrationPolicyVersion, &n.RegistrationPolicyExpiresAt,
-			&n.RegistrationPolicyObservedAt, &n.RegistrationPolicyErrorCode, &n.CreatedAt)
+	err := scanNode(s.DB.QueryRowContext(ctx, `SELECT `+nodeSelectColumns+` FROM nodes WHERE id=$1`, id), n)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -40,13 +63,7 @@ func (s *Store) GetNodeByID(ctx context.Context, id int64) (*Node, error) {
 
 // ListNodes 列出全部节点。
 func (s *Store) ListNodes(ctx context.Context) ([]*Node, error) {
-	rows, err := s.DB.QueryContext(ctx, `
-	  SELECT id, name, role, base_url, transfer_url, region,
-	    cpu_pct, mem_pct, disk_pct, agent_version, tavern_version, last_seen_at,
-	    status, allow_register, is_backup_target, registration_policy_state,
-	    registration_policy_version, registration_policy_expires_at,
-	    registration_policy_observed_at, registration_policy_error_code, created_at
-	  FROM nodes ORDER BY id`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+nodeSelectColumns+` FROM nodes ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -54,11 +71,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]*Node, error) {
 	var out []*Node
 	for rows.Next() {
 		n := &Node{}
-		if err := rows.Scan(&n.ID, &n.Name, &n.Role, &n.BaseURL, &n.TransferURL, &n.Region,
-			&n.CPUPct, &n.MemPct, &n.DiskPct, &n.AgentVersion, &n.TavernVersion, &n.LastSeenAt,
-			&n.Status, &n.AllowRegister, &n.IsBackupTarget, &n.RegistrationPolicyState,
-			&n.RegistrationPolicyVersion, &n.RegistrationPolicyExpiresAt,
-			&n.RegistrationPolicyObservedAt, &n.RegistrationPolicyErrorCode, &n.CreatedAt); err != nil {
+		if err := scanNode(rows, n); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -66,64 +79,189 @@ func (s *Store) ListNodes(ctx context.Context) ([]*Node, error) {
 	return out, rows.Err()
 }
 
-// UpdateNodeHeartbeat 更新节点心跳与负载。
+// UpdateNodeHeartbeat atomically stores one metric sample, evaluates the
+// durable capacity state, and refreshes the independent health dimensions.
 func (s *Store) UpdateNodeHeartbeat(
 	ctx context.Context,
 	id int64,
-	cpu, mem, disk float64,
-	tavernVer, agentVer, transferURL string,
-	policy NodeRegistrationPolicy,
+	facts NodeHeartbeatFacts,
+	capacityPolicy NodeCapacityPolicy,
 ) error {
-	_, err := s.DB.ExecContext(ctx, `
-	  UPDATE nodes SET cpu_pct=$2, mem_pct=$3, disk_pct=$4,
-	    tavern_version=$5, agent_version=$6, transfer_url=$7,
-	    last_seen_at=$8, status='online',
+	if id <= 0 || !validNodeHeartbeatFacts(facts) || !validNodeCapacityPolicy(capacityPolicy) {
+		return fmt.Errorf("invalid node heartbeat facts")
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var current nodeCapacityCursor
+	var currentReason sql.NullString
+	if err := tx.QueryRowContext(ctx, `
+		SELECT capacity_state,capacity_reason_code,capacity_pressure_since,
+		  capacity_recovery_since,capacity_changed_at,capacity_cooldown_until
+		FROM nodes WHERE id=$1 FOR UPDATE`, id).Scan(
+		&current.State, &currentReason, &current.PressureSince,
+		&current.RecoverySince, &current.ChangedAt, &current.CooldownUntil,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("node not found")
+		}
+		return err
+	}
+	current.Reason = currentReason.String
+	var window nodeMetricWindow
+	if facts.MetricsValid {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO node_metric_samples (
+			  node_id,sampled_at,cpu_avg_pct,cpu_peak_pct,memory_avg_pct,memory_peak_pct,
+			  disk_used_pct,disk_available_bytes,online_users,task_queue_depth
+			) VALUES ($1,$2,$3,$3,$4,$4,$5,$6,$7,$8)
+			ON CONFLICT (node_id,sampled_at) DO UPDATE SET
+			  cpu_avg_pct=EXCLUDED.cpu_avg_pct,cpu_peak_pct=EXCLUDED.cpu_peak_pct,
+			  memory_avg_pct=EXCLUDED.memory_avg_pct,memory_peak_pct=EXCLUDED.memory_peak_pct,
+			  disk_used_pct=EXCLUDED.disk_used_pct,disk_available_bytes=EXCLUDED.disk_available_bytes,
+			  online_users=EXCLUDED.online_users,task_queue_depth=EXCLUDED.task_queue_depth`,
+			id, facts.ObservedAt, facts.CPUPct, facts.MemPct, facts.DiskPct,
+			facts.DiskAvailableBytes, facts.OnlineUsers, facts.TaskQueueDepth); err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COALESCE(AVG(cpu_avg_pct),0),COALESCE(MAX(cpu_peak_pct),0),
+			  COALESCE(AVG(memory_avg_pct),0),COALESCE(MAX(memory_peak_pct),0),
+			  COALESCE(AVG(disk_used_pct),0),COALESCE(MAX(disk_used_pct),0)
+			FROM node_metric_samples WHERE node_id=$1 AND sampled_at>=$2`,
+			id, facts.ObservedAt.Add(-capacityPolicy.Window)).Scan(
+			&window.CPUAvg, &window.CPUPeak, &window.MemAvg, &window.MemPeak,
+			&window.DiskAvg, &window.DiskPeak,
+		); err != nil {
+			return err
+		}
+	}
+	decision := evaluateNodeCapacity(facts.ObservedAt, current, facts, window, capacityPolicy)
+	metric := func(value float64) any {
+		if !facts.MetricsValid {
+			return nil
+		}
+		return value
+	}
+	metricInt := func(value int64) any {
+		if !facts.MetricsValid {
+			return nil
+		}
+		return value
+	}
+	_, err = tx.ExecContext(ctx, `
+	  UPDATE nodes SET cpu_pct=$2,mem_pct=$3,disk_pct=$4,
+	    tavern_version=$5,agent_version=$6,transfer_url=$7,
+	    last_seen_at=$8,status='online',connectivity_state='online',
+	    operational_state=CASE WHEN operational_state='pending' THEN 'active' ELSE operational_state END,
+	    allocated_disk_bytes=$9,disk_available_bytes=$10,disk_total_bytes=$11,disk_quota_bytes=$12,
+	    online_users=$13,task_queue_depth=$14,metrics_observed_at=$8,
+	    cpu_window_avg=$15,cpu_window_peak=$16,mem_window_avg=$17,mem_window_peak=$18,
+	    disk_window_avg=$19,disk_window_peak=$20,capacity_state=$21,
+	    capacity_reason_code=NULLIF($22,''),capacity_pressure_since=$23,
+	    capacity_recovery_since=$24,capacity_changed_at=$25,capacity_cooldown_until=$26,
+	    compatibility_state=$27,compatibility_fingerprint=$28,
+	    compatibility_reason_code=NULLIF($29,''),compatibility_reported_at=$8,telemetry_source=$34,
 	    registration_policy_state=CASE
-	      WHEN $10 IN ('open','invitation_required','closed')
-	        AND ($11>registration_policy_version
-	          OR ($11=registration_policy_version AND $10=registration_policy_state)) THEN $10
+	      WHEN $30 IN ('open','invitation_required','closed')
+	        AND ($31>registration_policy_version
+	          OR ($31=registration_policy_version AND $30=registration_policy_state)) THEN $30
 	      ELSE 'error' END,
-	    registration_policy_version=GREATEST(registration_policy_version,$11),
+	    registration_policy_version=GREATEST(registration_policy_version,$31),
 	    registration_policy_expires_at=CASE
-	      WHEN $10 IN ('open','invitation_required','closed')
-	        AND ($11>registration_policy_version
-	          OR ($11=registration_policy_version AND $10=registration_policy_state)) THEN $12
+	      WHEN $30 IN ('open','invitation_required','closed')
+	        AND ($31>registration_policy_version
+	          OR ($31=registration_policy_version AND $30=registration_policy_state)) THEN $32
 	      ELSE $8 END,
-	    registration_policy_observed_at=$9,
+	    registration_policy_observed_at=$8,
 	    registration_policy_error_code=CASE
-	      WHEN $10 IN ('open','invitation_required','closed')
-	        AND ($11>registration_policy_version
-	          OR ($11=registration_policy_version AND $10=registration_policy_state)) THEN NULL
-	      WHEN $11<registration_policy_version THEN 'version_rollback'
-	      WHEN $11=registration_policy_version AND $10<>registration_policy_state THEN 'version_reuse'
-	      ELSE $13 END
+	      WHEN $30 IN ('open','invitation_required','closed')
+	        AND ($31>registration_policy_version
+	          OR ($31=registration_policy_version AND $30=registration_policy_state)) THEN NULL
+	      WHEN $31<registration_policy_version THEN 'version_rollback'
+	      WHEN $31=registration_policy_version AND $30<>registration_policy_state THEN 'version_reuse'
+	      ELSE $33 END
 	  WHERE id=$1`,
-		id, cpu, mem, disk, tavernVer, agentVer, transferURL, policy.ObservedAt,
-		policy.ObservedAt, policy.State, policy.Version, policy.ExpiresAt, policy.ErrorCode)
-	return err
+		id, metric(facts.CPUPct), metric(facts.MemPct), metric(facts.DiskPct),
+		facts.TavernVersion, facts.AgentVersion, facts.TransferURL, facts.ObservedAt,
+		metricInt(facts.AllocatedDiskBytes), metricInt(facts.DiskAvailableBytes),
+		metricInt(facts.DiskTotalBytes), metricInt(facts.DiskQuotaBytes),
+		facts.OnlineUsers, facts.TaskQueueDepth,
+		metric(window.CPUAvg), metric(window.CPUPeak), metric(window.MemAvg), metric(window.MemPeak),
+		metric(window.DiskAvg), metric(window.DiskPeak), decision.State, decision.Reason,
+		nullTimeValue(decision.PressureSince), nullTimeValue(decision.RecoverySince), decision.ChangedAt,
+		nullTimeValue(decision.CooldownUntil), facts.CompatibilityState, facts.CompatibilityFingerprint,
+		facts.CompatibilityReasonCode,
+		facts.RegistrationPolicy.State, facts.RegistrationPolicy.Version,
+		facts.RegistrationPolicy.ExpiresAt, facts.RegistrationPolicy.ErrorCode, facts.TelemetrySource)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdateNodeStatus 更新节点状态。
 func (s *Store) UpdateNodeStatus(ctx context.Context, id int64, status string) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE nodes SET status=$2 WHERE id=$1`, id, status)
+	if id <= 0 || (status != "online" && status != "offline" && status != "pending") {
+		return fmt.Errorf("invalid node status")
+	}
+	connectivity := "unknown"
+	if status == "online" {
+		connectivity = "online"
+	} else if status == "offline" {
+		connectivity = "offline"
+	}
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE nodes SET status=$2,connectivity_state=$3,
+		  capacity_state=CASE WHEN $2='online' THEN capacity_state ELSE 'unknown' END,
+		  capacity_reason_code=CASE WHEN $2='online' THEN capacity_reason_code ELSE 'status_changed' END
+		WHERE id=$1`, id, status, connectivity)
 	return err
 }
 
 // UpdateNodeSettings 更新节点可配置项。
 func (s *Store) UpdateNodeSettings(ctx context.Context, n *Node) error {
 	_, err := s.DB.ExecContext(ctx, `
-	  UPDATE nodes SET name=$2, base_url=$3, transfer_url=$4, region=$5, allow_register=$6,
-	    is_backup_target=$7, role=$8 WHERE id=$1`,
-		n.ID, n.Name, n.BaseURL, n.TransferURL, n.Region, n.AllowRegister, n.IsBackupTarget, n.Role)
+	  UPDATE nodes SET name=$2,base_url=$3,region=$4,allow_register=$5,
+	    is_backup_target=$6,operational_state=$7 WHERE id=$1`,
+		n.ID, n.Name, n.BaseURL, n.Region, n.AllowRegister,
+		n.IsBackupTarget, n.OperationalState)
 	return err
 }
 
 // MarkStaleNodesOffline 把超过 timeout 未心跳的节点标记为 offline。
 func (s *Store) MarkStaleNodesOffline(ctx context.Context, timeout time.Duration) error {
+	if timeout <= 0 {
+		return fmt.Errorf("invalid node heartbeat timeout")
+	}
+	now := time.Now().UTC()
 	_, err := s.DB.ExecContext(ctx, `
-	  UPDATE nodes SET status='offline'
-	  WHERE status='online' AND last_seen_at < $1`, time.Now().Add(-timeout))
+	  UPDATE nodes SET status='offline',connectivity_state='offline',capacity_state='unknown',
+	    capacity_reason_code='heartbeat_stale',capacity_pressure_since=NULL,
+	    capacity_recovery_since=NULL,capacity_cooldown_until=NULL,capacity_changed_at=$2
+	  WHERE connectivity_state='online' AND last_seen_at < $1`,
+		now.Add(-timeout), now)
 	return err
+}
+
+func (s *Store) CleanupNodeMetricSamples(ctx context.Context, before time.Time) (int64, error) {
+	if before.IsZero() {
+		return 0, fmt.Errorf("invalid metric retention boundary")
+	}
+	result, err := s.DB.ExecContext(ctx, `DELETE FROM node_metric_samples WHERE sampled_at<$1`, before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func nullTimeValue(value sql.NullTime) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.Time
 }
 
 // ---------- 副本 ----------

@@ -63,9 +63,24 @@ type HeartbeatRequest struct {
 	CPUPct             float64                  `json:"cpu_pct"`
 	MemPct             float64                  `json:"mem_pct"`
 	DiskPct            float64                  `json:"disk_pct"`
+	MetricsValid       bool                     `json:"metrics_valid"`
+	DiskTotalBytes     int64                    `json:"disk_total_bytes"`
+	DiskAvailableBytes int64                    `json:"disk_available_bytes"`
+	DiskQuotaBytes     int64                    `json:"disk_quota_bytes"`
+	AllocatedDiskBytes int64                    `json:"allocated_disk_bytes"`
+	OnlineUsers        int                      `json:"online_users"`
+	TaskQueueDepth     int                      `json:"task_queue_depth"`
+	TelemetrySource    string                   `json:"telemetry_source"`
+	Compatibility      NodeCompatibilityReport  `json:"compatibility"`
 	TransferURL        string                   `json:"transfer_url,omitempty"`
 	RegistrationPolicy RegistrationPolicyReport `json:"registration_policy"`
 	Users              []UserStatus             `json:"users,omitempty"`
+}
+
+type NodeCompatibilityReport struct {
+	State       string `json:"state"`
+	Fingerprint string `json:"fingerprint"`
+	ErrorCode   string `json:"error_code,omitempty"`
 }
 
 // RegistrationPolicyReport is a fresh read of the node-owned registration

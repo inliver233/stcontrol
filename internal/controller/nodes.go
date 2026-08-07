@@ -2,30 +2,25 @@ package controller
 
 import (
 	"net/http"
+	"sort"
 	"time"
 
 	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
 
-// nodeRegistrable 判断节点是否可注册（在线 + 负载全低于阈值 + 允许注册 + 是计算节点）。
+// nodeRegistrable admits new allocations only when every independent health
+// dimension is safe. Busy nodes remain selectable but sort below open nodes;
+// only durable full/unknown states close allocation.
 func (s *Server) nodeRegistrable(n *store.Node) bool {
-	if n.Role != "compute" || n.Status != "online" || !n.AllowRegister {
+	if n.Role != "compute" || n.ConnectivityState != "online" ||
+		n.OperationalState != "active" || n.CompatibilityState != "compatible" ||
+		(n.CapacityState != "open" && n.CapacityState != "busy") || !n.AllowRegister {
 		return false
 	}
 	if (n.RegistrationPolicyState != "open" && n.RegistrationPolicyState != "invitation_required") ||
 		n.RegistrationPolicyVersion <= 0 || !n.RegistrationPolicyExpiresAt.Valid ||
 		!n.RegistrationPolicyExpiresAt.Time.After(time.Now().UTC()) {
-		return false
-	}
-	th := s.Cfg.Node
-	if n.CPUPct.Valid && n.CPUPct.Float64 >= th.RegisterCPU {
-		return false
-	}
-	if n.MemPct.Valid && n.MemPct.Float64 >= th.RegisterMem {
-		return false
-	}
-	if n.DiskPct.Valid && n.DiskPct.Float64 >= th.RegisterDisk {
 		return false
 	}
 	return true
@@ -34,45 +29,43 @@ func (s *Server) nodeRegistrable(n *store.Node) bool {
 // nodeStatusLabel 计算节点状态标签（注册页显示用）。
 func (s *Server) nodeStatusLabel(n *store.Node) string {
 	switch {
+	case n.ConnectivityState == "offline" || n.OperationalState == "failed" || n.OperationalState == "degraded":
+		return "故障"
 	case n.Role == "storage":
-		return "备份用"
-	case n.Status == "offline":
-		return "宕机"
-	case n.Status == "pending":
-		return "待接入"
+		return "备份"
+	case n.ConnectivityState != "online" || n.OperationalState != "active" || n.CompatibilityState != "compatible":
+		return "维护"
 	case !n.AllowRegister:
-		return "满员"
+		return "满载"
 	case n.RegistrationPolicyState == "closed":
-		return "满员"
+		return "满载"
 	case (n.RegistrationPolicyState != "open" && n.RegistrationPolicyState != "invitation_required") ||
 		!n.RegistrationPolicyExpiresAt.Valid || !n.RegistrationPolicyExpiresAt.Time.After(time.Now().UTC()):
 		return "维护"
-	case n.CPUPct.Valid && n.CPUPct.Float64 >= s.Cfg.Node.RegisterCPU:
-		return "满员"
-	case n.MemPct.Valid && n.MemPct.Float64 >= s.Cfg.Node.RegisterMem:
-		return "满员"
-	case n.DiskPct.Valid && n.DiskPct.Float64 >= s.Cfg.Node.RegisterDisk:
-		return "满员"
+	case n.CapacityState == "full":
+		return "满载"
+	case n.CapacityState == "busy":
+		return "繁忙"
+	case n.CapacityState != "open":
+		return "维护"
 	default:
-		return "空闲"
+		return "开放"
 	}
 }
 
 type availableNode struct {
-	ID                 int64   `json:"id"`
-	Name               string  `json:"name"`
-	Region             string  `json:"region"`
-	BaseURL            string  `json:"base_url"`
-	Status             string  `json:"status"`       // online|offline|pending
-	StatusLabel        string  `json:"status_label"` // 空闲|满员|备份用|宕机|待接入
-	Registrable        bool    `json:"registrable"`
-	CPUPct             float64 `json:"cpu_pct"`
-	MemPct             float64 `json:"mem_pct"`
-	DiskPct            float64 `json:"disk_pct"`
-	InvitationRequired bool    `json:"invitation_required"`
+	ID                 int64  `json:"id"`
+	Name               string `json:"name"`
+	Region             string `json:"region"`
+	BaseURL            string `json:"base_url"`
+	StatusLabel        string `json:"status_label"`
+	Registrable        bool   `json:"registrable"`
+	Recommended        bool   `json:"recommended"`
+	InvitationRequired bool   `json:"invitation_required"`
+	capacityState      string
 }
 
-// handleAvailableNodes 注册页：列出所有节点（含状态与负载, 前端再测延迟）。
+// handleAvailableNodes 注册页：列出产品状态，前端再测延迟。
 func (s *Server) handleAvailableNodes(w http.ResponseWriter, r *http.Request) {
 	nodes, err := s.Store.ListNodes(r.Context())
 	if err != nil {
@@ -86,16 +79,42 @@ func (s *Server) handleAvailableNodes(w http.ResponseWriter, r *http.Request) {
 			Name:               n.Name,
 			Region:             n.Region.String,
 			BaseURL:            n.BaseURL,
-			Status:             n.Status,
 			StatusLabel:        s.nodeStatusLabel(n),
 			Registrable:        s.nodeRegistrable(n),
-			CPUPct:             n.CPUPct.Float64,
-			MemPct:             n.MemPct.Float64,
-			DiskPct:            n.DiskPct.Float64,
 			InvitationRequired: n.RegistrationPolicyState == "invitation_required",
+			capacityState:      n.CapacityState,
 		})
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return availableNodeRank(out[i]) < availableNodeRank(out[j])
+	})
+	for index := range out {
+		if out[index].Registrable {
+			out[index].Recommended = true
+			break
+		}
+	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{"nodes": out})
+}
+
+func availableNodeRank(node availableNode) int {
+	if node.Registrable && node.capacityState == "open" {
+		return 0
+	}
+	if node.Registrable {
+		return 1
+	}
+	return 2
+}
+
+func nodeReadyForManagedOperation(node *store.Node) bool {
+	return node != nil && node.ConnectivityState == "online" &&
+		node.OperationalState == "active" && node.CompatibilityState == "compatible"
+}
+
+func nodeAcceptsNewData(node *store.Node) bool {
+	return nodeReadyForManagedOperation(node) &&
+		(node.CapacityState == "open" || node.CapacityState == "busy")
 }
 
 type myNode struct {
@@ -127,7 +146,8 @@ func (s *Server) handleMyNodes(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		// 可用条件: 节点在线 + (家节点即可 或 热备已同步完成)
-		ready := node.Status == "online" && (rep.Kind == "home" || rep.State == "ready")
+		ready := node.ConnectivityState == "online" && node.OperationalState == "active" &&
+			node.CompatibilityState == "compatible" && (rep.Kind == "home" || rep.State == "ready")
 		kindLabel := "备用服务器"
 		if rep.Kind == "home" {
 			kindLabel = "我的服务器"

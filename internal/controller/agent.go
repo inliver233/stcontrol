@@ -3,14 +3,17 @@ package controller
 import (
 	"context"
 	stdsha256 "crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"stcontrol/internal/config"
 	"stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
@@ -110,12 +113,13 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	policy := normalizeRegistrationPolicy(req.RegistrationPolicy, time.Now().UTC())
+	now := time.Now().UTC()
+	policy := normalizeRegistrationPolicy(req.RegistrationPolicy, now)
 	if policy.State == "error" && policy.Version < node.RegistrationPolicyVersion {
 		policy.Version = node.RegistrationPolicyVersion
 	}
-	if err := s.Store.UpdateNodeHeartbeat(ctx, node.ID, req.CPUPct, req.MemPct, req.DiskPct,
-		req.TavernVersion, req.AgentVersion, transferURL, policy); err != nil {
+	facts := normalizeHeartbeatFacts(req, transferURL, policy, now)
+	if err := s.Store.UpdateNodeHeartbeat(ctx, node.ID, facts, s.nodeCapacityPolicy()); err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "更新心跳失败")
 		return
 	}
@@ -124,6 +128,107 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	s.trackUserActivity(node.ID, req.Users)
 
 	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func normalizeHeartbeatFacts(
+	req protocol.HeartbeatRequest,
+	transferURL string,
+	registrationPolicy store.NodeRegistrationPolicy,
+	now time.Time,
+) store.NodeHeartbeatFacts {
+	metricsValid := req.MetricsValid && finitePercent(req.CPUPct) && finitePercent(req.MemPct) &&
+		finitePercent(req.DiskPct) && req.DiskTotalBytes > 0 && req.DiskAvailableBytes >= 0 &&
+		req.DiskAvailableBytes <= req.DiskTotalBytes && req.DiskQuotaBytes > 0 &&
+		req.DiskQuotaBytes <= req.DiskTotalBytes &&
+		req.AllocatedDiskBytes >= 0 && req.OnlineUsers >= 0 && req.OnlineUsers <= 1_000_000 &&
+		req.TaskQueueDepth >= 0 && req.TaskQueueDepth <= 1_000_000
+	telemetrySource := req.TelemetrySource
+	if telemetrySource != "adapter" && telemetrySource != "directory_fallback" && telemetrySource != "agent" {
+		telemetrySource = "unavailable"
+		metricsValid = false
+	}
+	fallbackFingerprint := stdsha256.Sum256([]byte(
+		"stcontrol-node-compatibility-fallback:v1\n" + req.AgentVersion + "\n" + req.TavernVersion,
+	))
+	compatibilityState := req.Compatibility.State
+	compatibilityReason := req.Compatibility.ErrorCode
+	fingerprint := req.Compatibility.Fingerprint
+	decodedFingerprint, fingerprintErr := hex.DecodeString(fingerprint)
+	if fingerprintErr != nil || len(decodedFingerprint) != stdsha256.Size {
+		fingerprint = hex.EncodeToString(fallbackFingerprint[:])
+		compatibilityState = "unknown"
+		compatibilityReason = "invalid_report"
+	}
+	if compatibilityState != "compatible" && compatibilityState != "incompatible" && compatibilityState != "unknown" {
+		compatibilityState = "unknown"
+		compatibilityReason = "invalid_report"
+	}
+	switch compatibilityReason {
+	case "", "adapter_unavailable", "version_unsupported", "missing_capability", "invalid_health", "invalid_report":
+	default:
+		compatibilityReason = "invalid_report"
+		compatibilityState = "unknown"
+	}
+	if (compatibilityState == "compatible" && compatibilityReason != "") ||
+		(compatibilityState != "compatible" && compatibilityReason == "") {
+		compatibilityState = "unknown"
+		compatibilityReason = "invalid_report"
+	}
+	return store.NodeHeartbeatFacts{
+		CPUPct: req.CPUPct, MemPct: req.MemPct, DiskPct: req.DiskPct,
+		MetricsValid: metricsValid, DiskTotalBytes: req.DiskTotalBytes,
+		DiskAvailableBytes: req.DiskAvailableBytes, DiskQuotaBytes: req.DiskQuotaBytes,
+		AllocatedDiskBytes: req.AllocatedDiskBytes, OnlineUsers: req.OnlineUsers,
+		TaskQueueDepth: req.TaskQueueDepth, TelemetrySource: telemetrySource,
+		TavernVersion: req.TavernVersion, AgentVersion: req.AgentVersion, TransferURL: transferURL,
+		CompatibilityState: compatibilityState, CompatibilityReasonCode: compatibilityReason,
+		CompatibilityFingerprint: fingerprint, RegistrationPolicy: registrationPolicy, ObservedAt: now,
+	}
+}
+
+func finitePercent(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 100
+}
+
+func (s *Server) nodeCapacityPolicy() store.NodeCapacityPolicy {
+	configured := s.Cfg.Node
+	defaults := config.DefaultController().Node
+	positiveFloat := func(value, fallback float64) float64 {
+		if value <= 0 || value >= 100 {
+			return fallback
+		}
+		return value
+	}
+	positiveInt := func(value, fallback int) int {
+		if value <= 0 {
+			return fallback
+		}
+		return value
+	}
+	cpuBusy := positiveFloat(configured.RegisterCPU, defaults.RegisterCPU)
+	memBusy := positiveFloat(configured.RegisterMem, defaults.RegisterMem)
+	diskBusy := positiveFloat(configured.RegisterDisk, defaults.RegisterDisk)
+	hard := positiveFloat(configured.AllocationHardPct, defaults.AllocationHardPct)
+	if hard <= cpuBusy || hard <= memBusy || hard <= diskBusy {
+		cpuBusy = defaults.RegisterCPU
+		memBusy = defaults.RegisterMem
+		diskBusy = defaults.RegisterDisk
+		hard = defaults.AllocationHardPct
+	}
+	minDisk := configured.MinDiskFreeBytes
+	if minDisk <= 0 {
+		minDisk = defaults.MinDiskFreeBytes
+	}
+	return store.NodeCapacityPolicy{
+		CPUBusyPct: cpuBusy, MemBusyPct: memBusy, DiskBusyPct: diskBusy, HardPct: hard,
+		Window:            time.Duration(positiveInt(configured.CapacityWindowSec, defaults.CapacityWindowSec)) * time.Second,
+		Sustain:           time.Duration(positiveInt(configured.CapacitySustainSec, defaults.CapacitySustainSec)) * time.Second,
+		Recovery:          time.Duration(positiveInt(configured.CapacityRecoverySec, defaults.CapacityRecoverySec)) * time.Second,
+		Cooldown:          time.Duration(positiveInt(configured.CapacityCooldownSec, defaults.CapacityCooldownSec)) * time.Second,
+		MinDiskFreeBytes:  minDisk,
+		MaxOnlineUsers:    positiveInt(configured.MaxOnlineUsers, defaults.MaxOnlineUsers),
+		MaxTaskQueueDepth: positiveInt(configured.MaxTaskQueueDepth, defaults.MaxTaskQueueDepth),
+	}
 }
 
 func normalizeRegistrationPolicy(
@@ -178,7 +283,11 @@ func (s *Server) trackUserActivity(nodeID int64, users []protocol.UserStatus) {
 
 // nodeWatchdog 定期把超时未心跳的节点标记为 offline。
 func (s *Server) nodeWatchdog(ctx context.Context) {
-	timeout := time.Duration(s.Cfg.Node.HeartbeatTimeoutSec) * time.Second
+	timeoutSec := s.Cfg.Node.HeartbeatTimeoutSec
+	if timeoutSec <= 0 {
+		timeoutSec = config.DefaultController().Node.HeartbeatTimeoutSec
+	}
+	timeout := time.Duration(timeoutSec) * time.Second
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -187,6 +296,7 @@ func (s *Server) nodeWatchdog(ctx context.Context) {
 			return
 		case <-ticker.C:
 			_ = s.Store.MarkStaleNodesOffline(ctx, timeout)
+			_, _ = s.Store.CleanupNodeMetricSamples(ctx, time.Now().UTC().Add(-24*time.Hour))
 		}
 	}
 }

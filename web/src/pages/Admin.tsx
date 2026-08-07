@@ -118,6 +118,9 @@ function Overview() {
     { label: '在线节点', value: data.nodes_online },
     { label: '离线节点', value: data.nodes_offline },
     { label: '满员节点', value: data.nodes_full },
+    { label: '繁忙节点', value: data.nodes_busy },
+    { label: '维护节点', value: data.nodes_maintenance },
+    { label: '故障节点', value: data.nodes_fault },
     { label: '注册用户', value: data.users },
     { label: '进行中备份', value: data.backup_running },
     { label: '失败备份', value: data.backup_failed },
@@ -150,8 +153,24 @@ function NodesAdmin() {
   useEffect(() => { load() }, [])
 
   const toggle = async (n: any, field: 'allow_register' | 'is_backup_target') => {
-    await adminApi.updateNode(n.id, { ...n, [field]: !n[field] })
-    load()
+    setError('')
+    try {
+      await adminApi.updateNode(n.id, { ...n, [field]: !n[field] })
+      load()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '节点配置更新失败')
+    }
+  }
+  const toggleMaintenance = async (n: any) => {
+    setError('')
+    try {
+      await adminApi.updateNode(n.id, {
+        ...n, operational_state: n.operational_state === 'maintenance' ? 'active' : 'maintenance',
+      })
+      load()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '运营状态更新失败')
+    }
   }
   const genToken = async (id: number) => {
     const info = await adminApi.registerToken(id)
@@ -192,6 +211,28 @@ function NodesAdmin() {
     invalid: '库存无效',
   } as Record<string, string>)[state] || state
 
+  const healthLabel = (value: string) => ({
+    online: '在线', offline: '离线', unknown: '未知', active: '运营', maintenance: '维护',
+    draining: '排空', degraded: '降级', failed: '故障', retired: '退役', pending: '待接入',
+    open: '开放', busy: '繁忙', full: '满载', compatible: '兼容', incompatible: '不兼容',
+  } as Record<string, string>)[value] || value
+  const reasonLabel = (value: string) => ({
+    metrics_unavailable: '指标不可用', heartbeat_stale: '心跳过期', cpu_busy: 'CPU 繁忙',
+    cpu_sustained: 'CPU 持续超载', memory_busy: '内存繁忙', memory_sustained: '内存持续超载',
+    disk_busy: '磁盘繁忙', disk_sustained: '磁盘持续高水位', disk_low: '可用磁盘偏低',
+    disk_low_watermark: '可用磁盘低于硬水位', quota_low: '分配配额偏低',
+    quota_low_watermark: '分配配额低于硬水位', online_users_busy: '在线用户接近上限',
+    online_user_limit: '在线用户达到上限', task_queue_busy: '任务队列繁忙',
+    task_queue_limit: '任务队列达到上限', adapter_unavailable: '酒馆适配器不可用',
+    version_unsupported: '版本不兼容', missing_capability: '适配器能力不完整',
+    invalid_health: '适配器健康报告无效', invalid_report: '兼容性报告无效',
+  } as Record<string, string>)[value] || value
+  const metric = (value: any) => Math.round(value?.Float64 ?? value ?? 0)
+  const bytes = (value: any) => {
+    const raw = value?.Int64 ?? value ?? 0
+    return raw > 0 ? `${(raw / 1073741824).toFixed(1)}GB` : '-'
+  }
+
   return (
     <>
       <h2>节点管理</h2>
@@ -227,19 +268,30 @@ function NodesAdmin() {
       )}
       <table className="table">
         <thead>
-          <tr><th>ID</th><th>名称</th><th>角色</th><th>状态</th><th>负载</th><th>对外地址</th><th>版本</th><th>操作</th></tr>
+          <tr><th>ID</th><th>名称</th><th>角色</th><th>健康维度</th><th>窗口负载</th><th>磁盘/配额</th><th>用户/队列</th><th>版本</th><th>操作</th></tr>
         </thead>
         <tbody>
           {nodes.map(n => (
             <tr key={n.id}>
               <td>{n.id}</td>
-              <td>{n.name}</td>
+              <td>{n.name}<div className="mono" style={{ fontSize: 11 }}>{n.base_url || '未配置地址'}</div></td>
               <td>{n.role === 'compute' ? '计算' : '存储'}</td>
-              <td><span className={`badge ${n.status === 'online' ? 'green' : n.status === 'offline' ? 'red' : 'gray'}`}>{n.status}</span></td>
               <td style={{ fontSize: 12 }}>
-                CPU {Math.round(n.cpu_pct?.Float64 ?? n.cpu_pct ?? 0)}% · 内存 {Math.round(n.mem_pct?.Float64 ?? n.mem_pct ?? 0)}% · 硬盘 {Math.round(n.disk_pct?.Float64 ?? n.disk_pct ?? 0)}%
+                <span className={`badge ${n.connectivity_state === 'online' ? 'green' : n.connectivity_state === 'offline' ? 'red' : 'gray'}`}>{healthLabel(n.connectivity_state)}</span>{' '}
+                <span className={`badge ${n.operational_state === 'active' ? 'green' : 'gray'}`}>{healthLabel(n.operational_state)}</span>{' '}
+                <span className={`badge ${n.capacity_state === 'open' ? 'green' : n.capacity_state === 'busy' ? 'yellow' : n.capacity_state === 'full' ? 'red' : 'gray'}`}>{healthLabel(n.capacity_state)}</span>{' '}
+                <span className={`badge ${n.compatibility_state === 'compatible' ? 'green' : n.compatibility_state === 'incompatible' ? 'red' : 'gray'}`}>{healthLabel(n.compatibility_state)}</span>
+                {(n.capacity_reason_code?.String || n.compatibility_reason_code?.String) && (
+                  <div>{reasonLabel(n.capacity_reason_code?.String || n.compatibility_reason_code?.String)}</div>
+                )}
               </td>
-              <td className="mono">{n.base_url || '未配置'}</td>
+              <td style={{ fontSize: 12 }}>
+                CPU {metric(n.cpu_window_avg)}%/{metric(n.cpu_window_peak)}% ·
+                内存 {metric(n.mem_window_avg)}%/{metric(n.mem_window_peak)}% ·
+                硬盘 {metric(n.disk_window_avg)}%/{metric(n.disk_window_peak)}%
+              </td>
+              <td style={{ fontSize: 12 }}>可用 {bytes(n.disk_available_bytes)} · 已分配 {bytes(n.allocated_disk_bytes)} / {bytes(n.disk_quota_bytes)}</td>
+              <td style={{ fontSize: 12 }}>{n.online_users} / {n.task_queue_depth}</td>
               <td style={{ fontSize: 12 }}>{n.tavern_version?.String ?? n.tavern_version ?? '-'}</td>
               <td style={{ whiteSpace: 'nowrap' }}>
                 <button className="btn-sm" onClick={() => toggle(n, 'allow_register')}>
@@ -253,6 +305,9 @@ function NodesAdmin() {
                   {scanningNode === n.id ? '扫描中…' : '扫描用户'}
                 </button>{' '}
                 <button className="btn-sm" onClick={() => viewLatestImport(n.id)}>查看导入</button>
+                {' '}<button className="btn-sm" onClick={() => toggleMaintenance(n)}>
+                  {n.operational_state === 'maintenance' ? '结束维护' : '进入维护'}
+                </button>
               </td>
             </tr>
           ))}

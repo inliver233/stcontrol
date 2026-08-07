@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -30,6 +31,14 @@ func New(cfg *config.AgentConfig) (*Agent, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("agent config is required")
 	}
+	if cfg.Role == "storage" {
+		if cfg.BackupDir == "" {
+			return nil, fmt.Errorf("storage agent backup directory is required")
+		}
+		if err := os.MkdirAll(cfg.BackupDir, 0o700); err != nil {
+			return nil, fmt.Errorf("create storage backup directory: %w", err)
+		}
+	}
 	agent := &Agent{
 		Cfg:        cfg,
 		backupJobs: make(map[int64]context.CancelFunc),
@@ -48,4 +57,4 @@ func New(cfg *config.AgentConfig) (*Agent, error) {
 }
 
 // Version 子控版本。
-const Version = "0.1.0"
+const Version = "0.2.0"

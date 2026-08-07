@@ -75,7 +75,7 @@ func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusForbidden, "存储节点不可登录")
 		return
 	}
-	if node.Status != "online" {
+	if !nodeReadyForManagedOperation(node) {
 		protocol.WriteError(w, http.StatusConflict, "该节点当前离线")
 		return
 	}

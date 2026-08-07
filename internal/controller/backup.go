@@ -402,7 +402,7 @@ func (s *Server) pickBackupTarget(ctx context.Context, userID, srcNodeID int64) 
 				continue
 			}
 			n, err := s.Store.GetNodeByID(ctx, rep.NodeID)
-			if err == nil && n != nil && n.Status == "online" {
+			if err == nil && n != nil && nodeAcceptsNewData(n) {
 				return n, rep.Kind
 			}
 		}
@@ -413,7 +413,7 @@ func (s *Server) pickBackupTarget(ctx context.Context, userID, srcNodeID int64) 
 		if n.ID == srcNodeID {
 			continue
 		}
-		if n.IsBackupTarget && n.Status == "online" {
+		if n.IsBackupTarget && nodeAcceptsNewData(n) {
 			kind := "archive"
 			if n.Role == "compute" {
 				kind = "hot_standby"

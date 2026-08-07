@@ -175,13 +175,19 @@ func validInventoryDigest(value string) bool {
 
 // scanUserActivityFromDisk 用目录修改时间近似用户 lastActivity。
 func (a *Agent) scanUserActivityFromDisk() []protocol.UserStatus {
+	users, _, _ := a.scanUserActivityAndSize()
+	return users
+}
+
+func (a *Agent) scanUserActivityAndSize() ([]protocol.UserStatus, int64, error) {
 	dataRoot := a.dataRoot()
 	entries, err := os.ReadDir(dataRoot)
 	if err != nil {
-		return nil
+		return nil, 0, err
 	}
 	now := time.Now()
 	var out []protocol.UserStatus
+	var allocatedBytes int64
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -194,7 +200,11 @@ func (a *Agent) scanUserActivityFromDisk() []protocol.UserStatus {
 		if err != nil {
 			continue
 		}
-		mtime := latestMtime(filepath.Join(dataRoot, name), info.ModTime())
+		mtime, size, err := latestMtimeAndSize(filepath.Join(dataRoot, name), info.ModTime())
+		if err != nil {
+			return nil, 0, err
+		}
+		allocatedBytes += size
 		// 近似: 最近 2.5 分钟内有修改视为可能在线(心跳2min)
 		isOnline := now.Sub(mtime) < 150*time.Second
 		out = append(out, protocol.UserStatus{
@@ -203,7 +213,7 @@ func (a *Agent) scanUserActivityFromDisk() []protocol.UserStatus {
 			LastActivity: mtime.UnixMilli(),
 		})
 	}
-	return out
+	return out, allocatedBytes, nil
 }
 
 // dataRoot 返回酒馆数据目录。
@@ -250,12 +260,44 @@ func directoryInventory(root, psk string) (int64, string, error) {
 
 // latestMtime 找目录树中最新的文件修改时间。
 func latestMtime(root string, seed time.Time) time.Time {
+	latest, _, _ := latestMtimeAndSize(root, seed)
+	return latest
+}
+
+func latestMtimeAndSize(root string, seed time.Time) (time.Time, int64, error) {
 	latest := seed
-	_ = filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() && info.ModTime().After(latest) {
+	var size int64
+	err := filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && info.Mode().IsRegular() {
+			size += info.Size()
+		}
+		if !info.IsDir() && info.ModTime().After(latest) {
 			latest = info.ModTime()
 		}
 		return nil
 	})
-	return latest
+	return latest, size, err
+}
+
+func directorySize(root string) (int64, error) {
+	if root == "" {
+		return 0, fmt.Errorf("managed data root is required")
+	}
+	var size int64
+	err := filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if !info.IsDir() && info.Mode().IsRegular() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size, err
 }

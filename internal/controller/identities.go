@@ -140,7 +140,7 @@ func (s *Server) synchronizePasswordToNodes(
 	}
 	for _, account := range accounts {
 		node, nodeErr := s.Store.GetNodeByID(ctx, account.NodeID)
-		if nodeErr != nil || node == nil || node.Status != "online" {
+		if nodeErr != nil || node == nil || !nodeReadyForManagedOperation(node) {
 			pending++
 			continue
 		}

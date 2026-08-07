@@ -41,7 +41,7 @@ func (s *Server) deliverPasswordSyncs(
 			return synced, len(syncs) - synced
 		}
 		node, err := s.Store.GetNodeByID(ctx, sync.NodeID)
-		if err != nil || node == nil || node.Status != "online" {
+		if err != nil || node == nil || !nodeReadyForManagedOperation(node) {
 			pending++
 			continue
 		}

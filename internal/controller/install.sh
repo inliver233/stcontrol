@@ -77,6 +77,7 @@ tavern_dir: $TAVERN_DIR
 tavern_url: http://127.0.0.1:8000
 transfer_public_url: $TRANSFER_URL
 backup_dir: $INSTALL_DIR/backups
+disk_quota_bytes: 0
 heartbeat_sec: 15
 data_dir: $INSTALL_DIR/data
 EOF

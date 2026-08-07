@@ -182,3 +182,15 @@
 - `go test -coverprofile=coverage/identity_recovery.coverprofile ./...`：通过，总覆盖率 `37.5%`（`internal/controller 18.9%`、`internal/agent 42.3%`、`internal/store 56.8%`、`internal/crypto 26.5%`），仍低于最终 80% 门禁。
 - `go vet ./...`、`GOOS=linux GOARCH=amd64 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。
 - 尚未完成且未冒充完成：真实 SillyTavern adapter 未挂载，因而节点改密仍无法形成应用侧闭环；导入候选的控制权证明/合并和无 global UUID 候选的恢复绑定仍待实现，R14/R16 保持 `部分`。
+
+## 2026-08-08：持久节点容量与多维健康批次
+
+- 新增 `0015_node_health_capacity.sql`：节点分别保存连通性、运营、容量、兼容性、窗口均值/峰值、真实磁盘/配额、受管分配量、在线用户、任务负载及状态机游标；组合索引服务新分配门禁，指标样本保留 24 小时。
+- Agent 以并行探测采集 CPU/内存、数据分区真实总量和可用字节、受管目录大小、注册策略以及 adapter 健康契约；存储节点要求私有备份根。显式配额上限为真实文件系统总量，无法可靠采集时上报无效并使容量失败关闭。
+- 容量状态机使用 120 秒窗口；约 50% 进入 `busy`，关键资源达到 60% 并持续 120 秒进入 `full`。真实磁盘/配额低水位、在线人数和任务上限立即满载；退出满载必须连续低于繁忙水位 180 秒且完成 300 秒冷却，避免抖动恢复。
+- 心跳在 serializable 事务中锁定节点、写入样本、聚合窗口、推进容量游标并更新注册策略和兼容事实。节点心跳过期会将连通性置离线、容量置未知；新注册和新备份数据只选择连通、运营、兼容且容量开放/繁忙的节点，已有用户操作不会因容量满载被错误中断。
+- 公开节点 API 不再返回 CPU/内存/磁盘及内部原因码，只显示开放/繁忙/满载/维护/备份/故障、推荐、邀请码需求和浏览器实测延迟。管理员页展示四维健康、窗口指标、真实字节、在线用户/队列和安全原因，并可审计地进入/结束维护。
+- 单元测试覆盖 50% 降权、持续 60% 硬门槛、磁盘/配额/人数/队列立即关闭、恢复滞后与冷却、指标无效、整数边界、配额真实性、兼容能力/版本、公开模型脱敏、推荐排序、心跳事务、迁移所需 UUID 和陈旧节点清理。
+- `go test -coverprofile=coverage/node_capacity.coverprofile ./...`：通过；总覆盖率 `39.6%`（`internal/agent 44.8%`、`internal/controller 20.6%`、`internal/store 58.7%`），仍低于最终 80% 门禁。
+- `go vet ./...`、`GOOS=linux GOARCH=amd64 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。
+- 尚未完成且未冒充完成：真实 SillyTavern adapter 会话遥测、插件指纹、客户端延迟持久化与综合推荐评分尚缺；真实 PostgreSQL 迁移/并发、目标规模容量压测和故障接管状态机仍未验证，因此 R18 保持 `部分`，R19/R21 继续作为后续工作。
