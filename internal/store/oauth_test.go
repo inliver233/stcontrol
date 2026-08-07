@@ -51,6 +51,36 @@ func TestOAuthStateRejectsInvalidProvider(t *testing.T) {
 	}
 }
 
+func TestOAuthBindingStateIsSessionAndGenerationBound(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 7, 23, 20, 0, 0, time.UTC)
+	hash := make([]byte, 32)
+	expires := now.Add(10 * time.Minute)
+	mock.ExpectExec(`INSERT INTO oauth_authorization_states`).
+		WithArgs(hash, "linuxdo", int64(70), "session-id", expires, now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := st.CreateOAuthBindingState(context.Background(), hash, "linuxdo", 70, "session-id", expires, now); err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectQuery(`UPDATE oauth_authorization_states AS state`).
+		WithArgs(hash, "linuxdo", now, int64(70), "session-id").
+		WillReturnRows(sqlmock.NewRows([]string{"consumed"}).AddRow(true))
+	consumed, err := st.ConsumeOAuthBindingState(context.Background(), hash, "linuxdo", 70, "session-id", now)
+	if err != nil || !consumed {
+		t.Fatalf("consumed=%v err=%v", consumed, err)
+	}
+	mock.ExpectQuery(`UPDATE oauth_authorization_states AS state`).
+		WithArgs(hash, "linuxdo", now, int64(71), "other-session").
+		WillReturnRows(sqlmock.NewRows([]string{"consumed"}))
+	consumed, err = st.ConsumeOAuthBindingState(context.Background(), hash, "linuxdo", 71, "other-session", now)
+	if err != nil || consumed {
+		t.Fatalf("wrong scope consumed=%v err=%v", consumed, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
 func TestCreateAndClaimOAuthPending(t *testing.T) {
 	t.Parallel()
 	store, mock, closeDB := newMockStore(t)

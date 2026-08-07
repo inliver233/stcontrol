@@ -81,18 +81,40 @@ func TestUpdateUserPasswordClearsLegacyCiphertextAndVersionsIdentity(t *testing.
 
 	store, mock, closeDB := newMockStore(t)
 	defer closeDB()
+	now := time.Date(2026, 8, 7, 23, 45, 0, 0, time.UTC)
 
 	mock.ExpectBegin()
 	mock.ExpectExec(`UPDATE users SET password_enc=NULL, password_hash=\$2`).
 		WithArgs(int64(7), "new-hash").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`UPDATE auth_identities`).
-		WithArgs(int64(7), "new-hash").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`UPDATE auth_identities`).
+		WithArgs(int64(7), "new-hash", now).
+		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).AddRow(int64(70)))
+	mock.ExpectExec(`UPDATE node_accounts`).
+		WithArgs(int64(70), "node-hash", "node-salt", now).
+		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectCommit()
 
-	if err := store.UpdateUserPassword(context.Background(), 7, "new-hash"); err != nil {
+	if err := store.UpdateUserPassword(
+		context.Background(), 7, "new-hash", "node-hash", "node-salt", now,
+	); err != nil {
 		t.Fatalf("UpdateUserPassword: %v", err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestListUserNodeAccountsIncludesStagedPasswordVersion(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	mock.ExpectQuery(`SELECT account.node_id,account.local_handle,node.status,account.password_material_version`).
+		WithArgs(int64(70)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"node_id", "local_handle", "node_status", "password_material_version",
+		}).AddRow(int64(12), "alice", "online", int64(4)))
+	accounts, err := st.ListUserNodeAccounts(context.Background(), 70)
+	if err != nil || len(accounts) != 1 || accounts[0].PasswordMaterialVersion != 4 {
+		t.Fatalf("accounts=%+v err=%v", accounts, err)
 	}
 	assertMockExpectations(t, mock)
 }
@@ -103,7 +125,7 @@ func TestNodeAccountProvisioningVersionsMaterialAndActivatesAtomically(t *testin
 	defer closeDB()
 	now := time.Date(2026, 8, 7, 19, 30, 0, 0, time.UTC)
 	mock.ExpectQuery(`UPDATE node_accounts`).
-		WithArgs(int64(70), int64(12), "node-hash", "node-salt", []byte(`{}`), now).
+		WithArgs(int64(70), int64(12), "node-hash", "node-salt", nil, now).
 		WillReturnRows(sqlmock.NewRows([]string{"password_material_version"}).AddRow(int64(4)))
 	version, err := st.SetNodeAccountProvisioning(
 		context.Background(), 70, 12, "node-hash", "node-salt", "", "", now,
@@ -133,13 +155,30 @@ func TestOAuthNodeAccountProvisioningHasNoPasswordMaterial(t *testing.T) {
 	defer closeDB()
 	now := time.Date(2026, 8, 7, 19, 30, 0, 0, time.UTC)
 	mock.ExpectQuery(`UPDATE node_accounts`).
-		WithArgs(int64(70), int64(12), nil, nil, []byte(`{"discord":"stable-subject"}`), now).
+		WithArgs(int64(70), int64(12), nil, nil, `{"discord":"stable-subject"}`, now).
 		WillReturnRows(sqlmock.NewRows([]string{"password_material_version"}).AddRow(int64(0)))
 	version, err := st.SetNodeAccountProvisioning(
 		context.Background(), 70, 12, "", "", "discord", "stable-subject", now,
 	)
 	if err != nil || version != 0 {
 		t.Fatalf("version=%d err=%v", version, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestListPendingPasswordSyncsOnlyReturnsDurableRetryMaterial(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 7, 23, 30, 0, 0, time.UTC)
+	mock.ExpectQuery(`SELECT global_user.legacy_user_id`).WithArgs(20, now.Add(-2*time.Minute)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"legacy_user_id", "global_user_id", "node_id", "local_handle",
+			"password_hash", "password_salt", "password_material_version",
+		}).AddRow(int64(7), int64(70), int64(12), "alice", "node-hash", "node-salt", int64(4)))
+	syncs, err := st.ListPendingPasswordSyncs(context.Background(), 20, now)
+	if err != nil || len(syncs) != 1 || syncs[0].Version != 4 || syncs[0].PasswordHash != "node-hash" {
+		t.Fatalf("syncs=%+v err=%v", syncs, err)
 	}
 	assertMockExpectations(t, mock)
 }

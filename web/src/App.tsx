@@ -7,6 +7,7 @@ import NodesPage from './pages/Nodes'
 import SelectNodePage from './pages/SelectNode'
 import AdminPage from './pages/Admin'
 import AdminLoginPage from './pages/AdminLogin'
+import AccountPage from './pages/Account'
 
 interface AuthCtx {
   me: Me | null
@@ -43,6 +44,7 @@ export default function App() {
         <Route path="/select-node" element={<SelectNodePage />} />
         <Route path="/admin/login" element={<AdminLoginPage />} />
         <Route path="/admin/*" element={<AdminPage />} />
+        <Route path="/account" element={loading ? <div className="loading">加载中…</div> : me && !me.is_admin ? <AccountPage /> : <Navigate to="/login" replace />} />
         <Route
           path="/"
           element={

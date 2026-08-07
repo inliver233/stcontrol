@@ -56,6 +56,23 @@ type UserReplica struct {
 	SizeBytes   sql.NullInt64
 }
 
+type UserNodeAccount struct {
+	NodeID                  int64
+	LocalHandle             string
+	NodeStatus              string
+	PasswordMaterialVersion int64
+}
+
+type PendingPasswordSync struct {
+	LegacyUserID int64
+	GlobalUserID int64
+	NodeID       int64
+	LocalHandle  string
+	PasswordHash string
+	PasswordSalt string
+	Version      int64
+}
+
 // Ticket 一次性票据。
 type Ticket struct {
 	ID        int64

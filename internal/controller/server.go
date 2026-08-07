@@ -20,6 +20,7 @@ type Server struct {
 	secretKey        []byte // 用户凭据 AES 密钥
 	workflowWorkerID string
 	snapshotSlots    chan struct{}
+	passwordSyncMu   sync.Mutex
 
 	// 节点上用户在线状态（离线备份调度用）
 	actMu    sync.Mutex
@@ -96,6 +97,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.backupScheduler(ctx)
 	go s.sessionJanitor(ctx)
 	go s.snapshotWorkflowReconciler(ctx)
+	go s.passwordSyncReconciler(ctx)
 
 	srv := &http.Server{
 		Addr:              s.Cfg.Listen,

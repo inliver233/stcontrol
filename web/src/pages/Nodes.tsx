@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, MyNode, measureLatency, submitLoginHandoff } from '../api'
 import { useAuth } from '../App'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 export default function NodesPage() {
   const [nodes, setNodes] = useState<MyNode[]>([])
@@ -93,6 +93,7 @@ export default function NodesPage() {
         )}
         {jumping && <div className="loading">正在跳转…</div>}
         <div className="link-row">
+          <Link to="/account">登录方式与账号安全</Link>{' · '}
           <a onClick={logout} style={{ cursor: 'pointer' }}>退出登录</a>
         </div>
       </div>

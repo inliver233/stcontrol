@@ -46,6 +46,20 @@ export interface LoginHandoff {
   existing_writer: boolean
 }
 
+export interface AuthIdentity {
+  provider: 'password' | 'discord' | 'linuxdo'
+  password_version?: number
+  status: string
+  created_at: string
+}
+
+export interface PasswordSyncResult {
+  ok: boolean
+  node_sync: 'active' | 'pending'
+  synced_nodes: number
+  pending_nodes: number
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
 	const method = (options?.method || 'GET').toUpperCase()
 	const headers = new Headers(options?.headers)
@@ -107,7 +121,13 @@ export const api = {
 
   // 改密
   changePassword: (old_password: string, new_password: string) =>
-    request<{ ok: boolean }>('/api/users/me/password', { method: 'POST', body: JSON.stringify({ old_password, new_password }) }),
+    request<PasswordSyncResult>('/api/users/me/password', { method: 'POST', body: JSON.stringify({ old_password, new_password }) }),
+  identities: () => request<{ identities: AuthIdentity[]; can_unbind: boolean; supported: string[] }>('/api/users/me/identities'),
+  bindPassword: (password: string) => request<PasswordSyncResult>('/api/users/me/identities/password', {
+    method: 'POST', body: JSON.stringify({ password }),
+  }),
+  beginOAuthBinding: (provider: 'discord' | 'linuxdo') => request<{ authorization_url: string }>(`/api/users/me/identities/${provider}/bind`, { method: 'POST' }),
+  unbindIdentity: (provider: string) => request<{ ok: boolean }>(`/api/users/me/identities/${provider}`, { method: 'DELETE' }),
 }
 
 // Submit the bearer code in a request body. The form is deliberately ephemeral

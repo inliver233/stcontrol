@@ -69,6 +69,10 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Get("/users/me/nodes", s.handleMyNodes)
 		r.Post("/login/redirect", s.handleLoginRedirect)
 		r.Post("/users/me/password", s.handleChangePassword)
+		r.Get("/users/me/identities", s.handleListIdentities)
+		r.Post("/users/me/identities/password", s.handleBindPasswordIdentity)
+		r.Post("/users/me/identities/{provider}/bind", s.handleBeginOAuthIdentityBinding)
+		r.Delete("/users/me/identities/{provider}", s.handleUnbindIdentity)
 	})
 
 	// 管理后台（需管理员）

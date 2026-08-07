@@ -61,27 +61,10 @@ func (s *Server) handleOAuthBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var authURL string
-	switch provider {
-	case "discord":
-		authURL = "https://discord.com/api/oauth2/authorize?" + url.Values{
-			"client_id":     {cfg.ClientID},
-			"redirect_uri":  {cfg.CallbackURL},
-			"response_type": {"code"},
-			"scope":         {"identify"},
-			"state":         {state},
-		}.Encode()
-	case "linuxdo":
-		base := cfg.AuthURL
-		if base == "" {
-			base = "https://connect.linux.do/oauth2/authorize"
-		}
-		authURL = base + "?" + url.Values{
-			"client_id":     {cfg.ClientID},
-			"redirect_uri":  {cfg.CallbackURL},
-			"response_type": {"code"},
-			"state":         {state},
-		}.Encode()
+	authURL, err := oauthAuthorizationURL(provider, cfg, state)
+	if err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "OAuth 配置无效")
+		return
 	}
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
@@ -102,19 +85,54 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stateHash := sha256.Sum256([]byte(state))
-	nodeID, consumed, err := s.Store.ConsumeOAuthState(r.Context(), stateHash[:], provider, time.Now().UTC())
-	if err != nil {
-		protocol.WriteError(w, http.StatusServiceUnavailable, "OAuth 状态验证失败")
+	now := time.Now().UTC()
+	var bindingSession *session
+	if sess, _, sessionErr := s.getSession(r); sessionErr != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "会话服务暂不可用")
 		return
+	} else if sess != nil && !sess.IsAdmin {
+		bound, err := s.Store.ConsumeOAuthBindingState(
+			r.Context(), stateHash[:], provider, sess.GlobalUserID, sess.ID, now,
+		)
+		if err != nil {
+			protocol.WriteError(w, http.StatusServiceUnavailable, "OAuth 绑定状态验证失败")
+			return
+		}
+		if bound {
+			bindingSession = sess
+		}
 	}
-	if !consumed {
-		protocol.WriteError(w, http.StatusBadRequest, "OAuth 状态无效")
-		return
+	var nodeID *int64
+	if bindingSession == nil {
+		var consumed bool
+		var err error
+		nodeID, consumed, err = s.Store.ConsumeOAuthState(r.Context(), stateHash[:], provider, now)
+		if err != nil {
+			protocol.WriteError(w, http.StatusServiceUnavailable, "OAuth 状态验证失败")
+			return
+		}
+		if !consumed {
+			protocol.WriteError(w, http.StatusBadRequest, "OAuth 状态无效")
+			return
+		}
 	}
 
 	oauthID, displayName, avatarURL, err := s.exchangeOAuthUser(r.Context(), provider, cfg, code)
 	if err != nil {
 		protocol.WriteError(w, http.StatusBadGateway, "OAuth 验证失败")
+		return
+	}
+	if bindingSession != nil {
+		if err := s.Store.BindOAuthIdentity(r.Context(), bindingSession.GlobalUserID, provider, oauthID, now); err != nil {
+			if errors.Is(err, store.ErrIdentityConflict) {
+				protocol.WriteError(w, http.StatusConflict, "该登录方式已绑定到账号")
+				return
+			}
+			protocol.WriteError(w, http.StatusInternalServerError, "绑定登录方式失败")
+			return
+		}
+		_ = s.Store.Audit(r.Context(), bindingSession.Username, "identity-bind", provider, nil)
+		http.Redirect(w, r, "/account?identity_bound="+url.QueryEscape(provider), http.StatusFound)
 		return
 	}
 
@@ -528,4 +546,32 @@ func decodeOAuthResponse(response *http.Response, out any) error {
 
 func providerOf(r *http.Request) string {
 	return chi.URLParam(r, "provider")
+}
+
+func oauthAuthorizationURL(provider string, cfg oauthCfg, state string) (string, error) {
+	if state == "" || cfg.ClientID == "" || cfg.CallbackURL == "" {
+		return "", fmt.Errorf("invalid oauth authorization input")
+	}
+	values := url.Values{
+		"client_id": {cfg.ClientID}, "redirect_uri": {cfg.CallbackURL},
+		"response_type": {"code"}, "state": {state},
+	}
+	switch provider {
+	case "discord":
+		values.Set("scope", "identify")
+		return "https://discord.com/api/oauth2/authorize?" + values.Encode(), nil
+	case "linuxdo":
+		base := cfg.AuthURL
+		if base == "" {
+			base = "https://connect.linux.do/oauth2/authorize"
+		}
+		parsed, err := url.Parse(base)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+			return "", fmt.Errorf("invalid oauth authorization endpoint")
+		}
+		parsed.RawQuery = values.Encode()
+		return parsed.String(), nil
+	default:
+		return "", fmt.Errorf("unknown oauth provider")
+	}
 }

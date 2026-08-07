@@ -108,6 +108,36 @@ func TestExecuteScanExistingReturnsOnlySafeSummary(t *testing.T) {
 	}
 }
 
+func TestPasswordCommandPassesCommandOperationToAdapter(t *testing.T) {
+	t.Parallel()
+	operationID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	var adapterRequest protocol.SetPasswordRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/stcontrol/internal/users/password" {
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&adapterRequest); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	}))
+	defer server.Close()
+	a, err := New(&config.AgentConfig{
+		TavernURL: server.URL, AgentPSK: "agent-secret", NodeID: 12, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := encryptedTestCommand(t, a.Cfg.AgentPSK, "set_password", []byte(`{
+		"handle":"alice","password_hash":"node-hash","password_salt":"node-salt","version":4
+	}`))
+	command.OperationID = operationID
+	succeeded, result := a.executeCommand(context.Background(), command)
+	if !succeeded || adapterRequest.OperationID != operationID || adapterRequest.Version != 4 {
+		t.Fatalf("succeeded=%v request=%+v result=%s", succeeded, adapterRequest, result)
+	}
+}
+
 func TestRegisterRequestDoesNotExposeCallbackAddress(t *testing.T) {
 	t.Parallel()
 	var request map[string]any

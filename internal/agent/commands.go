@@ -180,6 +180,7 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			payload.PasswordHash == "" || payload.PasswordSalt == "" || payload.Version <= 0 {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
 		}
+		payload.OperationID = command.OperationID
 		if err := a.setPassword(ctx, &payload); err != nil {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "password_update_failed"})
 		}

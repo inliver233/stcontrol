@@ -35,9 +35,9 @@ func (s *Store) CreateOAuthState(
 	}
 	result, err := s.DB.ExecContext(ctx, `
 		INSERT INTO oauth_authorization_states (
-		  state_hash, provider, node_id, controller_generation, expires_at, created_at
+		  state_hash, provider, node_id, purpose, controller_generation, expires_at, created_at
 		)
-		SELECT $1,$2,$3,generation,$4,$5
+		SELECT $1,$2,$3,'login',generation,$4,$5
 		FROM controller_epochs WHERE state='active'`, stateHash, provider, nodeID, expiresAt, now)
 	if err != nil {
 		return fmt.Errorf("create oauth state: %w", err)
@@ -72,6 +72,7 @@ func (s *Store) ConsumeOAuthState(
 		SET consumed_at=$3
 		FROM controller_epochs AS epoch
 		WHERE state.state_hash=$1 AND state.provider=$2
+		  AND state.purpose='login'
 		  AND state.consumed_at IS NULL AND state.expires_at>$3
 		  AND epoch.state='active' AND epoch.generation=state.controller_generation
 		RETURNING state.node_id`, stateHash, provider, now).Scan(&nodeID)
@@ -86,6 +87,82 @@ func (s *Store) ConsumeOAuthState(
 		return &value, true, nil
 	}
 	return nil, true, nil
+}
+
+func (s *Store) CreateOAuthBindingState(
+	ctx context.Context,
+	stateHash []byte,
+	provider string,
+	globalUserID int64,
+	sessionID string,
+	expiresAt, now time.Time,
+) error {
+	if len(stateHash) != 32 || !validOAuthProvider(provider) || globalUserID <= 0 || sessionID == "" || expiresAt.IsZero() {
+		return ErrInvalidOAuthFlow
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if !expiresAt.After(now) {
+		return ErrInvalidOAuthFlow
+	}
+	result, err := s.DB.ExecContext(ctx, `
+		INSERT INTO oauth_authorization_states (
+		  state_hash,provider,purpose,user_id,session_id,controller_generation,expires_at,created_at
+		)
+		SELECT $1,$2,'bind',$3,$4,epoch.generation,$5,$6
+		FROM controller_epochs epoch
+		JOIN controller_sessions session ON session.id=$4 AND session.user_id=$3
+		WHERE epoch.state='active' AND session.revoked_at IS NULL AND session.expires_at>$6
+		  AND session.controller_generation=epoch.generation`,
+		stateHash, provider, globalUserID, sessionID, expiresAt, now)
+	if err != nil {
+		return fmt.Errorf("create oauth binding state: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrInvalidOAuthFlow
+	}
+	return nil
+}
+
+func (s *Store) ConsumeOAuthBindingState(
+	ctx context.Context,
+	stateHash []byte,
+	provider string,
+	globalUserID int64,
+	sessionID string,
+	now time.Time,
+) (bool, error) {
+	if len(stateHash) != 32 || !validOAuthProvider(provider) || globalUserID <= 0 || sessionID == "" {
+		return false, ErrInvalidOAuthFlow
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var consumed bool
+	err := s.DB.QueryRowContext(ctx, `
+		UPDATE oauth_authorization_states AS state
+		SET consumed_at=$3
+		FROM controller_epochs AS epoch, controller_sessions AS session
+		WHERE state.state_hash=$1 AND state.provider=$2 AND state.purpose='bind'
+		  AND state.user_id=$4 AND state.session_id=$5
+		  AND state.consumed_at IS NULL AND state.expires_at>$3
+		  AND epoch.state='active' AND epoch.generation=state.controller_generation
+		  AND session.id=state.session_id AND session.user_id=state.user_id
+		  AND session.revoked_at IS NULL AND session.expires_at>$3
+		  AND session.controller_generation=epoch.generation
+		RETURNING true`, stateHash, provider, now, globalUserID, sessionID).Scan(&consumed)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("consume oauth binding state: %w", err)
+	}
+	return consumed, nil
 }
 
 type CreateOAuthPendingParams struct {

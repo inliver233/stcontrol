@@ -87,28 +87,28 @@ func (s *Store) SetNodeAccountProvisioning(
 		now = time.Now().UTC()
 	}
 	var hashValue, saltValue any
-	oauthSubjects := map[string]string{}
+	var oauthValue any
 	if passwordMode {
 		hashValue = passwordHash
 		saltValue = passwordSalt
 	} else {
-		oauthSubjects[oauthProvider] = oauthSubject
-	}
-	oauthJSON, err := json.Marshal(oauthSubjects)
-	if err != nil {
-		return 0, err
+		oauthJSON, err := json.Marshal(map[string]string{oauthProvider: oauthSubject})
+		if err != nil {
+			return 0, err
+		}
+		oauthValue = string(oauthJSON)
 	}
 	var version int64
-	err = s.DB.QueryRowContext(ctx, `
+	err := s.DB.QueryRowContext(ctx, `
 		UPDATE node_accounts
 		SET status='pending', password_hash=$3, password_salt=$4,
-		  oauth_subjects=$5,
+		  oauth_subjects=CASE WHEN $5 IS NULL THEN oauth_subjects ELSE oauth_subjects || $5::jsonb END,
 		  password_material_version=CASE WHEN $3 IS NULL
 		    THEN password_material_version ELSE password_material_version+1 END,
 		  account_version=account_version+1, updated_at=$6
 		WHERE user_id=$1 AND node_id=$2
 		RETURNING password_material_version`,
-		globalUserID, nodeID, hashValue, saltValue, oauthJSON, now).Scan(&version)
+		globalUserID, nodeID, hashValue, saltValue, oauthValue, now).Scan(&version)
 	if err == sql.ErrNoRows {
 		return 0, fmt.Errorf("node account mapping not found")
 	}
@@ -168,13 +168,80 @@ func (s *Store) MarkNodeAccountError(ctx context.Context, globalUserID, nodeID i
 	return err
 }
 
+func (s *Store) ListUserNodeAccounts(ctx context.Context, globalUserID int64) ([]UserNodeAccount, error) {
+	if globalUserID <= 0 {
+		return nil, fmt.Errorf("invalid global user")
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT account.node_id,account.local_handle,node.status,account.password_material_version
+		FROM node_accounts account
+		JOIN nodes node ON node.id=account.node_id
+		WHERE account.user_id=$1 AND account.status IN ('active','pending','error')
+		ORDER BY account.node_id`, globalUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var accounts []UserNodeAccount
+	for rows.Next() {
+		var account UserNodeAccount
+		if err := rows.Scan(
+			&account.NodeID, &account.LocalHandle, &account.NodeStatus, &account.PasswordMaterialVersion,
+		); err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, account)
+	}
+	return accounts, rows.Err()
+}
+
+func (s *Store) ListPendingPasswordSyncs(ctx context.Context, limit int, now time.Time) ([]PendingPasswordSync, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT global_user.legacy_user_id,account.user_id,account.node_id,account.local_handle,
+		  account.password_hash,account.password_salt,account.password_material_version
+		FROM node_accounts account
+		JOIN global_users global_user ON global_user.id=account.user_id AND global_user.status='active'
+		JOIN nodes node ON node.id=account.node_id AND node.status='online'
+		WHERE account.status IN ('pending','error')
+		  AND account.local_user_id IS NOT NULL
+		  AND account.password_hash IS NOT NULL AND account.password_salt IS NOT NULL
+		  AND account.updated_at<=$2
+		ORDER BY account.updated_at LIMIT $1`, limit, now.Add(-2*time.Minute))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var syncs []PendingPasswordSync
+	for rows.Next() {
+		var sync PendingPasswordSync
+		if err := rows.Scan(
+			&sync.LegacyUserID, &sync.GlobalUserID, &sync.NodeID, &sync.LocalHandle,
+			&sync.PasswordHash, &sync.PasswordSalt, &sync.Version,
+		); err != nil {
+			return nil, err
+		}
+		syncs = append(syncs, sync)
+	}
+	return syncs, rows.Err()
+}
+
 // GetUserByUsername 按用户名查找。
 func (s *Store) GetUserByUsername(ctx context.Context, username string) (*User, error) {
 	u := &User{}
 	err := s.DB.QueryRowContext(ctx, `
-	  SELECT u.id, COALESCE(gu.id,0), u.uuid, u.username, u.display_name, u.password_enc, u.password_hash,
-	    auth_provider, oauth_id, avatar_url, email, home_node_id, status, created_at
-	  FROM users u LEFT JOIN global_users gu ON gu.legacy_user_id=u.id WHERE username=$1`, username).
+	  SELECT u.id, COALESCE(gu.id,0), u.uuid, u.username, u.display_name, u.password_enc, identity.password_hash,
+	    u.auth_provider, u.oauth_id, u.avatar_url, u.email, u.home_node_id, u.status, u.created_at
+	  FROM users u
+	  LEFT JOIN global_users gu ON gu.legacy_user_id=u.id
+	  LEFT JOIN auth_identities identity
+	    ON identity.user_id=gu.id AND identity.provider='password' AND identity.status='active'
+	  WHERE username=$1`, username).
 		Scan(&u.ID, &u.GlobalID, &u.UUID, &u.Username, &u.DisplayName, &u.PasswordEnc, &u.PasswordHash,
 			&u.AuthProvider, &u.OAuthID, &u.AvatarURL, &u.Email, &u.HomeNodeID, &u.Status, &u.CreatedAt)
 	if err == sql.ErrNoRows {
@@ -187,10 +254,14 @@ func (s *Store) GetUserByUsername(ctx context.Context, username string) (*User, 
 func (s *Store) GetUserByOAuth(ctx context.Context, provider, oauthID string) (*User, error) {
 	u := &User{}
 	err := s.DB.QueryRowContext(ctx, `
-	  SELECT u.id, COALESCE(gu.id,0), u.uuid, u.username, u.display_name, u.password_enc, u.password_hash,
-	    auth_provider, oauth_id, avatar_url, email, home_node_id, status, created_at
-	  FROM users u LEFT JOIN global_users gu ON gu.legacy_user_id=u.id
-	  WHERE auth_provider=$1 AND oauth_id=$2`, provider, oauthID).
+	  SELECT u.id, gu.id, u.uuid, u.username, u.display_name, u.password_enc, password_identity.password_hash,
+	    u.auth_provider, u.oauth_id, u.avatar_url, u.email, u.home_node_id, u.status, u.created_at
+	  FROM auth_identities identity
+	  JOIN global_users gu ON gu.id=identity.user_id
+	  JOIN users u ON u.id=gu.legacy_user_id
+	  LEFT JOIN auth_identities password_identity
+	    ON password_identity.user_id=gu.id AND password_identity.provider='password' AND password_identity.status='active'
+	  WHERE identity.provider=$1 AND identity.provider_subject=$2 AND identity.status='active'`, provider, oauthID).
 		Scan(&u.ID, &u.GlobalID, &u.UUID, &u.Username, &u.DisplayName, &u.PasswordEnc, &u.PasswordHash,
 			&u.AuthProvider, &u.OAuthID, &u.AvatarURL, &u.Email, &u.HomeNodeID, &u.Status, &u.CreatedAt)
 	if err == sql.ErrNoRows {
@@ -203,9 +274,13 @@ func (s *Store) GetUserByOAuth(ctx context.Context, provider, oauthID string) (*
 func (s *Store) GetUserByID(ctx context.Context, id int64) (*User, error) {
 	u := &User{}
 	err := s.DB.QueryRowContext(ctx, `
-	  SELECT u.id, COALESCE(gu.id,0), u.uuid, u.username, u.display_name, u.password_enc, u.password_hash,
-	    auth_provider, oauth_id, avatar_url, email, home_node_id, status, created_at
-	  FROM users u LEFT JOIN global_users gu ON gu.legacy_user_id=u.id WHERE u.id=$1`, id).
+	  SELECT u.id, COALESCE(gu.id,0), u.uuid, u.username, u.display_name, u.password_enc, identity.password_hash,
+	    u.auth_provider, u.oauth_id, u.avatar_url, u.email, u.home_node_id, u.status, u.created_at
+	  FROM users u
+	  LEFT JOIN global_users gu ON gu.legacy_user_id=u.id
+	  LEFT JOIN auth_identities identity
+	    ON identity.user_id=gu.id AND identity.provider='password' AND identity.status='active'
+	  WHERE u.id=$1`, id).
 		Scan(&u.ID, &u.GlobalID, &u.UUID, &u.Username, &u.DisplayName, &u.PasswordEnc, &u.PasswordHash,
 			&u.AuthProvider, &u.OAuthID, &u.AvatarURL, &u.Email, &u.HomeNodeID, &u.Status, &u.CreatedAt)
 	if err == sql.ErrNoRows {
@@ -243,7 +318,18 @@ func (s *Store) UpdateUserStatus(ctx context.Context, userID int64, status strin
 }
 
 // UpdateUserPassword 更新总控验证 hash。可逆密码列始终清空。
-func (s *Store) UpdateUserPassword(ctx context.Context, userID int64, passwordHash string) error {
+func (s *Store) UpdateUserPassword(
+	ctx context.Context,
+	userID int64,
+	passwordHash, nodePasswordHash, nodePasswordSalt string,
+	now time.Time,
+) error {
+	if userID <= 0 || passwordHash == "" || nodePasswordHash == "" || nodePasswordSalt == "" {
+		return fmt.Errorf("invalid password material")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return err
@@ -254,22 +340,40 @@ func (s *Store) UpdateUserPassword(ctx context.Context, userID int64, passwordHa
 		userID, passwordHash); err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `
+	var globalUserID int64
+	err = tx.QueryRowContext(ctx, `
 	  UPDATE auth_identities
-	  SET password_hash=$2, password_version=password_version+1, updated_at=now()
+	  SET password_hash=$2, password_version=password_version+1, updated_at=$3
 	  WHERE user_id=(SELECT id FROM global_users WHERE legacy_user_id=$1)
-	    AND provider='password' AND status='active'`, userID, passwordHash)
-	if err != nil {
-		return err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows != 1 {
+	    AND provider='password' AND status='active'
+	  RETURNING user_id`, userID, passwordHash, now).Scan(&globalUserID)
+	if err == sql.ErrNoRows {
 		return fmt.Errorf("active password identity not found")
 	}
+	if err != nil {
+		return err
+	}
+	if err := stagePasswordMaterial(ctx, tx, globalUserID, nodePasswordHash, nodePasswordSalt, now); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+func stagePasswordMaterial(
+	ctx context.Context,
+	tx *sql.Tx,
+	globalUserID int64,
+	passwordHash, passwordSalt string,
+	now time.Time,
+) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE node_accounts
+		SET status='pending',password_hash=$2,password_salt=$3,
+		  password_material_version=password_material_version+1,
+		  account_version=account_version+1,updated_at=$4
+		WHERE user_id=$1 AND status IN ('active','pending','error')`,
+		globalUserID, passwordHash, passwordSalt, now)
+	return err
 }
 
 // ListUsers 列出全部用户（管理后台）。

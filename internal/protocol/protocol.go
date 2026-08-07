@@ -161,6 +161,7 @@ type ProvisionUserResponse struct {
 }
 
 type SetPasswordRequest struct {
+	OperationID  string `json:"operation_id"`
 	Handle       string `json:"handle"`
 	PasswordHash string `json:"password_hash"`
 	PasswordSalt string `json:"password_salt"`
