@@ -18,10 +18,6 @@ type Server struct {
 	Store     *store.Store
 	secretKey []byte // 用户凭据 AES 密钥
 
-	// 用户会话 token -> session
-	mu       sync.RWMutex
-	sessions map[string]*session
-
 	// 节点上用户在线状态（离线备份调度用）
 	actMu    sync.Mutex
 	activity map[int64]map[string]protocol.UserStatus
@@ -30,10 +26,16 @@ type Server struct {
 }
 
 type session struct {
-	UserID    int64
-	Username  string
-	IsAdmin   bool
-	ExpiresAt time.Time
+	ID                   string
+	UserID               int64
+	GlobalUserID         int64
+	AdminID              int64
+	Username             string
+	IsAdmin              bool
+	CSRFHash             []byte
+	ExpiresAt            time.Time
+	LastSeenAt           time.Time
+	ControllerGeneration int64
 }
 
 // New 创建总控服务。
@@ -42,7 +44,6 @@ func New(cfg *config.ControllerConfig, st *store.Store, secretKey []byte) *Serve
 		Cfg:       cfg,
 		Store:     st,
 		secretKey: secretKey,
-		sessions:  make(map[string]*session),
 		activity:  make(map[int64]map[string]protocol.UserStatus),
 		agent:     newAgentClient(),
 	}
@@ -74,6 +75,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) Run(ctx context.Context) error {
 	go s.nodeWatchdog(ctx)
 	go s.backupScheduler(ctx)
+	go s.sessionJanitor(ctx)
 
 	srv := &http.Server{
 		Addr:              s.Cfg.Listen,

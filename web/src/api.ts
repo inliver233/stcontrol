@@ -46,10 +46,19 @@ export interface LoginHandoff {
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+	const method = (options?.method || 'GET').toUpperCase()
+	const headers = new Headers(options?.headers)
+	if (options?.body && !headers.has('Content-Type')) {
+	  headers.set('Content-Type', 'application/json')
+	}
+	if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+	  const csrf = readCookie('stcontrol_csrf')
+	  if (csrf) headers.set('X-CSRF-Token', csrf)
+	}
   const resp = await fetch(path, {
+	...options,
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) },
-    ...options,
+	headers,
   })
   if (!resp.ok) {
     let msg = `请求失败 (${resp.status})`
@@ -60,6 +69,15 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(msg)
   }
   return resp.json()
+}
+
+function readCookie(name: string): string {
+	const prefix = `${encodeURIComponent(name)}=`
+	for (const part of document.cookie.split(';')) {
+	  const value = part.trim()
+	  if (value.startsWith(prefix)) return decodeURIComponent(value.slice(prefix.length))
+	}
+	return ''
 }
 
 export const api = {

@@ -119,7 +119,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	_ = s.Store.Audit(ctx, handle, "register", node.Name, nil)
 
 	// 自动登录
-	s.createSession(w, user.ID, user.Username, false)
+	if err := s.createUserSession(w, r, user); err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "创建会话失败")
+		return
+	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "username": handle, "display_name": displayName,
 	})
@@ -154,7 +157,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.createSession(w, user.ID, user.Username, false)
+	if err := s.createUserSession(w, r, user); err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "创建会话失败")
+		return
+	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "username": user.Username, "display_name": user.DisplayName,
 	})
@@ -162,6 +168,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 // handleLogout 登出。
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	s.destroySession(w, r)
+	if err := s.destroySession(w, r); err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "注销会话失败")
+		return
+	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

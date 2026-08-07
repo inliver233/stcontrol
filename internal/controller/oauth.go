@@ -40,7 +40,11 @@ func (s *Server) handleOAuthBegin(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("node_id"); v != "" {
 		fmt.Sscanf(v, "%d", &nodeID)
 	}
-	state := randToken()
+	state, err := randomBearerToken()
+	if err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "OAuth 状态生成失败")
+		return
+	}
 	oauthStates.m[state] = &oauthStateEntry{
 		Provider: provider, NodeID: nodeID,
 		ExpiresAt: time.Now().Add(10 * time.Minute),
@@ -121,7 +125,10 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.createSession(w, user.ID, user.Username, false)
+	if err := s.createUserSession(w, r, user); err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "创建会话失败")
+		return
+	}
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -137,7 +144,11 @@ func (s *Server) provisionOAuthUser(ctx context.Context, provider, oauthID, disp
 	// 生成 handle: displayName 规范化, 冲突则加随机后缀
 	base := NormalizeHandle(displayName)
 	if !isValidHandle(base) {
-		base = provider + "-" + randToken()[:6]
+		suffix, err := randomHexToken(3)
+		if err != nil {
+			return nil, err
+		}
+		base = provider + "-" + suffix
 	}
 	handle := base
 	for i := 0; i < 5; i++ {
@@ -145,7 +156,11 @@ func (s *Server) provisionOAuthUser(ctx context.Context, provider, oauthID, disp
 		if existing == nil {
 			break
 		}
-		handle = fmt.Sprintf("%s-%s", base, randToken()[:4])
+		suffix, err := randomHexToken(2)
+		if err != nil {
+			return nil, err
+		}
+		handle = fmt.Sprintf("%s-%s", base, suffix)
 	}
 	// 随机占位密码(节点侧, 用户用不到)
 	randPw, err := crypto.RandomPassword(24)
@@ -159,13 +174,13 @@ func (s *Server) provisionOAuthUser(ctx context.Context, provider, oauthID, disp
 		return nil, err
 	}
 	user := &store.User{
-		Username:    handle,
-		DisplayName: displayName,
+		Username:     handle,
+		DisplayName:  displayName,
 		AuthProvider: provider,
-		OAuthID:     sql.NullString{String: oauthID, Valid: true},
-		AvatarURL:   sql.NullString{String: avatarURL, Valid: avatarURL != ""},
-		HomeNodeID:  sql.NullInt64{Int64: node.ID, Valid: true},
-		Status:      "active",
+		OAuthID:      sql.NullString{String: oauthID, Valid: true},
+		AvatarURL:    sql.NullString{String: avatarURL, Valid: avatarURL != ""},
+		HomeNodeID:   sql.NullInt64{Int64: node.ID, Valid: true},
+		Status:       "active",
 	}
 	if err := s.Store.CreateUser(ctx, user); err != nil {
 		return nil, err
@@ -241,10 +256,10 @@ func (s *Server) exchangeDiscord(cfg oauthCfg, code string) (string, string, str
 	}
 	defer uresp.Body.Close()
 	var me struct {
-		ID       string `json:"id"`
-		Username string `json:"username"`
+		ID         string `json:"id"`
+		Username   string `json:"username"`
 		GlobalName string `json:"global_name"`
-		Avatar   string `json:"avatar"`
+		Avatar     string `json:"avatar"`
 	}
 	if err := json.NewDecoder(uresp.Body).Decode(&me); err != nil {
 		return "", "", "", err
@@ -294,10 +309,10 @@ func (s *Server) exchangeLinuxDo(cfg oauthCfg, code string) (string, string, str
 	}
 	defer uresp.Body.Close()
 	var me struct {
-		ID       json.Number `json:"id"`
-		Username string      `json:"username"`
-		Name     string      `json:"name"`
-		AvatarTemplate string `json:"avatar_template"`
+		ID             json.Number `json:"id"`
+		Username       string      `json:"username"`
+		Name           string      `json:"name"`
+		AvatarTemplate string      `json:"avatar_template"`
 	}
 	if err := json.NewDecoder(uresp.Body).Decode(&me); err != nil {
 		return "", "", "", err

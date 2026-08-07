@@ -17,13 +17,28 @@ const maxAgentRequestBody = 1 << 20
 // userAuthMiddleware 要求用户登录。
 func (s *Server) userAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sess, _ := s.getSession(r)
+		w.Header().Set("Cache-Control", "private, no-store, max-age=0")
+		w.Header().Add("Vary", "Cookie")
+		sess, _, err := s.getSession(r)
+		if err != nil {
+			protocol.WriteError(w, http.StatusServiceUnavailable, "会话服务暂不可用")
+			return
+		}
 		if sess == nil {
 			protocol.WriteError(w, http.StatusUnauthorized, "未登录")
 			return
 		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+			if !s.validateCSRF(r, sess) {
+				protocol.WriteError(w, http.StatusForbidden, "CSRF 校验失败")
+				return
+			}
+		} else {
+			s.ensureCSRFCookie(w, r, sess)
+		}
 		ctx := context.WithValue(r.Context(), ctxUser, sess.UserID)
 		ctx = context.WithValue(ctx, ctxKey("stcontrol-isadmin"), sess.IsAdmin)
+		ctx = context.WithValue(ctx, ctxKey("stcontrol-session"), sess)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

@@ -41,11 +41,11 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{
-		"nodes":        len(nodes),
-		"nodes_online": online,
-		"nodes_offline": offline,
-		"nodes_full":   full,
-		"users":        len(users),
+		"nodes":          len(nodes),
+		"nodes_online":   online,
+		"nodes_offline":  offline,
+		"nodes_full":     full,
+		"users":          len(users),
 		"backup_running": running,
 		"backup_failed":  failed,
 	})
@@ -110,7 +110,11 @@ func (s *Server) handleAdminUpdateNode(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminNodeRegisterToken 为节点生成一次性注册令牌 + 安装命令。
 func (s *Server) handleAdminNodeRegisterToken(w http.ResponseWriter, r *http.Request) {
-	token := randToken()
+	token, err := randomBearerToken()
+	if err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "生成令牌失败")
+		return
+	}
 	expires := time.Now().Add(24 * time.Hour)
 	if err := s.Store.CreateRegisterToken(r.Context(), token, "admin 生成", expires); err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "生成令牌失败")
@@ -227,9 +231,9 @@ func (s *Server) handleAdminAbortBackup(w http.ResponseWriter, r *http.Request) 
 // handleAdminCreateInvitation 创建邀请码。
 func (s *Server) handleAdminCreateInvitation(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Code     string `json:"code"`
-		MaxUses  int    `json:"max_uses"`
-		NodeID   *int64 `json:"node_id"`
+		Code      string     `json:"code"`
+		MaxUses   int        `json:"max_uses"`
+		NodeID    *int64     `json:"node_id"`
 		ExpiresAt *time.Time `json:"expires_at"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -237,7 +241,12 @@ func (s *Server) handleAdminCreateInvitation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if req.Code == "" {
-		req.Code = randToken()[:12]
+		code, err := randomHexToken(6)
+		if err != nil {
+			protocol.WriteError(w, http.StatusInternalServerError, "生成邀请码失败")
+			return
+		}
+		req.Code = code
 	}
 	if req.MaxUses <= 0 {
 		req.MaxUses = 1
