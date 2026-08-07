@@ -5,7 +5,9 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"stcontrol/internal/protocol"
@@ -114,4 +116,25 @@ func currentNode(r *http.Request) *store.Node {
 	}
 	n, _ := v.(*store.Node)
 	return n
+}
+
+// validMutationOrigin rejects browser cross-site mutations while preserving
+// non-browser clients that do not send Origin/Sec-Fetch-Site.
+func (s *Server) validMutationOrigin(r *http.Request) bool {
+	if strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site") {
+		return false
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	got, err := url.Parse(origin)
+	if err != nil || got.Scheme == "" || got.Host == "" {
+		return false
+	}
+	want, err := url.Parse(s.Cfg.PublicURL)
+	if err != nil || want.Scheme == "" || want.Host == "" {
+		return false
+	}
+	return strings.EqualFold(got.Scheme, want.Scheme) && strings.EqualFold(got.Host, want.Host)
 }

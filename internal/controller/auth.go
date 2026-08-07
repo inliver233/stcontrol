@@ -22,6 +22,10 @@ type registerRequest struct {
 // handleRegister 账号密码注册。
 // 流程: 规范化 handle → 校验节点可注册 → 校验邀请码 → 总控建用户 → 代注册到节点 → 绑定家节点。
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if !s.validMutationOrigin(r) {
+		protocol.WriteError(w, http.StatusForbidden, "请求来源无效")
+		return
+	}
 	var req registerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
@@ -135,6 +139,10 @@ type loginRequest struct {
 
 // handleLogin 账号密码登录。
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.validMutationOrigin(r) {
+		protocol.WriteError(w, http.StatusForbidden, "请求来源无效")
+		return
+	}
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")

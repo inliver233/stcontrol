@@ -33,6 +33,7 @@ func (s *Server) routes(r *chi.Mux) {
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Post("/register", s.handleRegister)
 		r.Post("/login", s.handleLogin)
+		r.Post("/oauth/complete", s.handleOAuthComplete)
 		r.Get("/oauth/{provider}", s.handleOAuthBegin)
 		r.Get("/oauth/{provider}/callback", s.handleOAuthCallback)
 	})

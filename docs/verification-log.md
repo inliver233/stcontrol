@@ -55,5 +55,17 @@
 - `go vet ./...`：通过。
 - `npm run build`：通过。
 - 新增测试覆盖非法主体、创建/恢复、旧世代/过期拒绝、touch/revoke/cleanup、cookie 标志、CSRF 绑定与错误 token。
+
+## 2026-08-07：持久 OAuth 流程批次
+
+- OAuth state 从无锁进程 map 迁移到数据库 hash，一次性原子核销并绑定 provider、节点和 active controller generation。
+- 新 OAuth 用户的 subject、昵称、头像不再进入 `/select-node` 查询串；资料保留在可认领/释放/完成的持久 pending enrollment，浏览器仅持有限定完成路径的 HttpOnly 随机 cookie。
+- Pending enrollment 支持处理租约、并发拒绝、失败释放和完成结果重放，避免重启或丢失响应后重复注册。
+- 登录、注册和 OAuth 完成增加 Origin/Sec-Fetch-Site 校验；Provider 调用使用可注入的 15 秒 HTTP client，强制 HTTPS、检查状态码、限制响应为 1 MiB，且不回显上游正文。
+- 配置 Discord guild 时会显式验证成员资格。
+- `go test ./...`：通过；`controller` 10.8%，`store` 46.0%。
+- `go vet ./...`：通过。
+- `npm run build`：通过。
+- 新增数据库生命周期、并发 claim、结果重放、cookie 范围、来源校验以及模拟 LinuxDo/Discord provider 的测试。
 - 旧 demo 表仍作为 API 兼容层；后续 endpoint 迁移完成前不能删除。
 - 真实 PostgreSQL 集成环境、并发争抢测试和 migration upgrade/rollback 演练必须在提交后续功能前补齐。

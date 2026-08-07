@@ -22,7 +22,8 @@ type Server struct {
 	actMu    sync.Mutex
 	activity map[int64]map[string]protocol.UserStatus
 
-	agent *agentClient
+	agent     *agentClient
+	oauthHTTP *http.Client
 }
 
 type session struct {
@@ -46,6 +47,7 @@ func New(cfg *config.ControllerConfig, st *store.Store, secretKey []byte) *Serve
 		secretKey: secretKey,
 		activity:  make(map[int64]map[string]protocol.UserStatus),
 		agent:     newAgentClient(),
+		oauthHTTP: &http.Client{Timeout: 15 * time.Second},
 	}
 }
 

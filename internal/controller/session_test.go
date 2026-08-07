@@ -92,3 +92,47 @@ func TestEnsureCSRFCookieRestoresMissingCookie(t *testing.T) {
 		t.Fatalf("unexpected restored cookie: %+v", cookies)
 	}
 }
+
+func TestValidMutationOrigin(t *testing.T) {
+	t.Parallel()
+	server := &Server{Cfg: &config.ControllerConfig{PublicURL: "https://control.example"}}
+	tests := []struct {
+		name      string
+		origin    string
+		fetchSite string
+		want      bool
+	}{
+		{name: "same origin", origin: "https://control.example", fetchSite: "same-origin", want: true},
+		{name: "wrong host", origin: "https://evil.example", fetchSite: "cross-site", want: false},
+		{name: "wrong scheme", origin: "http://control.example", fetchSite: "same-site", want: false},
+		{name: "non browser", want: true},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "https://control.example/api/auth/login", nil)
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+			if tt.fetchSite != "" {
+				req.Header.Set("Sec-Fetch-Site", tt.fetchSite)
+			}
+			if got := server.validMutationOrigin(req); got != tt.want {
+				t.Fatalf("validMutationOrigin=%v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOAuthPendingCookieIsHttpOnlyAndPathScoped(t *testing.T) {
+	t.Parallel()
+	server := &Server{Cfg: &config.ControllerConfig{PublicURL: "https://control.example"}}
+	req := httptest.NewRequest(http.MethodGet, "https://control.example/api/auth/oauth/discord/callback", nil)
+	recorder := httptest.NewRecorder()
+	server.setOAuthPendingCookie(recorder, req, "opaque-token", 600)
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != oauthPendingCookie || !cookies[0].HttpOnly ||
+		!cookies[0].Secure || cookies[0].Path != "/api/auth/oauth/complete" {
+		t.Fatalf("unsafe OAuth pending cookie: %+v", cookies)
+	}
+}

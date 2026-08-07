@@ -192,6 +192,7 @@ func (s *Server) sessionJanitor(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		_, _ = s.Store.CleanupControllerSessions(ctx, time.Now().UTC())
+		_, _ = s.Store.CleanupOAuthArtifacts(ctx, time.Now().UTC())
 		select {
 		case <-ctx.Done():
 			return
