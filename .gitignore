@@ -1,0 +1,20 @@
+# Local configuration and secrets
+agent.yaml
+controller.yaml
+.env
+*.local
+
+# Build outputs
+/bin/
+/web/dist/
+/web/tsconfig.tsbuildinfo
+*.exe
+
+# Dependency/cache directories
+/web/node_modules/
+/coverage/
+*.coverprofile
+
+# Agent runtime data
+/agent-data/
+

@@ -1,0 +1,42 @@
+# 总控配置
+public_url: https://account.example.com
+listen: :8080
+database_url: postgres://stcontrol:stcontrol@127.0.0.1:5432/stcontrol?sslmode=disable
+secret_key_env: CONTROLLER_SECRET_KEY
+static_dir: ./web/dist
+
+node:
+  register_cpu: 50
+  register_mem: 50
+  register_disk: 50
+  heartbeat_timeout_sec: 45
+
+ticket:
+  ttl_sec: 60
+
+backup:
+  offline_grace_min: 12
+  retain_versions: 4
+  zstd_level: 3
+  retry_max: 3
+  abort_on_user_login: true
+
+oauth:
+  discord:
+    enabled: false
+    client_id: ""
+    client_secret: ""
+    callback_url: https://account.example.com/api/auth/oauth/discord/callback
+    guild_id: ""
+  linuxdo:
+    enabled: false
+    client_id: ""
+    client_secret: ""
+    callback_url: https://account.example.com/api/auth/oauth/linuxdo/callback
+    auth_url: https://connect.linux.do/oauth2/authorize
+    token_url: https://connect.linux.do/oauth2/token
+    user_info_url: https://connect.linux.do/api/user
+
+admin:
+  username: admin
+  password: admin
