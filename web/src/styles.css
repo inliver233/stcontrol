@@ -115,6 +115,15 @@ a:hover { color: var(--primary-hover); }
   font-size: 14px;
   margin-bottom: 16px;
 }
+.warning-msg {
+  background: rgba(229, 172, 67, 0.12);
+  border: 1px solid var(--yellow);
+  color: var(--yellow);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
 
 .link-row { text-align: center; margin-top: 16px; font-size: 14px; color: var(--text-dim); }
 

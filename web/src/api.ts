@@ -21,8 +21,26 @@ export interface MyNode {
   kind: 'home' | 'hot_standby'
   kind_label: string
   ready: boolean
+  requires_takeover: boolean
+  last_synced_at?: string
   data_version: number
   latency_ms?: number
+}
+
+export interface ProtectionState {
+  state: string
+  label: string
+  risk: string
+  current_node_id?: number
+  current_node_name?: string
+  recovery_node_id?: number
+  recovery_node_name?: string
+  active_writer_node_id?: number
+  active_writer_node_name?: string
+  latest_recovery_at?: string
+  takeover_available: boolean
+  storage_restore_needed: boolean
+  version: number
 }
 
 export interface Me {
@@ -118,6 +136,12 @@ export const api = {
   // 节点
   availableNodes: () => request<{ nodes: Node[] }>('/api/nodes/available'),
   myNodes: () => request<{ nodes: MyNode[] }>('/api/users/me/nodes'),
+  protection: () => request<ProtectionState>('/api/users/me/protection'),
+  confirmTakeover: (target_node_id: number, operation_id: string, expected_recovery_at: string) =>
+    request<{ ok: boolean; target_node_id: number; latest_recovery_at: string; replayed: boolean }>('/api/users/me/takeover', {
+      method: 'POST',
+      body: JSON.stringify({ target_node_id, operation_id, expected_recovery_at, acknowledge_data_loss: true }),
+    }),
   loginHandoff: (node_id: number, operation_id: string) =>
     request<LoginHandoff>('/api/login/redirect', {
       method: 'POST',

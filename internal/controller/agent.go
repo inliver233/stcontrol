@@ -290,15 +290,22 @@ func (s *Server) nodeWatchdog(ctx context.Context) {
 	timeout := time.Duration(timeoutSec) * time.Second
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
+	s.runNodeMaintenance(ctx, timeout)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = s.Store.MarkStaleNodesOffline(ctx, timeout)
-			_, _ = s.Store.CleanupNodeMetricSamples(ctx, time.Now().UTC().Add(-24*time.Hour))
+			s.runNodeMaintenance(ctx, timeout)
 		}
 	}
+}
+
+func (s *Server) runNodeMaintenance(ctx context.Context, timeout time.Duration) {
+	now := time.Now().UTC()
+	_ = s.Store.MarkStaleNodesOffline(ctx, timeout)
+	_, _ = s.Store.CleanupNodeMetricSamples(ctx, now.Add(-24*time.Hour))
+	_, _ = s.Store.ReconcileProtectionStates(ctx, now, s.protectionAlertGrace())
 }
 
 // backupScheduler 扫描离线用户并触发备份（详见 backup.go 的完整实现）。

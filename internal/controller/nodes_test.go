@@ -172,3 +172,27 @@ func TestNodeCapacityPolicyFallsBackFromUnsafeThresholds(t *testing.T) {
 		t.Fatalf("policy=%+v", policy)
 	}
 }
+
+func TestReplicaDirectLoginRequiresPromotedCurrentHome(t *testing.T) {
+	t.Parallel()
+	user := &store.User{HomeNodeID: sql.NullInt64{Int64: 8, Valid: true}}
+	node := &store.Node{ID: 8}
+	replica := &store.UserReplica{NodeID: 8, Kind: "home", State: "ready"}
+	if !replicaIsCurrentHome(user, node, replica) {
+		t.Fatal("current home replica was rejected")
+	}
+	replica.Kind = "hot_standby"
+	if replicaIsCurrentHome(user, node, replica) {
+		t.Fatal("hot standby bypassed takeover confirmation")
+	}
+	replica.Kind = "home"
+	node.ID = 9
+	if replicaIsCurrentHome(user, node, replica) {
+		t.Fatal("non-home node bypassed takeover confirmation")
+	}
+	node.ID = 8
+	replica.State = "stale"
+	if replicaIsCurrentHome(user, node, replica) {
+		t.Fatal("stale home replica received a login handoff")
+	}
+}

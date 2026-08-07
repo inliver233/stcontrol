@@ -75,15 +75,14 @@ func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusForbidden, "存储节点不可登录")
 		return
 	}
+	if !replicaIsCurrentHome(user, node, replica) {
+		protocol.WriteError(w, http.StatusConflict, "备用节点必须先确认接管风险")
+		return
+	}
 	if !nodeReadyForManagedOperation(node) {
 		protocol.WriteError(w, http.StatusConflict, "该节点当前离线")
 		return
 	}
-	if replica.Kind == "hot_standby" && replica.State != "ready" {
-		protocol.WriteError(w, http.StatusConflict, "备用节点尚未同步完成")
-		return
-	}
-
 	// Backup mutation must stop before a writer lease is handed to the browser.
 	// The abort is delivered over the Agent-initiated command channel.
 	if s.Cfg.Backup.AbortOnLogin {
@@ -157,6 +156,12 @@ func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 		TargetNodeID:   handoff.TargetNodeID,
 		ExistingWriter: handoff.Existing,
 	})
+}
+
+func replicaIsCurrentHome(user *store.User, node *store.Node, replica *store.UserReplica) bool {
+	return user != nil && node != nil && replica != nil && user.HomeNodeID.Valid &&
+		user.HomeNodeID.Int64 == node.ID && replica.NodeID == node.ID &&
+		replica.Kind == "home" && replica.State == "ready"
 }
 
 type redeemLoginHandoffRequest struct {

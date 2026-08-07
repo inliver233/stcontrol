@@ -47,11 +47,12 @@ type TicketPolicy struct {
 
 // BackupPolicy 备份策略。
 type BackupPolicy struct {
-	OfflineGraceMin int  `yaml:"offline_grace_min"`   // 离线保护期(默认12)
-	RetainVersions  int  `yaml:"retain_versions"`     // 固定为1: 仅最新成功副本
-	ZstdLevel       int  `yaml:"zstd_level"`          // 默认3
-	RetryMax        int  `yaml:"retry_max"`           // 默认3
-	AbortOnLogin    bool `yaml:"abort_on_user_login"` // 默认true
+	OfflineGraceMin     int  `yaml:"offline_grace_min"`     // 离线保护期(默认12)
+	UnprotectedAlertMin int  `yaml:"unprotected_alert_min"` // 未保护持续多久后告警(默认60)
+	RetainVersions      int  `yaml:"retain_versions"`       // 固定为1: 仅最新成功副本
+	ZstdLevel           int  `yaml:"zstd_level"`            // 默认3
+	RetryMax            int  `yaml:"retry_max"`             // 默认3
+	AbortOnLogin        bool `yaml:"abort_on_user_login"`   // 默认true
 }
 
 // OAuthConfig 第三方登录。
@@ -117,7 +118,7 @@ func DefaultController() *ControllerConfig {
 		},
 		Ticket: TicketPolicy{TTLSec: 60},
 		Backup: BackupPolicy{
-			OfflineGraceMin: 12, RetainVersions: 1,
+			OfflineGraceMin: 12, UnprotectedAlertMin: 60, RetainVersions: 1,
 			ZstdLevel: 3, RetryMax: 3, AbortOnLogin: true,
 		},
 		Admin: AdminConfig{Username: "admin", PasswordEnv: "CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD"},

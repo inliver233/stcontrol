@@ -14,6 +14,13 @@ func TestDefaultControllerHasSafeCapacityHysteresis(t *testing.T) {
 	}
 }
 
+func TestDefaultControllerDelaysUnprotectedAlerts(t *testing.T) {
+	t.Parallel()
+	if DefaultController().Backup.UnprotectedAlertMin <= 0 {
+		t.Fatal("unprotected alert grace must be configurable and positive")
+	}
+}
+
 func TestDefaultAgentUsesFilesystemCapacityUnlessQuotaConfigured(t *testing.T) {
 	t.Parallel()
 	agent := DefaultAgent()

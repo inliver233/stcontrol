@@ -37,3 +37,12 @@
 - 决定：计算节点还必须通过协议版本 1 和固定能力集合的 loopback adapter 健康契约；版本、能力、报告格式或 adapter 不可用均不得接收新分配。存储节点用 Agent 自身能力契约，不伪造酒馆版本事实。
 - 依据：gopsutil 的 [`disk.Usage`](https://pkg.go.dev/github.com/shirou/gopsutil/v3/disk#Usage) 提供文件系统总量、可用量和使用率，[`cpu.Percent`](https://pkg.go.dev/github.com/shirou/gopsutil/v3/cpu#Percent) 提供区间 CPU 使用率。本实现使用真实 `Free` 字节做硬水位，并把受管目录大小与文件系统可用量分开，避免用百分比替代可分配空间。
 - 影响：公开节点 API 只返回产品状态、推荐和邀请码需求，不返回 CPU/内存/磁盘或内部原因码；管理员 API 保留四维健康、窗口均值/峰值、字节事实和安全原因码。真实 adapter 会话遥测、客户端延迟持久化、插件指纹和目标规模压测仍是后续门禁。
+
+## ADR-007：热备接管必须显式确认并原子晋升
+
+- 决定：就绪热备不能直接签发登录短码。用户必须看到最近不可变快照时间和可能丢失的数据范围，并显式确认接管；旧写租约仍有效时拒绝接管。
+- 决定：接管目标必须是连通、运营、兼容均合格的计算节点，存在 active 节点账号、ready 热备映射，并引用属于该用户的 immutable snapshot。仅有纯存储副本时进入独立恢复流程，不把存储节点晋升为 writer。
+- 决定：Controller 在 serializable 事务中锁定 global user，校验 active controller generation 和源租约；用户看到的精确恢复时间同时进入请求 HMAC 和事务条件。随后撤销未消费短码，原子地把旧 home 标为 stale、目标标为唯一 authoritative home，并写入稳定 operation ID、保护投影和安全审计。完全相同的操作可重放原结果，不同事实复用操作 ID 冲突关闭。
+- 决定：真实副本冲突是锁存状态；调和器同时冻结用户状态、Controller 会话、未消费短码和写租约。只有后续显式差异/来源选择流程可以解锁，任何周期性调和都不得自行清除冲突或覆盖原始副本。
+- 依据：PostgreSQL [`SELECT`](https://www.postgresql.org/docs/18/sql-select.html) 的 locking clause 会锁住所选行并阻止并发修改；[`INSERT`](https://www.postgresql.org/docs/current/sql-insert.html) 允许 `ON CONFLICT DO UPDATE` 同时引用既有目标行和 `excluded` 新行，并保证原子 insert-or-update 结果。
+- 影响：保护状态区分纯存储已保护、仅计算临时保护、未保护、可接管、需存储恢复、不可恢复和冲突；短暂未保护按配置宽限后告警，紧急故障立即告警。存储自动修复、存储到计算恢复、冲突差异/选择/合并和节点生命周期仍须独立实现，不能由本决策冒充完成。

@@ -51,6 +51,7 @@ const adminApi = {
   disableUser: (id: number) => adminReq<any>(`/api/admin/users/${id}/disable`, { method: 'POST' }),
   backups: () => adminReq<{ backups: any[] }>('/api/admin/backups'),
   abortBackup: (id: number) => adminReq<any>(`/api/admin/backups/${id}/abort`, { method: 'POST' }),
+  protectionAlerts: () => adminReq<{ alerts: any[] }>('/api/admin/alerts/protection?limit=100'),
   admins: () => adminReq<{ admins: any[] }>('/api/admin/admins'),
   createAdmin: (username: string, password: string) => adminReq<any>('/api/admin/admins', { method: 'POST', body: JSON.stringify({ username, password }) }),
   setAdminStatus: (id: number, status: string) => adminReq<any>(`/api/admin/admins/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
@@ -67,6 +68,7 @@ export default function AdminPage() {
     { path: '/admin/nodes', label: '节点管理' },
     { path: '/admin/users', label: '用户管理' },
     { path: '/admin/backups', label: '备份任务' },
+    { path: '/admin/alerts', label: '保护告警' },
     { path: '/admin/admins', label: '管理员' },
   ]
   const current = location.pathname
@@ -101,6 +103,7 @@ export default function AdminPage() {
           <Route path="/nodes" element={<NodesAdmin />} />
           <Route path="/users" element={<UsersAdmin />} />
           <Route path="/backups" element={<BackupsAdmin />} />
+          <Route path="/alerts" element={<ProtectionAlertsAdmin />} />
           <Route path="/admins" element={<AdminsAdmin />} />
         </Routes>
       </div>
@@ -452,6 +455,41 @@ function BackupsAdmin() {
               </td>
             </tr>
           ))}
+        </tbody>
+      </table>
+    </>
+  )
+}
+
+function ProtectionAlertsAdmin() {
+  const [alerts, setAlerts] = useState<any[]>([])
+  const [error, setError] = useState('')
+  const load = () => adminApi.protectionAlerts()
+    .then(data => { setAlerts(data.alerts); setError('') })
+    .catch(err => setError(err.message))
+  useEffect(() => { load(); const timer = setInterval(load, 30000); return () => clearInterval(timer) }, [])
+
+  return (
+    <>
+      <h2>保护告警</h2>
+      <p style={{ color: 'var(--text-dim)', marginBottom: 16 }}>
+        短暂未保护状态会先进入宽限期；这里只显示已达到通知时间的真实告警。
+      </p>
+      {error && <div className="error-msg">{error}</div>}
+      <table className="table">
+        <thead><tr><th>级别</th><th>用户</th><th>节点</th><th>说明</th><th>首次发现</th><th>最近确认</th></tr></thead>
+        <tbody>
+          {alerts.map((alert, index) => (
+            <tr key={`${alert.user_uuid}-${alert.category}-${index}`}>
+              <td><span className={`badge ${alert.severity === 'critical' ? 'red' : 'yellow'}`}>{alert.severity === 'critical' ? '严重' : '警告'}</span></td>
+              <td>{alert.username}<div className="mono" style={{ fontSize: 11 }}>{alert.user_uuid}</div></td>
+              <td>{alert.node_name || '-'}</td>
+              <td>{alert.summary}</td>
+              <td>{new Date(alert.first_seen_at).toLocaleString()}</td>
+              <td>{new Date(alert.last_seen_at).toLocaleString()}</td>
+            </tr>
+          ))}
+          {alerts.length === 0 && <tr><td colSpan={6}>当前没有达到通知条件的保护告警</td></tr>}
         </tbody>
       </table>
     </>

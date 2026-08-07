@@ -118,19 +118,26 @@ func nodeAcceptsNewData(node *store.Node) bool {
 }
 
 type myNode struct {
-	NodeID    int64  `json:"node_id"`
-	Name      string `json:"name"`
-	Region    string `json:"region"`
-	BaseURL   string `json:"base_url"`
-	Kind      string `json:"kind"`       // home|hot_standby
-	KindLabel string `json:"kind_label"` // 我的服务器|备用服务器
-	Ready     bool   `json:"ready"`
-	Version   int64  `json:"data_version"`
+	NodeID           int64      `json:"node_id"`
+	Name             string     `json:"name"`
+	Region           string     `json:"region"`
+	BaseURL          string     `json:"base_url"`
+	Kind             string     `json:"kind"`       // home|hot_standby
+	KindLabel        string     `json:"kind_label"` // 我的服务器|备用服务器
+	Ready            bool       `json:"ready"`
+	RequiresTakeover bool       `json:"requires_takeover"`
+	LastSyncedAt     *time.Time `json:"last_synced_at,omitempty"`
+	Version          int64      `json:"data_version"`
 }
 
 // handleMyNodes 登录后：列出当前用户可用节点（家节点 + 就绪热备; 存储节点不显示）。
 func (s *Server) handleMyNodes(w http.ResponseWriter, r *http.Request) {
 	userID, _ := CurrentUser(r)
+	user, err := s.Store.GetUserByID(r.Context(), userID)
+	if err != nil || user == nil || user.GlobalID <= 0 {
+		protocol.WriteError(w, http.StatusUnauthorized, "用户不存在或不可用")
+		return
+	}
 	replicas, err := s.Store.ListReplicasByUser(r.Context(), userID)
 	if err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "查询失败")
@@ -145,17 +152,39 @@ func (s *Server) handleMyNodes(w http.ResponseWriter, r *http.Request) {
 		if err != nil || node == nil {
 			continue
 		}
-		// 可用条件: 节点在线 + (家节点即可 或 热备已同步完成)
+		// 家节点也必须有 ready 副本；热备还必须绑定用户自己的不可变恢复点。
 		ready := node.ConnectivityState == "online" && node.OperationalState == "active" &&
-			node.CompatibilityState == "compatible" && (rep.Kind == "home" || rep.State == "ready")
+			node.CompatibilityState == "compatible" && rep.State == "ready"
 		kindLabel := "备用服务器"
 		if rep.Kind == "home" {
 			kindLabel = "我的服务器"
 		}
+		var lastSyncedAt *time.Time
+		if rep.LastSyncAt.Valid {
+			value := rep.LastSyncAt.Time
+			lastSyncedAt = &value
+		}
+		if rep.Kind == "hot_standby" {
+			recoveryPoint, err := s.Store.GetImmutableHotStandbyRecoveryPoint(
+				r.Context(), user.GlobalID, rep.NodeID,
+			)
+			if err != nil {
+				protocol.WriteError(w, http.StatusInternalServerError, "读取热备恢复点失败")
+				return
+			}
+			ready = ready && recoveryPoint.Valid
+			if recoveryPoint.Valid {
+				value := recoveryPoint.Time
+				lastSyncedAt = &value
+			} else {
+				lastSyncedAt = nil
+			}
+		}
 		out = append(out, myNode{
 			NodeID: node.ID, Name: node.Name, Region: node.Region.String,
 			BaseURL: node.BaseURL, Kind: rep.Kind, KindLabel: kindLabel,
-			Ready: ready, Version: rep.DataVersion,
+			Ready: ready, RequiresTakeover: rep.Kind == "hot_standby",
+			LastSyncedAt: lastSyncedAt, Version: rep.DataVersion,
 		})
 	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{"nodes": out})

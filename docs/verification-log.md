@@ -194,3 +194,15 @@
 - `go test -coverprofile=coverage/node_capacity.coverprofile ./...`：通过；总覆盖率 `39.6%`（`internal/agent 44.8%`、`internal/controller 20.6%`、`internal/store 58.7%`），仍低于最终 80% 门禁。
 - `go vet ./...`、`GOOS=linux GOARCH=amd64 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。
 - 尚未完成且未冒充完成：真实 SillyTavern adapter 会话遥测、插件指纹、客户端延迟持久化与综合推荐评分尚缺；真实 PostgreSQL 迁移/并发、目标规模容量压测和故障接管状态机仍未验证，因此 R18 保持 `部分`，R19/R21 继续作为后续工作。
+
+## 2026-08-08：用户保护投影与显式热备接管批次
+
+- 新增 `0016_user_protection_takeover.sql`：持久保存七种用户保护状态、当前/恢复节点、最近不可变恢复点和版本；接管操作记录稳定 UUID、32-byte HMAC 请求摘要、源/目标、快照、旧活动 epoch、主控 generation、确认和完成时间。
+- 周期调和同时读取 legacy 副本兼容投影、规范化 `replica_copies`、属于该用户的 immutable snapshot 及节点连通/运营/兼容事实。纯存储副本才是正常保护；只有计算热备时标记临时保护，存储故障不会中断当前 home。临时/未保护状态使用可配置宽限期，紧急状态立即写入去重告警。
+- 真实 replica conflict 会锁存：同一调和事务把 global/legacy 用户置为 conflict，撤销用户 Controller session 和未消费登录短码，并把写租约置为 conflict。后续周期不会自行解锁，也不会覆盖任何原始副本。
+- 用户接管 API 必须显式确认数据丢失风险并使用稳定 operation ID；请求摘要绑定用户、目标、精确 immutable 恢复时间和确认，事务也要求恢复时间未变化。serializable 事务锁定 global user，拒绝仍有效的写租约，只接受 active 节点账号、合格计算节点和属于该用户的 compatible immutable ready 热备，然后原子降级旧 home、晋升唯一权威 home、撤票、更新节点账号/保护投影并审计。完全相同重试返回原结果，不同事实复用 ID 冲突关闭。
+- 用户选点页显示产品化保护状态和恢复时间；A 仍有活动 writer 时提示返回 A，只有没有活动 writer 时才显示精确恢复点的接管确认。热备不能直接登录，存在热备时保留用户选择机会；成功接管但登录交接失败时页面仍会把新 home 保持为可重试。管理员保护告警页读取真实后端，只展示达到 `notify_after` 的 open/acknowledged 告警并每 30 秒刷新。
+- 单元测试覆盖保护投影事务、冲突锁存/失败关闭 SQL、告警宽限、公开模型脱敏、所有产品状态、接管 HMAC 绑定、显式风险确认、活动租约拒绝、跨用户快照校验条件、完整原子晋升和精确 operation replay。
+- `go test -coverprofile=coverage/protection_takeover.coverprofile ./...`：通过；总覆盖率 `40.2%`（`internal/agent 44.8%`、`internal/controller 21.5%`、`internal/store 59.2%`），仍低于最终 80% 门禁。
+- `go vet ./...`、`GOOS=linux GOARCH=amd64 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。
+- 尚未完成且未冒充完成：当前没有可用的真实 PostgreSQL 服务，因此迁移、data-modifying CTE、行锁和并发接管仅有 SQL mock/静态语义证据；存储自动修复与恢复、冲突差异/来源选择/有限合并、节点退役/升级/损坏状态机和 SillyTavern 逐请求写门闭环仍待实现，R19 保持 `部分`。
