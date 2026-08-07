@@ -81,6 +81,13 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Delete("/users/me/identities/{provider}", s.handleUnbindIdentity)
 	})
 
+	// 冲突恢复区只接受 conflict-frozen 用户，不继承普通用户权限。
+	r.Route("/api/conflicts", func(r chi.Router) {
+		r.Use(s.conflictAuthMiddleware)
+		r.Get("/me", s.handleMyReplicaConflict)
+		r.Post("/auth/logout", s.handleLogout)
+	})
+
 	// 管理后台（需管理员）
 	r.Route("/api/admin", func(r chi.Router) {
 		r.Use(s.userAuthMiddleware)

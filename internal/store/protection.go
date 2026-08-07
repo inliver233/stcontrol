@@ -239,6 +239,81 @@ func (s *Store) ReconcileProtectionStates(
 		return ProtectionReconcileResult{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO replica_conflicts (
+		  id,user_id,state,protection_version,controller_generation,
+		  detected_at,updated_at
+		)
+		SELECT gen_random_uuid(),protection.user_id,'detected',protection.version,
+		  (SELECT generation FROM controller_epochs WHERE state='active'),$1,$1
+		FROM user_protection_states protection
+		WHERE protection.state='conflict'
+		ON CONFLICT DO NOTHING`, now); err != nil {
+		return ProtectionReconcileResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		WITH open_conflicts AS (
+		  SELECT conflict.id,conflict.user_id,global_user.legacy_user_id,legacy.home_node_id
+		  FROM replica_conflicts conflict
+		  JOIN global_users global_user ON global_user.id=conflict.user_id
+		  JOIN users legacy ON legacy.id=global_user.legacy_user_id
+		  WHERE conflict.state NOT IN ('resolved','failed')
+		    AND conflict.sources_captured_at IS NULL
+		), source_facts AS (
+		  SELECT conflict.id AS conflict_id,copy.node_id,node.name AS node_name,node.role AS node_role,
+		    snapshot.id AS snapshot_id,copy.replica_kind AS source_kind,copy.state AS replica_state,
+		    copy.is_authoritative,snapshot.manifest_sha256,snapshot.file_count,snapshot.total_bytes,
+		    copy.published_at,legacy.data_version AS legacy_data_version,
+		    legacy.checksum AS legacy_checksum,$1 AS captured_at,0 AS source_priority
+		  FROM open_conflicts conflict
+		  JOIN replica_copies copy ON copy.user_id=conflict.user_id
+		  JOIN nodes node ON node.id=copy.node_id
+		  LEFT JOIN snapshot_manifests snapshot
+		    ON snapshot.id=copy.snapshot_id AND snapshot.user_id=conflict.user_id
+		      AND snapshot.state='immutable'
+		  LEFT JOIN user_replicas legacy
+		    ON legacy.user_id=conflict.legacy_user_id AND legacy.node_id=copy.node_id
+		  WHERE copy.state='conflict' OR copy.is_authoritative
+		    OR EXISTS (
+		      SELECT 1 FROM user_replicas marked
+		      WHERE marked.user_id=conflict.legacy_user_id AND marked.node_id=copy.node_id
+		        AND marked.state='conflict'
+		    )
+		  UNION ALL
+		  SELECT conflict.id,legacy.node_id,node.name,node.role,NULL::uuid,
+		    CASE legacy.kind WHEN 'home' THEN 'active'
+		      WHEN 'archive' THEN 'archive' WHEN 'hot_standby' THEN 'hot_standby'
+		      ELSE 'unknown' END,
+		    legacy.state,legacy.node_id=conflict.home_node_id,NULL::bytea,NULL::bigint,NULL::bigint,
+		    legacy.last_sync_at,legacy.data_version,legacy.checksum,$1,1
+		  FROM open_conflicts conflict
+		  JOIN user_replicas legacy ON legacy.user_id=conflict.legacy_user_id
+		  JOIN nodes node ON node.id=legacy.node_id
+		  WHERE legacy.state='conflict' OR legacy.node_id=conflict.home_node_id
+		), ranked AS (
+		  SELECT source_facts.*,
+		    row_number() OVER (
+		      PARTITION BY conflict_id,node_id ORDER BY source_priority
+		    ) AS source_rank
+		  FROM source_facts
+		)
+		INSERT INTO replica_conflict_sources (
+		  conflict_id,node_id,node_name,node_role,snapshot_id,source_kind,replica_state,
+		  is_authoritative,manifest_sha256,file_count,total_bytes,published_at,
+		  legacy_data_version,legacy_checksum,captured_at
+		)
+		SELECT conflict_id,node_id,node_name,node_role,snapshot_id,source_kind,replica_state,
+		  is_authoritative,manifest_sha256,file_count,total_bytes,published_at,
+		  legacy_data_version,legacy_checksum,captured_at
+		FROM ranked WHERE source_rank=1
+		ON CONFLICT (conflict_id,node_id) DO NOTHING`, now); err != nil {
+		return ProtectionReconcileResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE replica_conflicts SET sources_captured_at=$1,updated_at=$1
+		WHERE state NOT IN ('resolved','failed') AND sources_captured_at IS NULL`, now); err != nil {
+		return ProtectionReconcileResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
 		WITH conflicted AS (
 		  SELECT protection.user_id,global_user.legacy_user_id
 		  FROM user_protection_states protection
@@ -257,10 +332,6 @@ func (s *Store) ReconcileProtectionStates(
 		  FROM conflicted WHERE ticket.user_id=conflicted.user_id
 		    AND ticket.consumed_at IS NULL AND ticket.revoked_at IS NULL
 		  RETURNING ticket.jti
-		), session_update AS (
-		  UPDATE controller_sessions session SET revoked_at=COALESCE(session.revoked_at,$1)
-		  FROM conflicted WHERE session.user_id=conflicted.user_id AND session.revoked_at IS NULL
-		  RETURNING session.id
 		)
 		UPDATE user_activity_leases lease
 		SET state='conflict',lease_expires_at=$1,updated_at=$1

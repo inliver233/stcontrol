@@ -32,7 +32,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusForbidden, "用户名或密码错误")
 		return
 	}
-	if user.Status != "active" {
+	if user.Status != "active" && user.Status != "conflict" {
 		protocol.WriteError(w, http.StatusForbidden, "账号已被禁用")
 		return
 	}
@@ -47,6 +47,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "username": user.Username, "display_name": user.DisplayName,
+		"recovery_required": user.Status == "conflict",
 	})
 }
 

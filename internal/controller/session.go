@@ -100,13 +100,26 @@ func (s *Server) createAdminSession(w http.ResponseWriter, r *http.Request, admi
 // getSession resolves the opaque cookie through the durable store. It performs
 // a throttled best-effort last-seen update rather than writing on every request.
 func (s *Server) getSession(r *http.Request) (*session, string, error) {
+	return s.resolveSession(r, false)
+}
+
+func (s *Server) getConflictSession(r *http.Request) (*session, string, error) {
+	return s.resolveSession(r, true)
+}
+
+func (s *Server) resolveSession(r *http.Request, conflictOnly bool) (*session, string, error) {
 	cookie, err := r.Cookie(sessionCookie)
 	if err != nil || cookie.Value == "" {
 		return nil, "", nil
 	}
 	tokenHash := sha256.Sum256([]byte(cookie.Value))
 	now := time.Now().UTC()
-	stored, err := s.Store.GetControllerSession(r.Context(), tokenHash[:], now)
+	var stored *store.ControllerSession
+	if conflictOnly {
+		stored, err = s.Store.GetConflictControllerSession(r.Context(), tokenHash[:], now)
+	} else {
+		stored, err = s.Store.GetControllerSession(r.Context(), tokenHash[:], now)
+	}
 	if err != nil || stored == nil {
 		return nil, cookie.Value, err
 	}

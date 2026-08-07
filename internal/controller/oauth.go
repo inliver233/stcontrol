@@ -174,7 +174,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, selectNodeURL, http.StatusFound)
 		return
 	}
-	if user.Status != "active" {
+	if user.Status != "active" && user.Status != "conflict" {
 		protocol.WriteError(w, http.StatusForbidden, "账号已被禁用")
 		return
 	}
@@ -183,7 +183,11 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusServiceUnavailable, "创建会话失败")
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusFound)
+	redirectURL := "/"
+	if user.Status == "conflict" {
+		redirectURL = "/conflict"
+	}
+	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
 type completeOAuthRequest struct {

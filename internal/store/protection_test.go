@@ -30,6 +30,12 @@ func TestReconcileProtectionStatesPersistsProjectionAndDelayedAlerts(t *testing.
 	mock.ExpectBegin()
 	mock.ExpectExec(`(?s)WITH facts AS .*home_replica.state='ready'.*previous.state='conflict'.*conflicting_copy.*snapshot.user_id=global_user.id.*INSERT INTO user_protection_states`).WithArgs(now).
 		WillReturnResult(sqlmock.NewResult(0, 10))
+	mock.ExpectExec(`(?s)INSERT INTO replica_conflicts .*protection.state='conflict'.*ON CONFLICT DO NOTHING`).WithArgs(now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`(?s)WITH open_conflicts AS .*replica_conflict_sources.*source_rank=1`).WithArgs(now).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(`UPDATE replica_conflicts SET sources_captured_at`).WithArgs(now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`(?s)WITH conflicted AS .*UPDATE control_tickets.*UPDATE user_activity_leases`).WithArgs(now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`(?s)INSERT INTO alerts .*user-protection`).WithArgs(now, now.Add(grace)).

@@ -199,7 +199,7 @@
 
 - 新增 `0016_user_protection_takeover.sql`：持久保存七种用户保护状态、当前/恢复节点、最近不可变恢复点和版本；接管操作记录稳定 UUID、32-byte HMAC 请求摘要、源/目标、快照、旧活动 epoch、主控 generation、确认和完成时间。
 - 周期调和同时读取 legacy 副本兼容投影、规范化 `replica_copies`、属于该用户的 immutable snapshot 及节点连通/运营/兼容事实。纯存储副本才是正常保护；只有计算热备时标记临时保护，存储故障不会中断当前 home。临时/未保护状态使用可配置宽限期，紧急状态立即写入去重告警。
-- 真实 replica conflict 会锁存：同一调和事务把 global/legacy 用户置为 conflict，撤销用户 Controller session 和未消费登录短码，并把写租约置为 conflict。后续周期不会自行解锁，也不会覆盖任何原始副本。
+- 真实 replica conflict 会锁存：同一调和事务把 global/legacy 用户置为 conflict，冻结普通业务 session 的解析、撤销未消费登录短码，并把写租约置为 conflict。后续冲突恢复认证批次改为保留身份令牌但只允许进入专用恢复路由；周期仍不会自行解锁或覆盖任何原始副本。
 - 用户接管 API 必须显式确认数据丢失风险并使用稳定 operation ID；请求摘要绑定用户、目标、精确 immutable 恢复时间和确认，事务也要求恢复时间未变化。serializable 事务锁定 global user，拒绝仍有效的写租约，只接受 active 节点账号、合格计算节点和属于该用户的 compatible immutable ready 热备，然后原子降级旧 home、晋升唯一权威 home、撤票、更新节点账号/保护投影并审计。完全相同重试返回原结果，不同事实复用 ID 冲突关闭。
 - 用户选点页显示产品化保护状态和恢复时间；A 仍有活动 writer 时提示返回 A，只有没有活动 writer 时才显示精确恢复点的接管确认。热备不能直接登录，存在热备时保留用户选择机会；成功接管但登录交接失败时页面仍会把新 home 保持为可重试。管理员保护告警页读取真实后端，只展示达到 `notify_after` 的 open/acknowledged 告警并每 30 秒刷新。
 - 单元测试覆盖保护投影事务、冲突锁存/失败关闭 SQL、告警宽限、公开模型脱敏、所有产品状态、接管 HMAC 绑定、显式风险确认、活动租约拒绝、跨用户快照校验条件、完整原子晋升和精确 operation replay。
@@ -228,3 +228,13 @@
 - 用户 API 提供恢复目标、提交和按用户/operation 查询状态，不公开 workflow/snapshot/capability。节点页展示目标加载/空态、精确恢复点、显式数据丢失确认及准备/传输/校验/发布/重试/失败状态；浏览器 session 保存稳定 operation ID，只有后端 `succeeded` 才刷新副本并登录。
 - `go test ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。`go test -coverprofile=coverage/archive_restore.coverprofile ./...`：通过，总覆盖率 `40.8%`（`internal/agent 46.0%`、`internal/controller 20.2%`、`internal/store 60.1%`）。
 - Windows race 构建因主机安装的 `cc1.exe` 不支持 64 位而未执行；本机仍没有可用真实 PostgreSQL，因此 serializable/行锁/迁移和双 Agent 崩溃只能以 SQL mock、静态语义和单进程测试为证据。SillyTavern 专用 `/api/stcontrol/internal/users/restore` adapter 因既有未提交 WIP 冲突尚未挂载；冲突差异/来源选择、节点退役/升级/损坏和物理清理仍缺，R19/R20 保持 `部分`。
+
+## 2026-08-08：冲突案件与恢复认证边界批次
+
+- 新增 `0018_replica_conflicts.sql`：每用户最多一个开放案件；案件保存检测时保护版本/主控世代并以 `sources_captured_at` 锁定一次性来源捕获。来源仅保存节点身份、副本事实、legacy 版本和合格 immutable snapshot 的摘要/规模/发布时间，不保存文件路径或内容。
+- 保护调和在同一 serializable 事务中先投影 conflict、创建案件并捕获来源，再冻结 global/legacy 用户、未消费短码和写租约。周期重跑不会新增后发现的来源或改写原始来源事实。
+- 冲突时不再销毁尚有效的身份令牌。普通 session 查询继续只接受 active 用户；专用 conflict session 同时要求 global/legacy 均为 conflict、开放案件、active controller generation 和有效用户令牌，且只挂载 `/api/conflicts`。冲突用户可用既有密码/OAuth 重新认证；禁用等其他状态仍拒绝。
+- 只读 `/api/conflicts/me` 返回案件版本、来源节点/类型/状态、是否权威、immutable 证据规模与捕获需求，不公开 snapshot ID、manifest digest、文件名或内部 workflow。manifest scope 不同只标记需检查，不宣称内容一定不同。
+- 针对性测试覆盖案件来源读取与公开最小化、非法用户、开放案件 session 条件、密码冲突登录、专用路由可达和普通业务路由失败关闭，以及调和 SQL 的创建/一次捕获顺序。
+- `go test ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。`go test -coverprofile=coverage/conflict_foundation.coverprofile ./...`：通过，总覆盖率 `42.8%`（Agent `46.0%`、Controller `25.0%`、Store `60.4%`），仍低于最终 80% 门禁。
+- 当前仅完成冲突闭环的身份与事实基础。Agent 逐文件证据捕获、分块/限额差异、用户来源选择、不同路径自动合并、同路径选边/双份保留、最终原子解冻和前端页面尚未实现；R19 仍为 `部分`。

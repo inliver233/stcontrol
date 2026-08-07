@@ -43,7 +43,7 @@
 - 决定：就绪热备不能直接签发登录短码。用户必须看到最近不可变快照时间和可能丢失的数据范围，并显式确认接管；旧写租约仍有效时拒绝接管。
 - 决定：接管目标必须是连通、运营、兼容均合格的计算节点，存在 active 节点账号、ready 热备映射，并引用属于该用户的 immutable snapshot。仅有纯存储副本时进入独立恢复流程，不把存储节点晋升为 writer。
 - 决定：Controller 在 serializable 事务中锁定 global user，校验 active controller generation 和源租约；用户看到的精确恢复时间同时进入请求 HMAC 和事务条件。随后撤销未消费短码，原子地把旧 home 标为 stale、目标标为唯一 authoritative home，并写入稳定 operation ID、保护投影和安全审计。完全相同的操作可重放原结果，不同事实复用操作 ID 冲突关闭。
-- 决定：真实副本冲突是锁存状态；调和器同时冻结用户状态、Controller 会话、未消费短码和写租约。只有后续显式差异/来源选择流程可以解锁，任何周期性调和都不得自行清除冲突或覆盖原始副本。
+- 决定：真实副本冲突是锁存状态；调和器同时冻结用户业务状态、未消费短码和写租约。普通 Controller 会话解析只接受 active 用户，因此冲突令牌不能进入原业务接口；令牌本身保留，且只能通过独立恢复认证边界访问开放冲突案件。只有后续显式差异/来源选择流程可以解锁，任何周期性调和都不得自行清除冲突或覆盖原始副本。
 - 依据：PostgreSQL [`SELECT`](https://www.postgresql.org/docs/18/sql-select.html) 的 locking clause 会锁住所选行并阻止并发修改；[`INSERT`](https://www.postgresql.org/docs/current/sql-insert.html) 允许 `ON CONFLICT DO UPDATE` 同时引用既有目标行和 `excluded` 新行，并保证原子 insert-or-update 结果。
 - 影响：保护状态区分纯存储已保护、仅计算临时保护、未保护、可接管、需存储恢复、不可恢复和冲突；短暂未保护按配置宽限后告警，紧急故障立即告警。存储到计算恢复、冲突差异/选择/合并和节点生命周期仍须独立实现，不能由本决策冒充完成。
 
@@ -62,3 +62,10 @@
 - 决定：storage Agent 只从原子发布时写入的私有 archive 元数据恢复。它重新序列化原 manifest 并与 Controller 保存的 SHA-256 比对，再逐文件重算大小和摘要；旧 archive 缺元数据、尾随 JSON、额外文件、符号链接、非普通文件或内容漂移全部失败关闭。新 manifest 使用独立 restore snapshot ID，并由 storage Agent 直传 compute Agent。
 - 决定：compute Agent 在任务目录中限额解包、逐文件验证并同文件系统原子发布；Controller 只有取得匹配回执后，才在一个事务内把结果 manifest 设为 immutable、旧 home 降为 stale、目标设为唯一 authoritative home、撤销旧票据/租约、更新账号与保护事实并写审计。失败只标记未纳管副本和清理事实，不删除旧 home 或 archive，也不冒充成功。
 - 影响：用户页面只公开目标名称、恢复点和产品阶段，不公开 workflow/snapshot/capability；浏览器会话保留稳定 operation ID 以重放不确定响应，且只在 `succeeded` 后尝试登录。SillyTavern 的专用账号恢复 adapter 端点仍须在现有 WIP 冲突解除后挂载，真实 PostgreSQL/双 Agent 故障注入也仍是上线门禁。
+
+## ADR-010：冲突身份与业务权限分离，来源事实只捕获一次
+
+- 决定：检测到冲突时，在同一个 serializable 调和事务中创建每用户唯一开放案件，并只捕获一次当时的节点名/角色、副本类型/状态、权威标记、legacy 版本以及合格 immutable snapshot 的摘要、文件数、字节数和发布时间。后续节点状态变化不得补写或改写该案件来源；文件路径和内容不进入该事实表、公开响应或审计日志。
+- 决定：冲突不再撤销尚有效的 Controller 身份令牌。普通 session 查询仍严格要求 global/legacy 用户均为 active；单独的 conflict session 查询同时要求两层状态均为 conflict、存在开放案件、令牌未撤销/未过期且属于 active controller generation。该认证只挂载 `/api/conflicts`，不能访问改密、身份绑定、登录交接、恢复或其他普通写操作。
+- 决定：冲突发生后仍允许用户用既有密码或 OAuth 身份重新认证，但生成的令牌仍只能通过上述恢复边界。禁用、删除、recovering 等其他状态不会因此获得会话。
+- 影响：用户能够在不重新开放节点写入的前提下查看冲突来源；既有已被旧版本撤销的令牌可通过身份重新登录恢复。当前批次只建立案件/来源和最小只读 API；逐文件证据捕获、可理解差异、来源选择、不同路径有限合并和最终原子解冻仍需后续实现，不能把 manifest 摘要差异冒充内容差异。

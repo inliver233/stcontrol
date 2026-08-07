@@ -46,6 +46,36 @@ func (s *Server) userAuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// conflictAuthMiddleware accepts the same opaque session token only for a
+// conflict-frozen user with an open conflict case. It is mounted separately so
+// the token cannot reach normal user mutations while the account is frozen.
+func (s *Server) conflictAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "private, no-store, max-age=0")
+		w.Header().Add("Vary", "Cookie")
+		sess, _, err := s.getConflictSession(r)
+		if err != nil {
+			protocol.WriteError(w, http.StatusServiceUnavailable, "冲突恢复会话暂不可用")
+			return
+		}
+		if sess == nil {
+			protocol.WriteError(w, http.StatusUnauthorized, "需要冲突恢复认证")
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+			if !s.validateCSRF(r, sess) {
+				protocol.WriteError(w, http.StatusForbidden, "CSRF 校验失败")
+				return
+			}
+		} else {
+			s.ensureCSRFCookie(w, r, sess)
+		}
+		ctx := context.WithValue(r.Context(), ctxUser, sess.UserID)
+		ctx = context.WithValue(ctx, ctxKey("stcontrol-session"), sess)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // adminOnly 要求管理员。
 func (s *Server) adminOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

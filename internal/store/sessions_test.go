@@ -114,3 +114,25 @@ func TestGetControllerSessionReturnsNilForExpiredOrStaleGeneration(t *testing.T)
 	}
 	assertMockExpectations(t, mock)
 }
+
+func TestGetConflictControllerSessionRequiresOpenConflictCase(t *testing.T) {
+	t.Parallel()
+	store, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 8, 13, 0, 0, 0, time.UTC)
+	hash := make([]byte, 32)
+	csrfHash := make([]byte, 32)
+	expires := now.Add(time.Hour)
+	mock.ExpectQuery(`(?s)FROM controller_sessions s.*gu.status='conflict'.*u.status='conflict'.*JOIN replica_conflicts conflict.*conflict.state NOT IN`).
+		WithArgs(hash, now).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "legacy_user_id", "user_id", "admin_id", "username", "is_admin",
+			"csrf_hash", "expires_at", "last_seen_at", "controller_generation",
+		}).AddRow("session", int64(7), int64(70), int64(0), "alice", false,
+			csrfHash, expires, now, int64(4)))
+	session, err := store.GetConflictControllerSession(context.Background(), hash, now)
+	if err != nil || session == nil || session.LegacyUserID != 7 || session.IsAdmin {
+		t.Fatalf("session=%+v err=%v", session, err)
+	}
+	assertMockExpectations(t, mock)
+}

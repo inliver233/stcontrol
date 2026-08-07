@@ -118,6 +118,41 @@ func (s *Store) GetControllerSession(ctx context.Context, tokenHash []byte, now 
 	return &out, nil
 }
 
+// GetConflictControllerSession resolves an otherwise valid user session only
+// when both identity projections are conflict-frozen. It intentionally excludes
+// admins and every other disabled state so callers can mount a recovery-only
+// route without reopening normal account mutations.
+func (s *Store) GetConflictControllerSession(ctx context.Context, tokenHash []byte, now time.Time) (*ControllerSession, error) {
+	if len(tokenHash) != 32 {
+		return nil, ErrInvalidControllerSession
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var out ControllerSession
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT s.id,gu.legacy_user_id,s.user_id,0::bigint,u.username,false,
+		  s.csrf_hash,s.expires_at,s.last_seen_at,s.controller_generation
+		FROM controller_sessions s
+		JOIN controller_epochs ce
+		  ON ce.generation=s.controller_generation AND ce.state='active'
+		JOIN global_users gu ON gu.id=s.user_id AND gu.status='conflict'
+		JOIN users u ON u.id=gu.legacy_user_id AND u.status='conflict'
+		JOIN replica_conflicts conflict ON conflict.user_id=gu.id
+		  AND conflict.state NOT IN ('resolved','failed')
+		WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>$2`, tokenHash, now).
+		Scan(&out.ID, &out.LegacyUserID, &out.GlobalUserID, &out.AdminID, &out.Username,
+			&out.IsAdmin, &out.CSRFHash, &out.ExpiresAt, &out.LastSeenAt,
+			&out.ControllerGeneration)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get conflict controller session: %w", err)
+	}
+	return &out, nil
+}
+
 func (s *Store) TouchControllerSession(ctx context.Context, id string, now time.Time) error {
 	if id == "" {
 		return ErrInvalidControllerSession
