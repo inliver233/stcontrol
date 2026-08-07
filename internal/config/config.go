@@ -40,7 +40,7 @@ type TicketPolicy struct {
 // BackupPolicy 备份策略。
 type BackupPolicy struct {
 	OfflineGraceMin int  `yaml:"offline_grace_min"`   // 离线保护期(默认12)
-	RetainVersions  int  `yaml:"retain_versions"`     // 存储节点保留版本(默认4)
+	RetainVersions  int  `yaml:"retain_versions"`     // 固定为1: 仅最新成功副本
 	ZstdLevel       int  `yaml:"zstd_level"`          // 默认3
 	RetryMax        int  `yaml:"retry_max"`           // 默认3
 	AbortOnLogin    bool `yaml:"abort_on_user_login"` // 默认true
@@ -83,11 +83,12 @@ type AgentConfig struct {
 	AgentPSK             string `yaml:"agent_psk"`      // 注册后写入
 	CredentialVersion    int64  `yaml:"credential_version"`
 	ControllerGeneration int64  `yaml:"controller_generation"`
-	TavernDir            string `yaml:"tavern_dir"`    // 酒馆安装目录(含 config.yaml/data)
-	TavernURL            string `yaml:"tavern_url"`    // 酒馆本地地址 http://127.0.0.1:8000
-	BackupDir            string `yaml:"backup_dir"`    // 存储节点备份存放目录
-	HeartbeatSec         int    `yaml:"heartbeat_sec"` // 默认15
-	DataDir              string `yaml:"data_dir"`      // 子控自身数据目录(状态/临时)
+	TavernDir            string `yaml:"tavern_dir"`          // 酒馆安装目录(含 config.yaml/data)
+	TavernURL            string `yaml:"tavern_url"`          // 酒馆本地地址 http://127.0.0.1:8000
+	TransferPublicURL    string `yaml:"transfer_public_url"` // 可选 HTTPS 直连数据面地址
+	BackupDir            string `yaml:"backup_dir"`          // 存储节点备份存放目录
+	HeartbeatSec         int    `yaml:"heartbeat_sec"`       // 默认15
+	DataDir              string `yaml:"data_dir"`            // 子控自身数据目录(状态/临时)
 }
 
 // Default 总控默认配置。
@@ -104,7 +105,7 @@ func DefaultController() *ControllerConfig {
 		},
 		Ticket: TicketPolicy{TTLSec: 60},
 		Backup: BackupPolicy{
-			OfflineGraceMin: 12, RetainVersions: 4,
+			OfflineGraceMin: 12, RetainVersions: 1,
 			ZstdLevel: 3, RetryMax: 3, AbortOnLogin: true,
 		},
 		Admin: AdminConfig{Username: "admin", Password: "admin"},

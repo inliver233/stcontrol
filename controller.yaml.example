@@ -16,7 +16,7 @@ ticket:
 
 backup:
   offline_grace_min: 12
-  retain_versions: 4
+  retain_versions: 1
   zstd_level: 3
   retry_max: 3
   abort_on_user_login: true

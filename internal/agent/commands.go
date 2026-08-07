@@ -22,10 +22,11 @@ type encryptedCommandEnvelope struct {
 }
 
 type safeCommandResult struct {
-	OK          bool                        `json:"ok"`
-	Code        string                      `json:"code,omitempty"`
-	LocalUserID string                      `json:"local_user_id,omitempty"`
-	Users       []protocol.ScanExistingUser `json:"users,omitempty"`
+	OK          bool                              `json:"ok"`
+	Code        string                            `json:"code,omitempty"`
+	LocalUserID string                            `json:"local_user_id,omitempty"`
+	Users       []protocol.ScanExistingUser       `json:"users,omitempty"`
+	Snapshot    *protocol.SnapshotTransferReceipt `json:"snapshot,omitempty"`
 }
 
 // StartCommandLoop maintains the Agent-initiated control channel. It never
@@ -85,6 +86,21 @@ func (a *Agent) pollAndRunCommand(ctx context.Context) error {
 		return err
 	}
 
+	select {
+	case a.commandSlots <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	go func() {
+		defer func() { <-a.commandSlots }()
+		if err := a.executeAndReportCommand(ctx, workerID, command); err != nil && ctx.Err() == nil {
+			log.Printf("命令结果暂未确认: %v", err)
+		}
+	}()
+	return nil
+}
+
+func (a *Agent) executeAndReportCommand(ctx context.Context, workerID string, command protocol.AgentCommand) error {
 	result, ok := a.cachedResult(command.ID)
 	if !ok {
 		succeeded, summary := a.executeCommand(ctx, command)
@@ -92,12 +108,31 @@ func (a *Agent) pollAndRunCommand(ctx context.Context) error {
 			Succeeded: succeeded, Result: summary,
 			ControllerGeneration: command.ControllerGeneration, CompletedAt: time.Now().UTC(),
 		}
-		a.rememberResult(command.ID, result)
+		if err := a.rememberResult(command.ID, result); err != nil {
+			return fmt.Errorf("persist command result: %w", err)
+		}
 	}
-	return a.callController(ctx, http.MethodPost, "/api/agent/commands/"+command.ID+"/result", protocol.FinishCommandRequest{
+	payload := protocol.FinishCommandRequest{
 		WorkerID: workerID, ControllerGeneration: result.ControllerGeneration,
 		Succeeded: result.Succeeded, Result: result.Result,
-	}, nil)
+	}
+	backoff := time.Second
+	for attempt := 0; attempt < 8; attempt++ {
+		if err := a.callController(ctx, http.MethodPost, "/api/agent/commands/"+command.ID+"/result", payload, nil); err == nil {
+			return nil
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+		}
+	}
+	return fmt.Errorf("controller did not confirm command result")
 }
 
 func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentCommand) (bool, json.RawMessage) {
@@ -127,7 +162,11 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		return true, marshalSafeResult(safeCommandResult{OK: true})
 	case "provision_user":
 		var payload protocol.ProvisionUserRequest
-		if err := json.Unmarshal(plaintext, &payload); err != nil || !validProvisionRequest(payload) {
+		if err := json.Unmarshal(plaintext, &payload); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		payload.OperationID = command.OperationID
+		if !validProvisionRequest(payload) {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
 		}
 		provisioned, err := a.provisionUser(ctx, &payload)
@@ -145,13 +184,59 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "password_update_failed"})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true})
+	case "prepare_snapshot_receive":
+		var payload protocol.PrepareSnapshotReceiveRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil || !validUUID(payload.WorkflowID) ||
+			!validUUID(payload.SnapshotID) || payload.GlobalUserID <= 0 || !validHandle(payload.Handle) || payload.SourceNodeID <= 0 ||
+			payload.ActivityEpoch <= 0 || (payload.DestinationKind != "archive" && payload.DestinationKind != "hot_standby") ||
+			!validCapabilityHash(payload.CapabilityHash) || !payload.ExpiresAt.After(time.Now().UTC()) ||
+			payload.ExpiresAt.After(time.Now().UTC().Add(20*time.Minute)) {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		if err := a.prepareTransfer(pendingTransfer{
+			WorkflowID: payload.WorkflowID, SnapshotID: payload.SnapshotID, GlobalUserID: payload.GlobalUserID,
+			TargetNodeID: a.Cfg.NodeID, Handle: payload.Handle,
+			DestinationKind: payload.DestinationKind, SourceNodeID: payload.SourceNodeID,
+			ActivityEpoch: payload.ActivityEpoch, CapabilityHash: payload.CapabilityHash, ExpiresAt: payload.ExpiresAt,
+		}); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "prepare_transfer_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true})
+	case "start_snapshot":
+		var payload protocol.StartSnapshotRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		receipt, err := a.RunSnapshot(ctx, payload)
+		if err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "snapshot_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, Snapshot: &receipt})
+	case "get_snapshot_receipt":
+		var payload struct {
+			WorkflowID string `json:"workflow_id"`
+			SnapshotID string `json:"snapshot_id"`
+		}
+		if err := json.Unmarshal(plaintext, &payload); err != nil || !validUUID(payload.WorkflowID) || !validUUID(payload.SnapshotID) {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		receipt, ok := a.snapshotReceipt(payload.WorkflowID, payload.SnapshotID)
+		if !ok {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "snapshot_receipt_unavailable"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, Snapshot: receipt})
 	default:
 		return false, marshalSafeResult(safeCommandResult{OK: false, Code: "unsupported_command"})
 	}
 }
 
+func validCapabilityHash(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size
+}
+
 func validProvisionRequest(req protocol.ProvisionUserRequest) bool {
-	if req.Handle == "" || req.Name == "" {
+	if !validUUID(req.OperationID) || req.Handle == "" || req.Name == "" {
 		return false
 	}
 	passwordMode := req.PasswordHash != "" && req.PasswordSalt != "" && req.OAuthProvider == "" && req.OAuthSubject == ""

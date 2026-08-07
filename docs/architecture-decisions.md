@@ -23,3 +23,8 @@
 - 依据：[POSIX `rename`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/rename.html) 规定 rename 行为是原子的；平台和文件系统能力仍须在 Agent 启动时探测并纳入门禁。
 - 影响：Windows 暂不宣称具有同等发布保证；Linux 支持也必须验证目标路径、挂载点和失败回滚。
 
+## ADR-005：控制面命令与快照数据面使用不同凭证和连接
+
+- 决定：Controller 只把加密的固定能力命令放入持久队列，由 Agent 主动领取；快照正文由源 Agent 通过独立 HTTPS 地址直传目标 Agent。
+- 决定：每个工作流/尝试使用新的短期 capability，Controller 和目标 Agent 只持久化 SHA-256 摘要，明文只存在于源命令密文和单次 Authorization 头中；HTTP 重定向一律不跟随。
+- 影响：目标节点永久 Agent 凭据不再进入源节点或快照 payload；重试必须轮换 capability 和 operation ID。无法直连时仍需另行实现受控加密中转，不能退回 Controller 内存转发或永久 PSK。

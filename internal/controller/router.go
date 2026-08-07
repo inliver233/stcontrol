@@ -57,8 +57,7 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Post("/commands/lease", s.handleAgentLeaseCommand)
 		r.Post("/commands/{id}/ack", s.handleAgentAckCommand)
 		r.Post("/commands/{id}/result", s.handleAgentFinishCommand)
-		r.Post("/backup/report", s.handleBackupReport)
-		r.Post("/scan-existing/report", s.handleScanExistingReport)
+		r.Post("/snapshots/progress", s.handleSnapshotProgress)
 	})
 
 	// 用户区（需登录）

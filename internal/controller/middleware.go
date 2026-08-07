@@ -118,9 +118,6 @@ func (s *Server) agentPSK(ctx context.Context, node *store.Node) (string, error)
 	if node == nil {
 		return "", nil
 	}
-	if node.AgentPSK != "" {
-		return node.AgentPSK, nil
-	}
 	ciphertext, _, _, err := s.Store.GetActiveAgentCredential(ctx, node.ID)
 	if err != nil || len(ciphertext) == 0 {
 		return "", err

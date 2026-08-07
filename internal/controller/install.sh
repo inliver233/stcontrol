@@ -3,14 +3,14 @@
 # 用法:
 #   curl -sSL https://<总控>/install.sh | bash -s -- \
 #     --controller https://<总控地址> --token <一次性令牌> \
-#     --role compute --tavern-dir /path/to/SillyTavern [--agent-url http://内网IP:9100]
+#     --role compute --tavern-dir /path/to/SillyTavern [--transfer-url https://node.example/agent-data]
 set -euo pipefail
 
 CONTROLLER=""
 TOKEN=""
 ROLE="compute"
 TAVERN_DIR=""
-AGENT_URL=""
+TRANSFER_URL=""
 INSTALL_DIR="/opt/stcontrol-agent"
 BIN_URL=""
 
@@ -20,7 +20,7 @@ while [[ $# -gt 0 ]]; do
     --token) TOKEN="$2"; shift 2 ;;
     --role) ROLE="$2"; shift 2 ;;
     --tavern-dir) TAVERN_DIR="$2"; shift 2 ;;
-    --agent-url) AGENT_URL="$2"; shift 2 ;;
+    --transfer-url) TRANSFER_URL="$2"; shift 2 ;;
     --install-dir) INSTALL_DIR="$2"; shift 2 ;;
     --bin-url) BIN_URL="$2"; shift 2 ;;
     *) echo "未知参数: $1"; exit 1 ;;
@@ -71,10 +71,11 @@ CFG="$INSTALL_DIR/agent.yaml"
 if [[ ! -f "$CFG" ]]; then
   sudo tee "$CFG" > /dev/null <<EOF
 controller_url: $CONTROLLER
-listen: 0.0.0.0:9100
+listen: 127.0.0.1:9100
 role: $ROLE
 tavern_dir: $TAVERN_DIR
 tavern_url: http://127.0.0.1:8000
+transfer_public_url: $TRANSFER_URL
 backup_dir: $INSTALL_DIR/backups
 heartbeat_sec: 15
 data_dir: $INSTALL_DIR/data
@@ -84,7 +85,6 @@ fi
 # 3. 注册到总控
 ARGS=(--config "$CFG" --register --token "$TOKEN" --controller "$CONTROLLER" --role "$ROLE")
 [[ -n "$TAVERN_DIR" ]] && ARGS+=(--tavern-dir "$TAVERN_DIR")
-[[ -n "$AGENT_URL" ]] && ARGS+=(--agent-url "$AGENT_URL")
 echo "==> 注册到总控 $CONTROLLER ..."
 sudo "$BIN_PATH" "${ARGS[@]}"
 
@@ -102,6 +102,7 @@ WorkingDirectory=$INSTALL_DIR
 ExecStart=$BIN_PATH --config $CFG
 Restart=always
 RestartSec=5
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

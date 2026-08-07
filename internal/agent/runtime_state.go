@@ -1,14 +1,19 @@
 package agent
 
 import (
+	"crypto/hmac"
 	cryptorand "crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"time"
+
+	"stcontrol/internal/protocol"
 )
 
 type cachedCommandResult struct {
@@ -22,6 +27,23 @@ type agentRuntimeState struct {
 	WorkerID          string                         `json:"worker_id"`
 	HighestGeneration int64                          `json:"highest_generation"`
 	Completed         map[string]cachedCommandResult `json:"completed"`
+	Transfers         map[string]pendingTransfer     `json:"transfers"`
+}
+
+type pendingTransfer struct {
+	WorkflowID      string                            `json:"workflow_id"`
+	SnapshotID      string                            `json:"snapshot_id"`
+	GlobalUserID    int64                             `json:"global_user_id"`
+	TargetNodeID    int64                             `json:"target_node_id"`
+	Handle          string                            `json:"handle"`
+	DestinationKind string                            `json:"destination_kind"`
+	SourceNodeID    int64                             `json:"source_node_id"`
+	ActivityEpoch   int64                             `json:"activity_epoch"`
+	CapabilityHash  string                            `json:"capability_hash"`
+	ExpiresAt       time.Time                         `json:"expires_at"`
+	State           string                            `json:"state"`
+	UpdatedAt       time.Time                         `json:"updated_at"`
+	Receipt         *protocol.SnapshotTransferReceipt `json:"receipt,omitempty"`
 }
 
 func (a *Agent) runtimeStatePath() string {
@@ -47,6 +69,9 @@ func (a *Agent) loadRuntimeState() error {
 	if a.state.Completed == nil {
 		a.state.Completed = make(map[string]cachedCommandResult)
 	}
+	if a.state.Transfers == nil {
+		a.state.Transfers = make(map[string]pendingTransfer)
+	}
 	if a.state.WorkerID == "" {
 		workerID, err := newWorkerID()
 		if err != nil {
@@ -58,6 +83,86 @@ func (a *Agent) loadRuntimeState() error {
 		a.state.HighestGeneration = a.Cfg.ControllerGeneration
 	}
 	return a.saveRuntimeStateLocked()
+}
+
+func (a *Agent) prepareTransfer(transfer pendingTransfer) error {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if existing, ok := a.state.Transfers[transfer.SnapshotID]; ok {
+		sameCapability := existing.WorkflowID == transfer.WorkflowID && existing.CapabilityHash == transfer.CapabilityHash
+		if sameCapability && existing.State == "prepared" {
+			return nil
+		}
+		if sameCapability || (existing.State != "failed" && !(existing.State == "prepared" && !existing.ExpiresAt.After(time.Now().UTC()))) {
+			return fmt.Errorf("snapshot transfer identity already exists")
+		}
+	}
+	transfer.State = "prepared"
+	transfer.UpdatedAt = time.Now().UTC()
+	a.state.Transfers[transfer.SnapshotID] = transfer
+	return a.saveRuntimeStateLocked()
+}
+
+func (a *Agent) consumeTransfer(snapshotID, workflowID, token string, now time.Time) (pendingTransfer, error) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	transfer, ok := a.state.Transfers[snapshotID]
+	if !ok || transfer.WorkflowID != workflowID || transfer.State != "prepared" || !transfer.ExpiresAt.After(now) {
+		return pendingTransfer{}, fmt.Errorf("transfer capability unavailable")
+	}
+	want, err := hex.DecodeString(transfer.CapabilityHash)
+	if err != nil || len(want) != sha256.Size {
+		return pendingTransfer{}, fmt.Errorf("invalid transfer capability state")
+	}
+	got := sha256.Sum256([]byte(token))
+	if !hmac.Equal(want, got[:]) {
+		return pendingTransfer{}, fmt.Errorf("transfer capability rejected")
+	}
+	transfer.State = "consumed"
+	transfer.UpdatedAt = now
+	a.state.Transfers[snapshotID] = transfer
+	if err := a.saveRuntimeStateLocked(); err != nil {
+		return pendingTransfer{}, err
+	}
+	return transfer, nil
+}
+
+func (a *Agent) finishTransfer(snapshotID, state string) error {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	transfer, ok := a.state.Transfers[snapshotID]
+	if !ok {
+		return fmt.Errorf("transfer state not found")
+	}
+	transfer.State = state
+	transfer.UpdatedAt = time.Now().UTC()
+	a.state.Transfers[snapshotID] = transfer
+	return a.saveRuntimeStateLocked()
+}
+
+func (a *Agent) publishTransfer(snapshotID string, receipt protocol.SnapshotTransferReceipt) error {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	transfer, ok := a.state.Transfers[snapshotID]
+	if !ok || transfer.State != "consumed" {
+		return fmt.Errorf("transfer state not consumable")
+	}
+	transfer.State = "published"
+	transfer.Receipt = &receipt
+	transfer.UpdatedAt = time.Now().UTC()
+	a.state.Transfers[snapshotID] = transfer
+	return a.saveRuntimeStateLocked()
+}
+
+func (a *Agent) snapshotReceipt(workflowID, snapshotID string) (*protocol.SnapshotTransferReceipt, bool) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	transfer, ok := a.state.Transfers[snapshotID]
+	if !ok || transfer.WorkflowID != workflowID || transfer.State != "published" || transfer.Receipt == nil {
+		return nil, false
+	}
+	receipt := *transfer.Receipt
+	return &receipt, true
 }
 
 func (a *Agent) saveRuntimeStateLocked() error {
@@ -114,8 +219,12 @@ func (a *Agent) acceptGeneration(generation int64) bool {
 		return false
 	}
 	if generation > a.state.HighestGeneration {
+		previous := a.state.HighestGeneration
 		a.state.HighestGeneration = generation
-		_ = a.saveRuntimeStateLocked()
+		if err := a.saveRuntimeStateLocked(); err != nil {
+			a.state.HighestGeneration = previous
+			return false
+		}
 	}
 	return true
 }
@@ -127,7 +236,7 @@ func (a *Agent) cachedResult(commandID string) (cachedCommandResult, bool) {
 	return result, ok
 }
 
-func (a *Agent) rememberResult(commandID string, result cachedCommandResult) {
+func (a *Agent) rememberResult(commandID string, result cachedCommandResult) error {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	a.state.Completed[commandID] = result
@@ -145,5 +254,5 @@ func (a *Agent) rememberResult(commandID string, result cachedCommandResult) {
 			delete(a.state.Completed, old.id)
 		}
 	}
-	_ = a.saveRuntimeStateLocked()
+	return a.saveRuntimeStateLocked()
 }

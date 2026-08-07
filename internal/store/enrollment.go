@@ -153,7 +153,7 @@ func (s *Store) EnrollAgent(ctx context.Context, p EnrollAgentParams) (AgentEnro
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE nodes
-		SET agent_url='', agent_psk='', agent_version=$2, tavern_version=$3,
+		SET agent_version=$2, tavern_version=$3,
 		  controller_generation=$4, connectivity_state='connected',
 		  operational_state='managed', status='online', last_seen_at=$5,
 		  base_url=CASE WHEN base_url='' THEN $6 ELSE base_url END

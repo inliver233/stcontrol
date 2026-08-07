@@ -29,8 +29,7 @@ type Node struct {
 	Name           string          `json:"name"`
 	Role           string          `json:"role"`
 	BaseURL        string          `json:"base_url"`
-	AgentURL       string          `json:"-"`
-	AgentPSK       string          `json:"-"`
+	TransferURL    string          `json:"-"`
 	Region         sql.NullString  `json:"region"`
 	CPUPct         sql.NullFloat64 `json:"cpu_pct"`
 	MemPct         sql.NullFloat64 `json:"mem_pct"`

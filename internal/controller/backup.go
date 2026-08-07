@@ -2,6 +2,11 @@ package controller
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
 	"time"
 
 	"stcontrol/internal/protocol"
@@ -65,7 +70,12 @@ func (s *Server) TriggerUserBackup(ctx context.Context, userID, srcNodeID int64,
 		return nil // 无可用备份目标, 跳过
 	}
 
-	// 创建任务
+	if dstNode.TransferURL == "" {
+		return fmt.Errorf("目标节点未提供 HTTPS 快照数据面")
+	}
+
+	// The legacy job remains a compatibility read model. Durable workflow,
+	// snapshot, and capability facts are created before either Agent mutates.
 	job := &store.BackupJob{
 		UserID: userID, SrcNodeID: srcNodeID, DstNodeID: dstNode.ID,
 		Trigger: trigger, Status: "pending",
@@ -73,28 +83,312 @@ func (s *Server) TriggerUserBackup(ctx context.Context, userID, srcNodeID int64,
 	if err := s.Store.CreateBackupJob(ctx, job); err != nil {
 		return err
 	}
-
-	// 标记目标副本 syncing
-	_ = s.Store.UpsertReplica(ctx, &store.UserReplica{
-		UserID: userID, NodeID: dstNode.ID, Kind: dstKind, State: "syncing",
-	})
-
-	// 下发备份指令给源节点子控
-	req := &protocol.BackupStartRequest{
-		JobID:       job.ID,
-		UserID:      userID,
-		Handle:      user.Username,
-		DstAgentURL: dstNode.AgentURL,
-		DstNodePSK:  dstNode.AgentPSK,
-		DstNodeID:   dstNode.ID,
-		DstKind:     dstKind,
-	}
-	if err := s.agent.startBackup(ctx, srcNodeID, srcNode.AgentPSK, srcNode.AgentURL, req); err != nil {
-		_ = s.Store.UpdateBackupJobStatus(ctx, job.ID, "failed", 0, 0, 0, "下发备份指令失败: "+err.Error())
+	workflowID, err := newUUID()
+	if err != nil {
 		return err
 	}
-	_ = s.Store.UpdateBackupJobStatus(ctx, job.ID, "running", 0, 0, 0, "")
-	return nil
+	operationID, err := newUUID()
+	if err != nil {
+		return err
+	}
+	snapshotID, err := newUUID()
+	if err != nil {
+		return err
+	}
+	capabilityID, err := newUUID()
+	if err != nil {
+		return err
+	}
+	capability := deriveTransferCapability(s.secretKey, capabilityID)
+	capabilityHash := sha256.Sum256([]byte(capability))
+	now := time.Now().UTC()
+	capabilityExpires := now.Add(15 * time.Minute)
+	workflow, err := s.Store.CreateSnapshotWorkflow(ctx, store.CreateSnapshotWorkflowParams{
+		WorkflowID: workflowID, OperationID: operationID, SnapshotID: snapshotID,
+		CapabilityID: capabilityID, CapabilityHash: capabilityHash[:],
+		LegacyBackupJobID: job.ID, LegacyUserID: user.ID, GlobalUserID: user.GlobalID,
+		SourceNodeID: srcNode.ID, TargetNodeID: dstNode.ID,
+		DestinationKind:   dstKind,
+		CapabilityExpires: capabilityExpires, Now: now,
+	})
+	if err != nil {
+		_ = s.Store.UpdateBackupJobStatus(ctx, job.ID, "failed", 0, 0, 0, "快照工作流创建失败")
+		return err
+	}
+
+	return s.executeSnapshotWorkflow(ctx, workflow.WorkflowID)
+}
+
+func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string) error {
+	if s.workflowWorkerID == "" {
+		return fmt.Errorf("snapshot worker identity unavailable")
+	}
+	claimed, err := s.Store.ClaimSnapshotWorkflow(ctx, workflowID, s.workflowWorkerID, time.Now().UTC(), time.Hour)
+	if err != nil || !claimed {
+		return err
+	}
+	defer func() { _ = s.Store.ReleaseSnapshotWorkflow(context.Background(), workflowID, s.workflowWorkerID) }()
+	execution, err := s.Store.GetSnapshotWorkflowExecution(ctx, workflowID)
+	if err != nil || execution == nil {
+		return err
+	}
+	if execution.State == "retry_wait" {
+		if err := s.Store.ResumeSnapshotRetry(ctx, workflowID, time.Now().UTC()); err != nil {
+			return err
+		}
+		execution, err = s.Store.GetSnapshotWorkflowExecution(ctx, workflowID)
+		if err != nil || execution == nil {
+			return err
+		}
+	}
+	source, err := s.Store.GetNodeByID(ctx, execution.SourceNodeID)
+	if err != nil || source == nil {
+		return s.retrySnapshotWorkflow(ctx, execution, "source_unavailable", "源节点不可用", err)
+	}
+	target, err := s.Store.GetNodeByID(ctx, execution.TargetNodeID)
+	if err != nil || target == nil || target.TransferURL == "" {
+		return s.retrySnapshotWorkflow(ctx, execution, "target_unavailable", "目标数据面不可用", err)
+	}
+	if execution.State == "scheduled" {
+		if err := s.Store.SetSnapshotWorkflowState(ctx, execution.WorkflowID, "scheduled", "quiescing", time.Now().UTC()); err != nil {
+			return err
+		}
+		execution.State = "quiescing"
+	}
+
+	if execution.State == "publishing" {
+		receipt, err := s.loadPublishedSnapshotReceipt(ctx, execution, target)
+		if err != nil {
+			return s.retrySnapshotWorkflow(ctx, execution, "receipt_unavailable", "目标发布回执暂不可用", err)
+		}
+		return s.completeSnapshotExecution(ctx, execution, receipt)
+	}
+	if execution.Attempt > 0 {
+		if err := s.rotateSnapshotExecutionCapability(ctx, execution); err != nil {
+			return s.retrySnapshotWorkflow(ctx, execution, "capability_rotate_failed", "传输授权轮换失败", err)
+		}
+		execution, err = s.Store.GetSnapshotWorkflowExecution(ctx, workflowID)
+		if err != nil || execution == nil {
+			return err
+		}
+	}
+
+	if execution.CapabilityState != "prepared" || !execution.CapabilityExpires.After(time.Now().UTC().Add(2*time.Minute)) {
+		if execution.State != "quiescing" || execution.CapabilityState == "consumed" {
+			return s.retrySnapshotWorkflow(ctx, execution, "capability_expired", "传输授权已过期", nil)
+		}
+		if err := s.rotateSnapshotExecutionCapability(ctx, execution); err != nil {
+			return s.retrySnapshotWorkflow(ctx, execution, "capability_rotate_failed", "传输授权轮换失败", err)
+		}
+		execution, err = s.Store.GetSnapshotWorkflowExecution(ctx, workflowID)
+		if err != nil || execution == nil {
+			return err
+		}
+	}
+	capability := deriveTransferCapability(s.secretKey, execution.CapabilityID)
+	derivedHash := sha256.Sum256([]byte(capability))
+	if !hmac.Equal(derivedHash[:], execution.CapabilityHash) {
+		job := snapshotExecutionJob(execution)
+		s.failSnapshotWorkflow(ctx, job, workflowID, "capability_key_mismatch", "控制面密钥无法恢复传输授权")
+		return fmt.Errorf("snapshot capability key mismatch")
+	}
+	capabilityHashHex := hex.EncodeToString(execution.CapabilityHash)
+	if _, err := s.runAgentCommandWithOperation(ctx, target, "prepare_snapshot_receive", protocol.PrepareSnapshotReceiveRequest{
+		WorkflowID: execution.WorkflowID, SnapshotID: execution.SnapshotID, GlobalUserID: execution.GlobalUserID,
+		Handle: execution.Handle, DestinationKind: execution.DestinationKind, SourceNodeID: execution.SourceNodeID,
+		ActivityEpoch: execution.ActivityEpoch, CapabilityHash: capabilityHashHex, ExpiresAt: execution.CapabilityExpires,
+	}, deriveWorkflowOperationID(execution.WorkflowID, fmt.Sprintf("prepare-target:%s:%d", execution.CapabilityID, execution.Attempt)), 45*time.Second); err != nil {
+		return s.retrySnapshotWorkflow(ctx, execution, "target_prepare_failed", "目标节点未确认接收准备", err)
+	}
+	if err := s.Store.CompleteSnapshotWorkflowStep(ctx, execution.WorkflowID, "prepare_target", time.Now().UTC()); err != nil {
+		return err
+	}
+	_ = s.Store.UpdateBackupJobStatus(ctx, execution.LegacyBackupJobID, "running", 0, 0, 0, "")
+	result, runErr := s.runAgentCommandWithOperation(ctx, source, "start_snapshot", protocol.StartSnapshotRequest{
+		JobID: execution.LegacyBackupJobID, WorkflowID: execution.WorkflowID, SnapshotID: execution.SnapshotID,
+		GlobalUserID: execution.GlobalUserID, Handle: execution.Handle, ActivityEpoch: execution.ActivityEpoch,
+		TargetNodeID: execution.TargetNodeID, TargetTransferURL: target.TransferURL,
+		TransferCapability: capability, CapabilityExpires: execution.CapabilityExpires,
+		DestinationKind: execution.DestinationKind,
+	}, deriveWorkflowOperationID(execution.WorkflowID, fmt.Sprintf("start-source:%s:%d", execution.CapabilityID, execution.Attempt)), 45*time.Minute)
+	if runErr != nil || result.Snapshot == nil {
+		latest, _ := s.Store.GetSnapshotWorkflowExecution(ctx, workflowID)
+		if latest != nil && latest.State == "publishing" {
+			receipt, receiptErr := s.loadPublishedSnapshotReceipt(ctx, latest, target)
+			if receiptErr == nil {
+				return s.completeSnapshotExecution(ctx, latest, receipt)
+			}
+		}
+		return s.retrySnapshotWorkflow(ctx, execution, "snapshot_failed", "源或目标节点未完成快照", runErr)
+	}
+	return s.completeSnapshotExecution(ctx, execution, result.Snapshot)
+}
+
+func (s *Server) loadPublishedSnapshotReceipt(
+	ctx context.Context,
+	execution *store.SnapshotWorkflowExecution,
+	target *store.Node,
+) (*protocol.SnapshotTransferReceipt, error) {
+	result, err := s.runAgentCommandWithOperation(ctx, target, "get_snapshot_receipt", map[string]string{
+		"workflow_id": execution.WorkflowID, "snapshot_id": execution.SnapshotID,
+	}, deriveWorkflowOperationID(execution.WorkflowID, fmt.Sprintf("target-receipt:%s:%d", execution.CapabilityID, execution.Attempt)), 45*time.Second)
+	if err != nil || result.Snapshot == nil {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("snapshot receipt missing")
+	}
+	return result.Snapshot, nil
+}
+
+func (s *Server) completeSnapshotExecution(
+	ctx context.Context,
+	execution *store.SnapshotWorkflowExecution,
+	receipt *protocol.SnapshotTransferReceipt,
+) error {
+	if receipt == nil || receipt.SnapshotID != execution.SnapshotID {
+		return fmt.Errorf("snapshot receipt scope mismatch")
+	}
+	manifestDigest, err := decodeSnapshotDigest(receipt.ManifestSHA256)
+	if err != nil {
+		return err
+	}
+	archiveDigest, err := decodeSnapshotDigest(receipt.ArchiveSHA256)
+	if err != nil {
+		return err
+	}
+	_, err = s.Store.CompleteSnapshotWorkflow(ctx, store.CompleteSnapshotWorkflowParams{
+		WorkflowID: execution.WorkflowID, SnapshotID: execution.SnapshotID,
+		CapabilityHash: execution.CapabilityHash, TargetNodeID: execution.TargetNodeID,
+		ReplicaKind: execution.DestinationKind, ManifestSHA256: manifestDigest, ArchiveSHA256: archiveDigest,
+		FileCount: receipt.FileCount, TotalBytes: receipt.TotalBytes, Now: time.Now().UTC(),
+	})
+	return err
+}
+
+func (s *Server) rotateSnapshotExecutionCapability(ctx context.Context, execution *store.SnapshotWorkflowExecution) error {
+	capabilityID, err := newUUID()
+	if err != nil {
+		return err
+	}
+	capability := deriveTransferCapability(s.secretKey, capabilityID)
+	digest := sha256.Sum256([]byte(capability))
+	now := time.Now().UTC()
+	return s.Store.RotateSnapshotCapability(
+		ctx, execution.WorkflowID, capabilityID, digest[:], now.Add(15*time.Minute), now,
+	)
+}
+
+func (s *Server) retrySnapshotWorkflow(
+	ctx context.Context,
+	execution *store.SnapshotWorkflowExecution,
+	code, summary string,
+	cause error,
+) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	job := snapshotExecutionJob(execution)
+	current, err := s.Store.GetBackupJob(ctx, job.ID)
+	if err != nil {
+		return err
+	}
+	if current != nil && current.Status == "aborted" {
+		if err := s.Store.CancelSnapshotWorkflow(ctx, execution.WorkflowID, "用户恢复使用，取消未发布快照", time.Now().UTC()); err != nil {
+			return err
+		}
+		return fmt.Errorf("snapshot workflow aborted")
+	}
+	delay := 5 * time.Second
+	for i := 0; i < execution.Attempt && delay < 5*time.Minute; i++ {
+		delay *= 2
+	}
+	attempt, err := s.Store.ScheduleSnapshotRetry(ctx, execution.WorkflowID, code, summary, time.Now().UTC(), delay)
+	if err != nil {
+		return err
+	}
+	maxAttempts := s.Cfg.Backup.RetryMax
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	if attempt >= maxAttempts {
+		s.failSnapshotWorkflow(ctx, job, execution.WorkflowID, code, summary)
+	}
+	if cause != nil {
+		return cause
+	}
+	return fmt.Errorf("%s", code)
+}
+
+func snapshotExecutionJob(execution *store.SnapshotWorkflowExecution) *store.BackupJob {
+	return &store.BackupJob{
+		ID: execution.LegacyBackupJobID, UserID: execution.LegacyUserID,
+		SrcNodeID: execution.SourceNodeID, DstNodeID: execution.TargetNodeID,
+	}
+}
+
+func (s *Server) snapshotWorkflowReconciler(ctx context.Context) {
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+	s.resumeSnapshotWorkflows(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.resumeSnapshotWorkflows(ctx)
+		}
+	}
+}
+
+func (s *Server) resumeSnapshotWorkflows(ctx context.Context) {
+	ids, err := s.Store.ListResumableSnapshotWorkflowIDs(ctx, 100)
+	if err != nil {
+		return
+	}
+	for _, id := range ids {
+		select {
+		case s.snapshotSlots <- struct{}{}:
+			go func(workflowID string) {
+				defer func() { <-s.snapshotSlots }()
+				_ = s.executeSnapshotWorkflow(ctx, workflowID)
+			}(id)
+		default:
+			return
+		}
+	}
+}
+
+func (s *Server) failSnapshotWorkflow(ctx context.Context, job *store.BackupJob, workflowID, code, summary string) {
+	if current, _ := s.Store.GetBackupJob(ctx, job.ID); current != nil && current.Status == "aborted" {
+		_ = s.Store.CancelSnapshotWorkflow(ctx, workflowID, "用户恢复使用，取消未发布快照", time.Now().UTC())
+		return
+	}
+	_ = s.Store.FailSnapshotWorkflow(ctx, workflowID, code, summary, time.Now().UTC())
+	_ = s.Store.UpdateBackupJobStatus(ctx, job.ID, "failed", 0, 0, 0, summary)
+	_ = s.Store.UpdateReplicaState(ctx, job.UserID, job.DstNodeID, "error", 0, "", 0)
+}
+
+func decodeSnapshotDigest(value string) ([]byte, error) {
+	digest, err := hex.DecodeString(value)
+	if err != nil || len(digest) != sha256.Size {
+		return nil, fmt.Errorf("invalid snapshot digest")
+	}
+	return digest, nil
+}
+
+func deriveTransferCapability(key []byte, capabilityID string) string {
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte("stcontrol-snapshot-transfer:v1:" + capabilityID))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func deriveWorkflowOperationID(workflowID, step string) string {
+	digest := sha256.Sum256([]byte("stcontrol-workflow-operation:v1:" + workflowID + ":" + step))
+	digest[6] = (digest[6] & 0x0f) | 0x40
+	digest[8] = (digest[8] & 0x3f) | 0x80
+	encoded := hex.EncodeToString(digest[:16])
+	return fmt.Sprintf("%s-%s-%s-%s-%s", encoded[:8], encoded[8:12], encoded[12:16], encoded[16:20], encoded[20:])
 }
 
 // pickBackupTarget 为用户选备份目标。

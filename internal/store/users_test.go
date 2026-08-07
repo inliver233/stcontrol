@@ -156,12 +156,12 @@ func TestSensitiveModelFieldsAreNeverSerialized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal User: %v", err)
 	}
-	nodeJSON, err := json.Marshal(Node{AgentPSK: "agent-secret", AgentURL: "http://private-agent"})
+	nodeJSON, err := json.Marshal(Node{TransferURL: "https://private-transfer.example"})
 	if err != nil {
 		t.Fatalf("marshal Node: %v", err)
 	}
 	serialized := string(userJSON) + string(nodeJSON)
-	for _, secret := range []string{"ciphertext", "hash", "oauth-subject", "agent-secret", "private-agent"} {
+	for _, secret := range []string{"ciphertext", "hash", "oauth-subject", "private-transfer"} {
 		if strings.Contains(serialized, secret) {
 			t.Fatalf("serialized models leaked %q: %s", secret, serialized)
 		}

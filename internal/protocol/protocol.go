@@ -63,6 +63,7 @@ type HeartbeatRequest struct {
 	CPUPct        float64      `json:"cpu_pct"`
 	MemPct        float64      `json:"mem_pct"`
 	DiskPct       float64      `json:"disk_pct"`
+	TransferURL   string       `json:"transfer_url,omitempty"`
 	Users         []UserStatus `json:"users,omitempty"`
 }
 
@@ -141,6 +142,7 @@ type ScanExistingUser struct {
 
 // ProvisionUserRequest 总控下发：在节点上创建用户。
 type ProvisionUserRequest struct {
+	OperationID    string `json:"operation_id"`
 	Handle         string `json:"handle"`
 	Name           string `json:"name"`
 	PasswordHash   string `json:"password_hash,omitempty"`
@@ -167,35 +169,58 @@ type SetPasswordRequest struct {
 
 // ---------- 备份 ----------
 
-// BackupStartRequest 总控下发给源节点：开始备份。
-type BackupStartRequest struct {
-	JobID       int64  `json:"job_id"`
-	UserID      int64  `json:"user_id"`
-	Handle      string `json:"handle"`
-	DstAgentURL string `json:"dst_agent_url"` // 目标子控地址
-	DstNodePSK  string `json:"dst_node_psk"`  // 与目标子控签名用的 PSK(由总控转发)
-	DstNodeID   int64  `json:"dst_node_id"`
-	DstKind     string `json:"dst_kind"` // hot_standby|archive
+type PrepareSnapshotReceiveRequest struct {
+	WorkflowID      string    `json:"workflow_id"`
+	SnapshotID      string    `json:"snapshot_id"`
+	GlobalUserID    int64     `json:"global_user_id"`
+	Handle          string    `json:"handle"`
+	DestinationKind string    `json:"destination_kind"`
+	SourceNodeID    int64     `json:"source_node_id"`
+	ActivityEpoch   int64     `json:"activity_epoch"`
+	CapabilityHash  string    `json:"capability_hash"`
+	ExpiresAt       time.Time `json:"expires_at"`
 }
 
-// BackupStatusResponse 备份进度/结果。
-type BackupStatusResponse struct {
-	JobID       int64  `json:"job_id"`
-	Status      string `json:"status"` // running|verifying|done|aborted|failed
-	Bytes       int64  `json:"bytes"`
-	FileCount   int    `json:"file_count"`
-	Checksum    string `json:"checksum,omitempty"`
-	Error       string `json:"error,omitempty"`
-	DataVersion int64  `json:"data_version,omitempty"`
+type StartSnapshotRequest struct {
+	JobID              int64     `json:"job_id"`
+	WorkflowID         string    `json:"workflow_id"`
+	SnapshotID         string    `json:"snapshot_id"`
+	GlobalUserID       int64     `json:"global_user_id"`
+	Handle             string    `json:"handle"`
+	ActivityEpoch      int64     `json:"activity_epoch"`
+	TargetNodeID       int64     `json:"target_node_id"`
+	TargetTransferURL  string    `json:"target_transfer_url"`
+	TransferCapability string    `json:"transfer_capability"`
+	CapabilityExpires  time.Time `json:"capability_expires"`
+	DestinationKind    string    `json:"destination_kind"`
 }
 
-// BackupReceiveMeta 目标节点接收备份时的元信息（通过查询参数或头传递）。
-type BackupReceiveMeta struct {
-	JobID    int64  `json:"job_id"`
-	Handle   string `json:"handle"`
-	DstKind  string `json:"dst_kind"`
-	Manifest string `json:"manifest"` // SHA256 清单(JSON, 见 ManifestEntry)
-	DataVer  int64  `json:"data_version"`
+type SnapshotManifest struct {
+	FormatVersion int             `json:"format_version"`
+	WorkflowID    string          `json:"workflow_id"`
+	SnapshotID    string          `json:"snapshot_id"`
+	GlobalUserID  int64           `json:"global_user_id"`
+	Handle        string          `json:"handle"`
+	SourceNodeID  int64           `json:"source_node_id"`
+	TargetNodeID  int64           `json:"target_node_id"`
+	ActivityEpoch int64           `json:"activity_epoch"`
+	CreatedAt     time.Time       `json:"created_at"`
+	Files         []ManifestEntry `json:"files"`
+}
+
+type SnapshotTransferReceipt struct {
+	OK             bool   `json:"ok"`
+	SnapshotID     string `json:"snapshot_id"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	ArchiveSHA256  string `json:"archive_sha256"`
+	FileCount      int64  `json:"file_count"`
+	TotalBytes     int64  `json:"total_bytes"`
+}
+
+type SnapshotProgressRequest struct {
+	WorkflowID string `json:"workflow_id"`
+	SnapshotID string `json:"snapshot_id"`
+	State      string `json:"state"`
 }
 
 // ManifestEntry 单个文件的校验条目。

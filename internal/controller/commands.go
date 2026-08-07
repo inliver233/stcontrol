@@ -18,7 +18,7 @@ import (
 
 const (
 	agentCommandLeaseTTL = 45 * time.Second
-	agentCommandRunTTL   = 5 * time.Minute
+	agentCommandRunTTL   = 60 * time.Minute
 	agentCommandTTL      = 10 * time.Minute
 )
 
@@ -28,10 +28,11 @@ type encryptedCommandEnvelope struct {
 }
 
 type agentCommandSummary struct {
-	OK          bool                        `json:"ok"`
-	Code        string                      `json:"code,omitempty"`
-	LocalUserID string                      `json:"local_user_id,omitempty"`
-	Users       []protocol.ScanExistingUser `json:"users,omitempty"`
+	OK          bool                              `json:"ok"`
+	Code        string                            `json:"code,omitempty"`
+	LocalUserID string                            `json:"local_user_id,omitempty"`
+	Users       []protocol.ScanExistingUser       `json:"users,omitempty"`
+	Snapshot    *protocol.SnapshotTransferReceipt `json:"snapshot,omitempty"`
 }
 
 func (s *Server) handleAgentLeaseCommand(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +150,28 @@ func (s *Server) handleAgentFinishCommand(w http.ResponseWriter, r *http.Request
 	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (s *Server) handleSnapshotProgress(w http.ResponseWriter, r *http.Request) {
+	node := currentNode(r)
+	if node == nil {
+		protocol.WriteError(w, http.StatusUnauthorized, "未知节点")
+		return
+	}
+	var req protocol.SnapshotProgressRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil || !isUUID(req.WorkflowID) || !isUUID(req.SnapshotID) {
+		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if err := s.Store.SetSnapshotWorkflowProgress(
+		r.Context(), req.WorkflowID, req.SnapshotID, node.ID, req.State, time.Now().UTC(),
+	); err != nil {
+		protocol.WriteError(w, http.StatusConflict, "快照阶段冲突")
+		return
+	}
+	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (s *Server) enqueueAgentCommand(
 	ctx context.Context,
 	node *store.Node,
@@ -220,6 +243,17 @@ func (s *Server) runAgentCommand(
 	if err != nil {
 		return agentCommandSummary{}, err
 	}
+	return s.runAgentCommandWithOperation(ctx, node, commandType, payload, operationID, timeout)
+}
+
+func (s *Server) runAgentCommandWithOperation(
+	ctx context.Context,
+	node *store.Node,
+	commandType string,
+	payload any,
+	operationID string,
+	timeout time.Duration,
+) (agentCommandSummary, error) {
 	if _, err := s.enqueueAgentCommand(ctx, node, commandType, payload, operationID); err != nil {
 		return agentCommandSummary{}, err
 	}

@@ -1,4 +1,4 @@
-// Package crypto 提供凭据加密(AES-GCM)、密码哈希(bcrypt)、JWT 票据签发/校验。
+// Package crypto 提供控制面凭据加密、密码验证材料和用途隔离的密钥派生。
 package crypto
 
 import (
@@ -8,9 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -107,62 +105,6 @@ func RandomPassword(n int) (string, error) {
 		s = s[:n]
 	}
 	return s, nil
-}
-
-// ---------- JWT 一次性票据 ----------
-
-// TicketClaims 票据载荷。
-type TicketClaims struct {
-	Handle string `json:"sub"` // 节点上的 handle
-	Node   string `json:"aud"` // 目标节点 base_url
-	Nonce  string `json:"nonce"`
-	jwt.RegisteredClaims
-}
-
-// IssueTicket 签发一次性登录票据(HS256)。
-// secret 为该节点的 agent_psk 派生密钥; ttl 一般 60s; jti 唯一编号防重放。
-func IssueTicket(secret []byte, handle, nodeBaseURL, jti string, ttl time.Duration) (string, error) {
-	now := time.Now()
-	nonce, err := RandomPassword(16)
-	if err != nil {
-		return "", err
-	}
-	claims := TicketClaims{
-		Handle: handle,
-		Node:   nodeBaseURL,
-		Nonce:  nonce,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ID:        jti,
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
-		},
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(secret)
-}
-
-// VerifyTicket 校验票据签名与有效期，返回载荷。不校验 aud(由调用方比对本节点)。
-func VerifyTicket(secret []byte, tokenStr string) (*TicketClaims, error) {
-	claims := &TicketClaims{}
-	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
-		}
-		return secret, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if !token.Valid {
-		return nil, errors.New("invalid token")
-	}
-	return claims, nil
-}
-
-// DeriveTicketSecret 从节点 PSK 派生票据密钥（HMAC-SHA256 语义, 这里直接 SHA256）。
-func DeriveTicketSecret(psk string) []byte {
-	h := sha256Of([]byte("stcontrol-ticket:" + psk))
-	return h
 }
 
 // DeriveAgentCommandKey derives an AES-256 key used only for queued command

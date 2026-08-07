@@ -4,7 +4,11 @@ import (
 	"context"
 	stdsha256 "crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"stcontrol/internal/crypto"
@@ -67,6 +71,24 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func validateAgentTransferURL(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("invalid transfer URL")
+	}
+	host := parsed.Hostname()
+	ip := net.ParseIP(host)
+	loopback := strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback())
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && loopback) {
+		return "", fmt.Errorf("transfer URL must use HTTPS")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	return parsed.String(), nil
+}
+
 // handleAgentHeartbeat 接收子控心跳（更新负载、版本、用户在线状态）。
 func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	node := currentNode(r)
@@ -80,9 +102,14 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	transferURL, err := validateAgentTransferURL(req.TransferURL)
+	if err != nil {
+		protocol.WriteError(w, http.StatusBadRequest, "数据面地址无效")
+		return
+	}
 
 	if err := s.Store.UpdateNodeHeartbeat(ctx, node.ID, req.CPUPct, req.MemPct, req.DiskPct,
-		req.TavernVersion, req.AgentVersion); err != nil {
+		req.TavernVersion, req.AgentVersion, transferURL); err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "更新心跳失败")
 		return
 	}
@@ -91,57 +118,6 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	s.trackUserActivity(node.ID, req.Users)
 
 	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-// handleBackupReport 子控上报备份进度/结果。
-func (s *Server) handleBackupReport(w http.ResponseWriter, r *http.Request) {
-	node := currentNode(r)
-	if node == nil {
-		protocol.WriteError(w, http.StatusUnauthorized, "未知节点")
-		return
-	}
-	var rep protocol.BackupStatusResponse
-	if err := json.NewDecoder(r.Body).Decode(&rep); err != nil {
-		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
-		return
-	}
-	ctx := r.Context()
-
-	_ = s.Store.UpdateBackupJobStatus(ctx, rep.JobID, rep.Status, rep.DataVersion, rep.Bytes, rep.FileCount, rep.Error)
-
-	// 备份成功 → 更新目标节点副本状态
-	if rep.Status == "done" {
-		if job, _ := s.Store.GetBackupJob(ctx, rep.JobID); job != nil {
-			_ = s.Store.UpdateReplicaState(ctx, job.UserID, job.DstNodeID, "ready",
-				rep.DataVersion, rep.Checksum, rep.Bytes)
-		}
-	} else if rep.Status == "failed" || rep.Status == "aborted" {
-		if job, _ := s.Store.GetBackupJob(ctx, rep.JobID); job != nil {
-			_ = s.Store.UpdateReplicaState(ctx, job.UserID, job.DstNodeID, "error", 0, "", 0)
-		}
-	}
-
-	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-// handleScanExistingReport 子控上报扫描到的既有用户（接管老节点用）。
-func (s *Server) handleScanExistingReport(w http.ResponseWriter, r *http.Request) {
-	node := currentNode(r)
-	if node == nil {
-		protocol.WriteError(w, http.StatusUnauthorized, "未知节点")
-		return
-	}
-	var req struct {
-		Users []protocol.ScanExistingUser `json:"users"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
-		return
-	}
-	// 记录到审计, 管理后台可据此导入
-	detail, _ := json.Marshal(req.Users)
-	_ = s.Store.Audit(r.Context(), "agent", "scan-existing", node.Name, detail)
-	protocol.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(req.Users)})
 }
 
 // ---------- 离线备份调度辅助 ----------

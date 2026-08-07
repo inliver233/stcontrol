@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"net/http"
 	"testing"
-	"time"
 
 	"stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
@@ -15,7 +14,7 @@ func TestHMACRoundTrip(t *testing.T) {
 	psk := "test-psk-1234567890"
 	body := []byte(`{"hello":"world"}`)
 
-	req, _ := http.NewRequest(http.MethodPost, "http://agent/agent/provision-user", bytes.NewReader(body))
+	req, _ := http.NewRequest(http.MethodPost, "https://controller.example/api/agent/commands/lease", bytes.NewReader(body))
 	protocol.SignRequest(req, 7, psk, body)
 
 	if err := protocol.VerifyRequest(req, psk, body); err != nil {
@@ -54,58 +53,6 @@ func TestGetHMACEmptyBody(t *testing.T) {
 	protocol.SignRequest(req, 3, psk, nil)
 	if err := protocol.VerifyRequest(req, psk, nil); err != nil {
 		t.Fatalf("GET 验签失败: %v", err)
-	}
-}
-
-// TestTicketRoundTrip 验证票据签发与校验, 以及密钥派生与酒馆侧一致。
-func TestTicketRoundTrip(t *testing.T) {
-	psk := "node-agent-psk"
-	secret := crypto.DeriveTicketSecret(psk)
-
-	token, err := crypto.IssueTicket(secret, "alice", "https://a.example.com", "jti-001", 60*time.Second)
-	if err != nil {
-		t.Fatalf("签发票据失败: %v", err)
-	}
-	claims, err := crypto.VerifyTicket(secret, token)
-	if err != nil {
-		t.Fatalf("校验票据失败: %v", err)
-	}
-	if claims.Handle != "alice" {
-		t.Fatalf("handle 不匹配: %s", claims.Handle)
-	}
-	if claims.Node != "https://a.example.com" {
-		t.Fatalf("aud 不匹配: %s", claims.Node)
-	}
-	if claims.ID != "jti-001" {
-		t.Fatalf("jti 不匹配: %s", claims.ID)
-	}
-
-	// 过期票据应失败
-	expired, _ := crypto.IssueTicket(secret, "alice", "https://a.example.com", "jti-002", -1*time.Second)
-	if _, err := crypto.VerifyTicket(secret, expired); err == nil {
-		t.Fatal("过期票据竟然校验通过")
-	}
-	// 错误密钥应失败
-	if _, err := crypto.VerifyTicket(crypto.DeriveTicketSecret("other"), token); err == nil {
-		t.Fatal("错误密钥竟然校验通过")
-	}
-}
-
-// TestTicketSecretMatchesNode 验证总控 DeriveTicketSecret 与酒馆 federated-login.js 的
-// SHA256("stcontrol-ticket:"+psk) 完全一致(关键互操作点)。
-func TestTicketSecretMatchesNode(t *testing.T) {
-	// 酒馆侧: crypto.createHash('sha256').update('stcontrol-ticket:' + psk).digest()
-	// 总控侧: DeriveTicketSecret 做同样的事。两者必须一致, 否则票据验签失败。
-	psk := "interop-psk"
-	got := crypto.DeriveTicketSecret(psk)
-	if len(got) != 32 {
-		t.Fatalf("派生密钥长度应为 32, 实际 %d", len(got))
-	}
-	// 与已知的 SHA256("stcontrol-ticket:interop-psk") 对比(用标准库再算一遍)
-	// (crypto 包内部就是这么做, 这里主要防回归)
-	again := crypto.DeriveTicketSecret(psk)
-	if !bytes.Equal(got, again) {
-		t.Fatal("同一 PSK 派生密钥不一致")
 	}
 }
 

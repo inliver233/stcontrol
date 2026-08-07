@@ -9,10 +9,10 @@ import (
 // CreateNode 创建节点。
 func (s *Store) CreateNode(ctx context.Context, n *Node) error {
 	return s.DB.QueryRowContext(ctx, `
-	  INSERT INTO nodes (name, role, base_url, agent_url, agent_psk, region,
+	  INSERT INTO nodes (name, role, base_url, transfer_url, region,
 	    status, allow_register, is_backup_target)
-	  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, created_at`,
-		n.Name, n.Role, n.BaseURL, n.AgentURL, n.AgentPSK, n.Region,
+	  VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, created_at`,
+		n.Name, n.Role, n.BaseURL, n.TransferURL, n.Region,
 		n.Status, n.AllowRegister, n.IsBackupTarget,
 	).Scan(&n.ID, &n.CreatedAt)
 }
@@ -21,11 +21,11 @@ func (s *Store) CreateNode(ctx context.Context, n *Node) error {
 func (s *Store) GetNodeByID(ctx context.Context, id int64) (*Node, error) {
 	n := &Node{}
 	err := s.DB.QueryRowContext(ctx, `
-	  SELECT id, name, role, base_url, agent_url, agent_psk, region,
+	  SELECT id, name, role, base_url, transfer_url, region,
 	    cpu_pct, mem_pct, disk_pct, agent_version, tavern_version, last_seen_at,
 	    status, allow_register, is_backup_target, created_at
 	  FROM nodes WHERE id=$1`, id).
-		Scan(&n.ID, &n.Name, &n.Role, &n.BaseURL, &n.AgentURL, &n.AgentPSK, &n.Region,
+		Scan(&n.ID, &n.Name, &n.Role, &n.BaseURL, &n.TransferURL, &n.Region,
 			&n.CPUPct, &n.MemPct, &n.DiskPct, &n.AgentVersion, &n.TavernVersion, &n.LastSeenAt,
 			&n.Status, &n.AllowRegister, &n.IsBackupTarget, &n.CreatedAt)
 	if err == sql.ErrNoRows {
@@ -37,7 +37,7 @@ func (s *Store) GetNodeByID(ctx context.Context, id int64) (*Node, error) {
 // ListNodes 列出全部节点。
 func (s *Store) ListNodes(ctx context.Context) ([]*Node, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-	  SELECT id, name, role, base_url, agent_url, agent_psk, region,
+	  SELECT id, name, role, base_url, transfer_url, region,
 	    cpu_pct, mem_pct, disk_pct, agent_version, tavern_version, last_seen_at,
 	    status, allow_register, is_backup_target, created_at
 	  FROM nodes ORDER BY id`)
@@ -48,7 +48,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]*Node, error) {
 	var out []*Node
 	for rows.Next() {
 		n := &Node{}
-		if err := rows.Scan(&n.ID, &n.Name, &n.Role, &n.BaseURL, &n.AgentURL, &n.AgentPSK, &n.Region,
+		if err := rows.Scan(&n.ID, &n.Name, &n.Role, &n.BaseURL, &n.TransferURL, &n.Region,
 			&n.CPUPct, &n.MemPct, &n.DiskPct, &n.AgentVersion, &n.TavernVersion, &n.LastSeenAt,
 			&n.Status, &n.AllowRegister, &n.IsBackupTarget, &n.CreatedAt); err != nil {
 			return nil, err
@@ -59,12 +59,13 @@ func (s *Store) ListNodes(ctx context.Context) ([]*Node, error) {
 }
 
 // UpdateNodeHeartbeat 更新节点心跳与负载。
-func (s *Store) UpdateNodeHeartbeat(ctx context.Context, id int64, cpu, mem, disk float64, tavernVer, agentVer string) error {
+func (s *Store) UpdateNodeHeartbeat(ctx context.Context, id int64, cpu, mem, disk float64, tavernVer, agentVer, transferURL string) error {
 	_, err := s.DB.ExecContext(ctx, `
 	  UPDATE nodes SET cpu_pct=$2, mem_pct=$3, disk_pct=$4,
-	    tavern_version=$5, agent_version=$6, last_seen_at=$7, status='online'
+	    tavern_version=$5, agent_version=$6, transfer_url=$7,
+	    last_seen_at=$8, status='online'
 	  WHERE id=$1`,
-		id, cpu, mem, disk, tavernVer, agentVer, time.Now())
+		id, cpu, mem, disk, tavernVer, agentVer, transferURL, time.Now())
 	return err
 }
 
@@ -77,9 +78,9 @@ func (s *Store) UpdateNodeStatus(ctx context.Context, id int64, status string) e
 // UpdateNodeSettings 更新节点可配置项。
 func (s *Store) UpdateNodeSettings(ctx context.Context, n *Node) error {
 	_, err := s.DB.ExecContext(ctx, `
-	  UPDATE nodes SET name=$2, base_url=$3, region=$4, allow_register=$5,
-	    is_backup_target=$6, role=$7 WHERE id=$1`,
-		n.ID, n.Name, n.BaseURL, n.Region, n.AllowRegister, n.IsBackupTarget, n.Role)
+	  UPDATE nodes SET name=$2, base_url=$3, transfer_url=$4, region=$5, allow_register=$6,
+	    is_backup_target=$7, role=$8 WHERE id=$1`,
+		n.ID, n.Name, n.BaseURL, n.TransferURL, n.Region, n.AllowRegister, n.IsBackupTarget, n.Role)
 	return err
 }
 

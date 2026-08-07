@@ -5,7 +5,6 @@ go 1.22.5
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/go-chi/chi/v5 v5.0.12
-	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/klauspost/compress v1.17.9
 	github.com/lib/pq v1.10.9
 	github.com/shirou/gopsutil/v3 v3.24.5

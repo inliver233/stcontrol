@@ -75,8 +75,6 @@ func (s *Server) handleAdminCreateNode(w http.ResponseWriter, r *http.Request) {
 	if n.Role != "compute" && n.Role != "storage" {
 		n.Role = "compute"
 	}
-	n.AgentPSK = ""
-	n.AgentURL = ""
 	n.Status = "pending"
 	if err := s.Store.CreateNode(r.Context(), &n); err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "创建节点失败")

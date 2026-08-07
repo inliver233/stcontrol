@@ -48,8 +48,8 @@ func main() {
 
 	// 注册流程: 提供了 token 且尚未有 node_id
 	if *token != "" {
-		if cfg.TavernDir == "" {
-			log.Fatalf("注册需指定酒馆目录: --tavern-dir 或配置 tavern_dir")
+		if cfg.Role == "compute" && cfg.TavernDir == "" {
+			log.Fatalf("计算节点注册需指定酒馆目录: --tavern-dir 或配置 tavern_dir")
 		}
 		if cfg.ControllerURL == "" {
 			log.Fatalf("注册需指定总控地址: --controller 或配置 controller_url")

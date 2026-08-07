@@ -19,9 +19,10 @@ type Agent struct {
 	mu         sync.Mutex
 	backupJobs map[int64]context.CancelFunc
 
-	httpClient *http.Client
-	stateMu    sync.Mutex
-	state      agentRuntimeState
+	httpClient   *http.Client
+	commandSlots chan struct{}
+	stateMu      sync.Mutex
+	state        agentRuntimeState
 }
 
 // New 创建子控。
@@ -32,7 +33,13 @@ func New(cfg *config.AgentConfig) (*Agent, error) {
 	agent := &Agent{
 		Cfg:        cfg,
 		backupJobs: make(map[int64]context.CancelFunc),
-		httpClient: &http.Client{Timeout: 60 * time.Second},
+		httpClient: &http.Client{
+			Timeout: 60 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		commandSlots: make(chan struct{}, 8),
 	}
 	if err := agent.loadRuntimeState(); err != nil {
 		return nil, fmt.Errorf("load agent runtime state: %w", err)

@@ -51,6 +51,7 @@ func (a *Agent) sendHeartbeat(ctx context.Context) {
 		CPUPct:        cpu,
 		MemPct:        mem,
 		DiskPct:       disk,
+		TransferURL:   a.Cfg.TransferPublicURL,
 		Users:         users,
 	}
 	if err := a.callController(ctx, http.MethodPost, "/api/agent/heartbeat", reqBody, nil); err != nil {
