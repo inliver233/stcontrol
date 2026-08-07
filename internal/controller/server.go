@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"stcontrol/internal/config"
+	controlcrypto "stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
@@ -24,7 +25,8 @@ type Server struct {
 	actMu    sync.Mutex
 	activity map[int64]map[string]protocol.UserStatus
 
-	oauthHTTP *http.Client
+	oauthHTTP         *http.Client
+	dummyPasswordHash string
 }
 
 type session struct {
@@ -43,6 +45,7 @@ type session struct {
 // New 创建总控服务。
 func New(cfg *config.ControllerConfig, st *store.Store, secretKey []byte) *Server {
 	workerID, _ := newUUID()
+	dummyPasswordHash, _ := controlcrypto.HashPassword("stcontrol-dummy-password-never-used")
 	return &Server{
 		Cfg:              cfg,
 		Store:            st,
@@ -56,6 +59,7 @@ func New(cfg *config.ControllerConfig, st *store.Store, secretKey []byte) *Serve
 				return http.ErrUseLastResponse
 			},
 		},
+		dummyPasswordHash: dummyPasswordHash,
 	}
 }
 
@@ -72,6 +76,11 @@ func CurrentUser(r *http.Request) (int64, bool) {
 	}
 	id, ok := v.(int64)
 	return id, ok
+}
+
+func currentSession(r *http.Request) *session {
+	sess, _ := r.Context().Value(ctxKey("stcontrol-session")).(*session)
+	return sess
 }
 
 // Handler 返回根路由。

@@ -1,12 +1,30 @@
 import { useEffect, useState } from 'react'
-import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
+import { api } from '../api'
+import { useAuth } from '../App'
+
+function readCookie(name: string): string {
+  const prefix = `${encodeURIComponent(name)}=`
+  for (const part of document.cookie.split(';')) {
+    const value = part.trim()
+    if (value.startsWith(prefix)) return decodeURIComponent(value.slice(prefix.length))
+  }
+  return ''
+}
 
 // ---------- 管理 API ----------
 async function adminReq<T>(path: string, options?: RequestInit): Promise<T> {
+  const method = (options?.method || 'GET').toUpperCase()
+  const headers = new Headers(options?.headers)
+  headers.set('Content-Type', 'application/json')
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    const csrf = readCookie('stcontrol_csrf')
+    if (csrf) headers.set('X-CSRF-Token', csrf)
+  }
   const resp = await fetch(path, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) },
     ...options,
+    headers,
   })
   if (!resp.ok) {
     let msg = `请求失败 (${resp.status})`
@@ -28,10 +46,15 @@ const adminApi = {
   backups: () => adminReq<{ backups: any[] }>('/api/admin/backups'),
   abortBackup: (id: number) => adminReq<any>(`/api/admin/backups/${id}/abort`, { method: 'POST' }),
   createInvitation: (body: any) => adminReq<any>('/api/admin/invitations', { method: 'POST', body: JSON.stringify(body) }),
+  admins: () => adminReq<{ admins: any[] }>('/api/admin/admins'),
+  createAdmin: (username: string, password: string) => adminReq<any>('/api/admin/admins', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  setAdminStatus: (id: number, status: string) => adminReq<any>(`/api/admin/admins/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
+  resetAdminPassword: (id: number, password: string) => adminReq<any>(`/api/admin/admins/${id}/password`, { method: 'PUT', body: JSON.stringify({ password }) }),
 }
 
 // ---------- 布局 ----------
 export default function AdminPage() {
+  const { me, loading, setMe } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const nav = [
@@ -40,8 +63,18 @@ export default function AdminPage() {
     { path: '/admin/users', label: '用户管理' },
     { path: '/admin/backups', label: '备份任务' },
     { path: '/admin/invitations', label: '邀请码' },
+    { path: '/admin/admins', label: '管理员' },
   ]
   const current = location.pathname
+
+  if (loading) return <div className="loading">加载中…</div>
+  if (!me?.is_admin) return <Navigate to="/admin/login" replace />
+
+  const logout = async () => {
+    await api.logout()
+    setMe(null)
+    navigate('/admin/login', { replace: true })
+  }
 
   return (
     <div className="admin-layout">
@@ -56,7 +89,7 @@ export default function AdminPage() {
             {n.label}
           </div>
         ))}
-        <div className="nav-item" style={{ marginTop: 24 }} onClick={() => navigate('/')}>← 返回用户页</div>
+        <div className="nav-item" style={{ marginTop: 24 }} onClick={logout}>退出管理员登录</div>
       </div>
       <div className="admin-main">
         <Routes>
@@ -65,6 +98,7 @@ export default function AdminPage() {
           <Route path="/users" element={<UsersAdmin />} />
           <Route path="/backups" element={<BackupsAdmin />} />
           <Route path="/invitations" element={<InvitationsAdmin />} />
+          <Route path="/admins" element={<AdminsAdmin />} />
         </Routes>
       </div>
     </div>
@@ -289,6 +323,86 @@ function InvitationsAdmin() {
         </div>
         <button className="btn" onClick={create}>生成邀请码</button>
       </div>
+    </>
+  )
+}
+
+function AdminsAdmin() {
+  const [admins, setAdmins] = useState<any[]>([])
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+
+  const load = () => adminApi.admins().then(data => setAdmins(data.admins)).catch(err => setError(err.message))
+  useEffect(() => { load() }, [])
+
+  const create = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setError('')
+    setMessage('')
+    try {
+      await adminApi.createAdmin(username, password)
+      setUsername('')
+      setPassword('')
+      setMessage('管理员已创建')
+      load()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '创建失败')
+    }
+  }
+
+  const toggle = async (admin: any) => {
+    setError('')
+    try {
+      await adminApi.setAdminStatus(admin.id, admin.status === 'active' ? 'disabled' : 'active')
+      load()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '状态更新失败')
+    }
+  }
+
+  const resetPassword = async (admin: any) => {
+    const next = window.prompt(`为 ${admin.username} 设置至少 12 位新密码`)
+    if (!next) return
+    setError('')
+    try {
+      await adminApi.resetAdminPassword(admin.id, next)
+      setMessage('密码已重置，该管理员的现有会话已撤销')
+      load()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '密码重置失败')
+    }
+  }
+
+  return (
+    <>
+      <h2>管理员</h2>
+      {error && <div className="error-msg">{error}</div>}
+      {message && <div className="success-msg">{message}</div>}
+      <form onSubmit={create} className="card" style={{ margin: '0 0 20px', maxWidth: 520 }}>
+        <div className="field"><label>新管理员用户名</label><input value={username} onChange={e => setUsername(e.target.value)} minLength={3} maxLength={32} required /></div>
+        <div className="field"><label>初始密码（至少 12 位）</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} minLength={12} required /></div>
+        <button className="btn" type="submit">创建同级管理员</button>
+      </form>
+      <table className="table">
+        <thead><tr><th>用户名</th><th>状态</th><th>密码版本</th><th>最近登录</th><th>操作</th></tr></thead>
+        <tbody>
+          {admins.map(admin => (
+            <tr key={admin.id}>
+              <td>{admin.username}</td>
+              <td><span className={`badge ${admin.status === 'active' ? 'green' : 'gray'}`}>{admin.status === 'active' ? '有效' : '已禁用'}</span></td>
+              <td>{admin.password_version}</td>
+              <td>{admin.last_login_at ? new Date(admin.last_login_at).toLocaleString() : '从未'}</td>
+              <td>
+                <button className="btn-sm" onClick={() => resetPassword(admin)}>重置密码</button>{' '}
+                <button className={`btn-sm ${admin.status === 'active' ? 'danger' : 'primary'}`} onClick={() => toggle(admin)}>{admin.status === 'active' ? '禁用' : '启用'}</button>
+              </td>
+            </tr>
+          ))}
+          {admins.length === 0 && <tr><td colSpan={5}>暂无管理员</td></tr>}
+        </tbody>
+      </table>
     </>
   )
 }

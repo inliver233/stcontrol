@@ -6,6 +6,7 @@ import RegisterPage from './pages/Register'
 import NodesPage from './pages/Nodes'
 import SelectNodePage from './pages/SelectNode'
 import AdminPage from './pages/Admin'
+import AdminLoginPage from './pages/AdminLogin'
 
 interface AuthCtx {
   me: Me | null
@@ -40,11 +41,13 @@ export default function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/select-node" element={<SelectNodePage />} />
+        <Route path="/admin/login" element={<AdminLoginPage />} />
         <Route path="/admin/*" element={<AdminPage />} />
         <Route
           path="/"
           element={
             loading ? <div className="loading">加载中…</div>
+              : me?.is_admin ? <Navigate to="/admin" replace />
               : me ? <NodesPage />
               : <Navigate to="/login" replace />
           }

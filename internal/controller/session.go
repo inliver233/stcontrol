@@ -18,6 +18,7 @@ const (
 	sessionCookie        = "stcontrol_session"
 	csrfCookie           = "stcontrol_csrf"
 	sessionTTL           = 7 * 24 * time.Hour
+	adminSessionTTL      = 12 * time.Hour
 	sessionTouchInterval = 5 * time.Minute
 )
 
@@ -57,6 +58,42 @@ func (s *Server) createUserSession(w http.ResponseWriter, r *http.Request, user 
 		return err
 	}
 	s.setSessionCookies(w, r, token, csrfToken, int(sessionTTL.Seconds()))
+	return nil
+}
+
+func (s *Server) createAdminSession(w http.ResponseWriter, r *http.Request, admin *store.Admin) error {
+	if admin == nil || admin.ID <= 0 || admin.Status != "active" {
+		return store.ErrInvalidControllerSession
+	}
+	if existing, err := r.Cookie(sessionCookie); err == nil && existing.Value != "" {
+		digest := sha256.Sum256([]byte(existing.Value))
+		_ = s.Store.RevokeControllerSession(r.Context(), digest[:], time.Now().UTC())
+	}
+	sessionID, err := newUUID()
+	if err != nil {
+		return err
+	}
+	token, err := randomBearerToken()
+	if err != nil {
+		return err
+	}
+	csrfToken := s.deriveCSRFToken(sessionID)
+	tokenHash := sha256.Sum256([]byte(token))
+	csrfHash := sha256.Sum256([]byte(csrfToken))
+	now := time.Now().UTC()
+	adminID := admin.ID
+	_, err = s.Store.CreateControllerSession(r.Context(), store.CreateControllerSessionParams{
+		ID:        sessionID,
+		AdminID:   &adminID,
+		TokenHash: tokenHash[:],
+		CSRFHash:  csrfHash[:],
+		ExpiresAt: now.Add(adminSessionTTL),
+		Now:       now,
+	})
+	if err != nil {
+		return err
+	}
+	s.setSessionCookies(w, r, token, csrfToken, int(adminSessionTTL.Seconds()))
 	return nil
 }
 

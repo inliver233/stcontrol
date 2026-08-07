@@ -39,4 +39,4 @@ oauth:
 
 admin:
   username: admin
-  password: admin
+  password_env: CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD

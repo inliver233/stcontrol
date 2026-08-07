@@ -11,6 +11,14 @@ import (
 
 // handleMe 当前用户信息。
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	if sess := currentSession(r); sess != nil && sess.IsAdmin {
+		protocol.WriteJSON(w, http.StatusOK, map[string]any{
+			"username": sess.Username, "display_name": sess.Username,
+			"auth_provider": "admin", "avatar_url": "", "home_node_id": 0,
+			"is_admin": true,
+		})
+		return
+	}
 	userID, _ := CurrentUser(r)
 	user, err := s.Store.GetUserByID(r.Context(), userID)
 	if err != nil || user == nil {
@@ -23,6 +31,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"auth_provider": user.AuthProvider,
 		"avatar_url":    user.AvatarURL.String,
 		"home_node_id":  user.HomeNodeID.Int64,
+		"is_admin":      false,
 	})
 }
 

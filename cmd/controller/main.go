@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"stcontrol/internal/config"
 	"stcontrol/internal/controller"
@@ -41,6 +42,29 @@ func main() {
 		log.Fatalf("连接数据库失败: %v", err)
 	}
 	defer st.Close()
+	hasAdmin, err := st.HasActiveAdmin(ctx)
+	if err != nil {
+		log.Fatalf("检查管理员状态失败: %v", err)
+	}
+	if !hasAdmin {
+		bootstrapPassword := os.Getenv(cfg.Admin.PasswordEnv)
+		if len(bootstrapPassword) < 12 {
+			log.Fatalf("首次启动必须通过环境变量 %s 提供至少 12 位管理员密码", cfg.Admin.PasswordEnv)
+		}
+		passwordHash, err := crypto.HashPassword(bootstrapPassword)
+		if err != nil {
+			log.Fatalf("管理员密码哈希失败: %v", err)
+		}
+		created, err := st.BootstrapAdmin(ctx, cfg.Admin.Username, passwordHash, time.Now().UTC())
+		if err != nil {
+			log.Fatalf("创建首位管理员失败: %v", err)
+		}
+		if created {
+			log.Printf("已创建首位总控管理员 %s", cfg.Admin.Username)
+		} else {
+			log.Fatalf("数据库已有管理员记录但没有有效管理员；拒绝用引导密码覆盖，需按恢复手册处理")
+		}
+	}
 
 	srv := controller.New(cfg, st, secretKey)
 	log.Printf("总控启动, 监听 %s, 对外地址 %s", cfg.Listen, cfg.PublicURL)

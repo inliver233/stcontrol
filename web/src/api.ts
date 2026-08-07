@@ -33,6 +33,7 @@ export interface Me {
   auth_provider: string
   avatar_url: string
   home_node_id: number
+  is_admin: boolean
 }
 
 export interface LoginHandoff {
@@ -86,6 +87,8 @@ export const api = {
     request<{ ok: boolean; username: string }>('/api/auth/register', { method: 'POST', body: JSON.stringify(body) }),
   login: (body: { username: string; password: string }) =>
     request<{ ok: boolean }>('/api/auth/login', { method: 'POST', body: JSON.stringify(body) }),
+	adminLogin: (body: { username: string; password: string }) =>
+	  request<{ ok: boolean; is_admin: boolean }>('/api/auth/admin/login', { method: 'POST', body: JSON.stringify(body) }),
 	completeOAuth: (node_id: number) =>
 	  request<{ ok: boolean; username: string }>('/api/auth/oauth/complete', {
 		method: 'POST', body: JSON.stringify({ node_id }),

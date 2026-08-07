@@ -24,6 +24,7 @@ services:
       dockerfile: Dockerfile.controller
     environment:
       CONTROLLER_SECRET_KEY: ${CONTROLLER_SECRET_KEY:?请设置 CONTROLLER_SECRET_KEY(32字节base64)}
+      CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD: ${CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD:-}
     volumes:
       - ./controller.yaml:/app/controller.yaml:ro
     ports:

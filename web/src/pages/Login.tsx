@@ -61,6 +61,7 @@ export default function LoginPage() {
         <div className="link-row">
           还没有账号？<Link to="/register">立即注册</Link>
         </div>
+        <div className="link-row"><Link to="/admin/login">管理员登录</Link></div>
       </div>
     </div>
   )

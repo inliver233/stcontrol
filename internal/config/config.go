@@ -68,8 +68,8 @@ type OAuthProvider struct {
 
 // AdminConfig 管理员。
 type AdminConfig struct {
-	Username string `yaml:"username"`
-	Password string `yaml:"password"` // 首次启动用, 之后应改密
+	Username    string `yaml:"username"`
+	PasswordEnv string `yaml:"password_env"` // 仅首次引导；明文只从环境变量读取
 }
 
 // ---------- 子控配置 ----------
@@ -108,7 +108,7 @@ func DefaultController() *ControllerConfig {
 			OfflineGraceMin: 12, RetainVersions: 1,
 			ZstdLevel: 3, RetryMax: 3, AbortOnLogin: true,
 		},
-		Admin: AdminConfig{Username: "admin", Password: "admin"},
+		Admin: AdminConfig{Username: "admin", PasswordEnv: "CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD"},
 	}
 }
 

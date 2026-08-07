@@ -56,6 +56,7 @@ cd stcontrol
 cp controller.yaml.example controller.yaml   # 按需修改 public_url / database_url / oauth
 export CONTROLLER_SECRET_KEY=$(openssl rand -base64 32)
 export DB_PASSWORD=<数据库密码>
+export CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD=<首次管理员密码，至少12位>
 docker compose up -d --build
 ```
 
@@ -67,8 +68,11 @@ docker compose up -d --build
 # 需要本地 PostgreSQL, 创建数据库 stcontrol
 cd stcontrol
 export CONTROLLER_SECRET_KEY=$(openssl rand -base64 32)
+export CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD=<首次管理员密码，至少12位>
 go run ./cmd/controller --config controller.yaml
 ```
+
+引导密码只在数据库尚无管理员时从环境变量读取；创建首位管理员后只保留 bcrypt hash。后续同级管理员的创建、禁用和密码重置均在管理后台完成，禁用或改密会撤销该管理员的现有会话，系统拒绝禁用最后一名有效管理员。
 
 前端热更新：另开终端 `cd web && npm install && npm run dev`（代理到 :8080）。
 

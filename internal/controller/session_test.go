@@ -76,6 +76,34 @@ func TestCreateUserSessionPersistsOnlyDigestsAndSetsSecureCookies(t *testing.T) 
 	}
 }
 
+func TestCreateAdminSessionUsesAdminPrincipalAndShortTTL(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server := &Server{
+		Cfg: &config.ControllerConfig{PublicURL: "https://control.example"}, Store: &store.Store{DB: db},
+		secretKey: []byte("01234567890123456789012345678901"),
+	}
+	mock.ExpectQuery(`INSERT INTO controller_sessions`).
+		WithArgs(sqlmock.AnyArg(), nil, int64(9), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"controller_generation"}).AddRow(int64(3)))
+	req := httptest.NewRequest(http.MethodPost, "https://control.example/api/auth/admin/login", nil)
+	recorder := httptest.NewRecorder()
+	if err := server.createAdminSession(recorder, req, &store.Admin{ID: 9, Username: "admin-one", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 2 || cookies[0].MaxAge > int(adminSessionTTL.Seconds()) {
+		t.Fatalf("cookies=%+v", cookies)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEnsureCSRFCookieRestoresMissingCookie(t *testing.T) {
 	t.Parallel()
 	server := &Server{
