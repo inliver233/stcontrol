@@ -3,6 +3,8 @@ package controller
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -79,5 +81,75 @@ func TestScannedFallbackInventoryCannotAssertIdentityOrAdminFacts(t *testing.T) 
 	}}
 	if validScannedInventoryUser(base) {
 		t.Fatal("fallback inventory asserted OAuth identity")
+	}
+}
+
+func TestAccountInventoryScanAcceptsTenThousandUsersInBoundedPages(t *testing.T) {
+	t.Parallel()
+	state := accountInventoryScan{}
+	revision := strings.Repeat("c", 64)
+	for cursor := 0; cursor < protocol.MaxAccountInventoryUsers; cursor += protocol.MaxAccountInventoryPageUsers {
+		users := make([]protocol.ScanExistingUser, 0, protocol.MaxAccountInventoryPageUsers)
+		for index := cursor; index < cursor+protocol.MaxAccountInventoryPageUsers; index++ {
+			users = append(users, protocol.ScanExistingUser{
+				LocalUserID:          fmt.Sprintf("local-%05d", index),
+				Handle:               fmt.Sprintf("user-%05d", index),
+				DirectoryFingerprint: strings.Repeat("a", 64),
+				Source:               "directory_fallback", AccountKind: "unknown",
+			})
+		}
+		next := cursor + len(users)
+		hasMore := next < protocol.MaxAccountInventoryUsers
+		if !hasMore {
+			next = 0
+		}
+		complete, err := state.appendPage(cursor, protocol.ScanExistingPageResult{
+			Users: users, Cursor: cursor, NextCursor: next,
+			TotalUsers:        protocol.MaxAccountInventoryUsers,
+			InventoryRevision: revision, HasMore: hasMore,
+		})
+		if err != nil || complete != !hasMore {
+			t.Fatalf("cursor=%d complete=%v err=%v", cursor, complete, err)
+		}
+	}
+	if len(state.users) != protocol.MaxAccountInventoryUsers {
+		t.Fatalf("users=%d", len(state.users))
+	}
+}
+
+func TestAccountInventoryScanRejectsRevisionDriftAndCrossPageDuplicates(t *testing.T) {
+	t.Parallel()
+	firstUsers := make([]protocol.ScanExistingUser, protocol.MaxAccountInventoryPageUsers)
+	for index := range firstUsers {
+		firstUsers[index] = protocol.ScanExistingUser{
+			LocalUserID: fmt.Sprintf("local-%03d", index), Handle: fmt.Sprintf("user-%03d", index),
+			DirectoryFingerprint: strings.Repeat("a", 64), Source: "adapter", AccountKind: "password",
+		}
+	}
+	first := protocol.ScanExistingPageResult{
+		Users: firstUsers, Cursor: 0, NextCursor: protocol.MaxAccountInventoryPageUsers,
+		TotalUsers:        protocol.MaxAccountInventoryPageUsers + 1,
+		InventoryRevision: strings.Repeat("b", 64), HasMore: true,
+	}
+	state := accountInventoryScan{}
+	if complete, err := state.appendPage(0, first); err != nil || complete {
+		t.Fatalf("first complete=%v err=%v", complete, err)
+	}
+	drift := protocol.ScanExistingPageResult{
+		Users: []protocol.ScanExistingUser{{
+			LocalUserID: "local-999", Handle: "user-999",
+			DirectoryFingerprint: strings.Repeat("a", 64), Source: "adapter", AccountKind: "password",
+		}},
+		Cursor:            protocol.MaxAccountInventoryPageUsers,
+		TotalUsers:        protocol.MaxAccountInventoryPageUsers + 1,
+		InventoryRevision: strings.Repeat("c", 64),
+	}
+	if _, err := state.appendPage(protocol.MaxAccountInventoryPageUsers, drift); !errors.Is(err, store.ErrInvalidAccountImport) {
+		t.Fatalf("revision drift error=%v", err)
+	}
+	drift.InventoryRevision = first.InventoryRevision
+	drift.Users[0].LocalUserID = firstUsers[len(firstUsers)-1].LocalUserID
+	if _, err := state.appendPage(protocol.MaxAccountInventoryPageUsers, drift); !errors.Is(err, store.ErrInvalidAccountImport) {
+		t.Fatalf("duplicate error=%v", err)
 	}
 }

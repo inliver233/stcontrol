@@ -17,7 +17,10 @@ var (
 	ErrAccountClaimRejected  = errors.New("account import claim rejected")
 )
 
-const maxAccountImportCandidates = 500
+const (
+	maxAccountImportCandidates = 10_000
+	MaxAccountImportPageSize   = 100
+)
 
 type OAuthIdentitySubject struct {
 	GlobalUserID int64  `json:"-"`
@@ -81,8 +84,12 @@ type AccountImportCandidate struct {
 }
 
 type AccountImportResult struct {
-	Batch      AccountImportBatch       `json:"batch"`
-	Candidates []AccountImportCandidate `json:"candidates"`
+	Batch               AccountImportBatch       `json:"batch"`
+	Candidates          []AccountImportCandidate `json:"candidates"`
+	CandidateOffset     int                      `json:"candidate_offset"`
+	CandidateLimit      int                      `json:"candidate_limit"`
+	NextCandidateOffset int                      `json:"next_candidate_offset,omitempty"`
+	HasMore             bool                     `json:"has_more"`
 }
 
 type AccountImportClaimTarget struct {
@@ -493,10 +500,19 @@ func classifyAndLinkImportCandidate(
 }
 
 func (s *Store) GetAccountImportBatch(ctx context.Context, batchID string) (*AccountImportResult, error) {
-	if batchID == "" {
+	return s.GetAccountImportBatchPage(ctx, batchID, 0, MaxAccountImportPageSize)
+}
+
+func (s *Store) GetAccountImportBatchPage(
+	ctx context.Context,
+	batchID string,
+	offset, limit int,
+) (*AccountImportResult, error) {
+	if batchID == "" || offset < 0 || offset > maxAccountImportCandidates ||
+		limit <= 0 || limit > MaxAccountImportPageSize {
 		return nil, ErrInvalidAccountImport
 	}
-	var result AccountImportResult
+	result := AccountImportResult{CandidateOffset: offset, CandidateLimit: limit}
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT id,node_id,source,state,candidate_count,auto_linked_count,unresolved_count,
 		  scanned_at,created_at
@@ -517,12 +533,18 @@ func (s *Store) GetAccountImportBatch(ctx context.Context, batchID string) (*Acc
 		FROM account_import_candidates candidate
 		LEFT JOIN global_users global_user ON global_user.id=candidate.matched_user_id
 		WHERE candidate.batch_id=$1
-		ORDER BY candidate.local_handle,candidate.id`, batchID)
+		ORDER BY candidate.local_handle,candidate.id
+		LIMIT $2 OFFSET $3`, batchID, limit+1, offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
+		if len(result.Candidates) == limit {
+			result.HasMore = true
+			result.NextCandidateOffset = offset + limit
+			break
+		}
 		var candidate AccountImportCandidate
 		var identitiesJSON []byte
 		if err := rows.Scan(&candidate.ID, &candidate.LocalHandle, &candidate.SizeBytes,
@@ -548,6 +570,14 @@ func (s *Store) GetAccountImportBatch(ctx context.Context, batchID string) (*Acc
 }
 
 func (s *Store) GetLatestAccountImportBatch(ctx context.Context, nodeID int64) (*AccountImportResult, error) {
+	return s.GetLatestAccountImportBatchPage(ctx, nodeID, 0, MaxAccountImportPageSize)
+}
+
+func (s *Store) GetLatestAccountImportBatchPage(
+	ctx context.Context,
+	nodeID int64,
+	offset, limit int,
+) (*AccountImportResult, error) {
 	if nodeID <= 0 {
 		return nil, ErrInvalidAccountImport
 	}
@@ -561,7 +591,27 @@ func (s *Store) GetLatestAccountImportBatch(ctx context.Context, nodeID int64) (
 	if err != nil {
 		return nil, err
 	}
-	return s.GetAccountImportBatch(ctx, batchID)
+	return s.GetAccountImportBatchPage(ctx, batchID, offset, limit)
+}
+
+func (s *Store) GetAccountImportBatchByOperation(
+	ctx context.Context,
+	operationID string,
+	offset, limit int,
+) (*AccountImportResult, error) {
+	if operationID == "" {
+		return nil, ErrInvalidAccountImport
+	}
+	var batchID string
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT id FROM account_import_batches WHERE operation_id=$1`, operationID).Scan(&batchID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.GetAccountImportBatchPage(ctx, batchID, offset, limit)
 }
 
 func validateAccountImportBatch(p CreateAccountImportBatchParams) error {

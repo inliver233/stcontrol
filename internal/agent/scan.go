@@ -44,41 +44,75 @@ type adapterInventoryUser struct {
 }
 
 type adapterInventoryResponse struct {
-	OK    bool                   `json:"ok"`
-	Users []adapterInventoryUser `json:"users"`
+	OK                bool                   `json:"ok"`
+	Users             []adapterInventoryUser `json:"users"`
+	Cursor            int                    `json:"cursor"`
+	NextCursor        int                    `json:"next_cursor"`
+	TotalUsers        int                    `json:"total_users"`
+	InventoryRevision string                 `json:"inventory_revision"`
+	HasMore           bool                   `json:"has_more"`
 }
 
 // ScanExistingUsers prefers the authenticated adapter's exact account facts.
 // The directory fallback is intentionally identity-blind and can never cause
-// automatic linking at the Controller.
+// automatic linking at the Controller. This compatibility helper is bounded
+// to one page; Controller workflows use ScanExistingUsersPage exclusively.
 func (a *Agent) ScanExistingUsers(ctx context.Context) ([]protocol.ScanExistingUser, error) {
-	users, err := a.scanExistingUsersFromAdapter(ctx)
-	if err == nil {
-		return users, nil
-	}
-	if errors.Is(err, errInvalidAdapterInventory) {
+	page, err := a.ScanExistingUsersPage(ctx, protocol.ScanExistingPageRequest{
+		Limit: protocol.MaxAccountInventoryPageUsers,
+	})
+	if err != nil {
 		return nil, err
 	}
-	return a.scanExistingUsersFromDisk()
+	if page.HasMore {
+		return nil, fmt.Errorf("inventory requires paged command")
+	}
+	return page.Users, nil
 }
 
-func (a *Agent) scanExistingUsersFromAdapter(ctx context.Context) ([]protocol.ScanExistingUser, error) {
-	var response adapterInventoryResponse
-	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/users/scan", struct{}{}, &response); err != nil {
-		return nil, err
+// ScanExistingUsersPage returns a stable, bounded account inventory page. An
+// invalid authenticated adapter response fails closed; transport failures may
+// use the identity-blind directory fallback.
+func (a *Agent) ScanExistingUsersPage(
+	ctx context.Context,
+	req protocol.ScanExistingPageRequest,
+) (protocol.ScanExistingPageResult, error) {
+	if !validInventoryPageRequest(req) {
+		return protocol.ScanExistingPageResult{}, errInvalidAdapterInventory
 	}
-	if !response.OK || len(response.Users) > protocol.MaxAccountInventoryUsers {
-		return nil, fmt.Errorf("%w: response", errInvalidAdapterInventory)
+	page, err := a.scanExistingUsersFromAdapterPage(ctx, req)
+	if err == nil {
+		return page, nil
+	}
+	if errors.Is(err, errInvalidAdapterInventory) {
+		return protocol.ScanExistingPageResult{}, err
+	}
+	return a.scanExistingUsersFromDiskPage(req)
+}
+
+func (a *Agent) scanExistingUsersFromAdapterPage(
+	ctx context.Context,
+	req protocol.ScanExistingPageRequest,
+) (protocol.ScanExistingPageResult, error) {
+	var response adapterInventoryResponse
+	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/users/scan", req, &response); err != nil {
+		return protocol.ScanExistingPageResult{}, err
+	}
+	if !validAdapterInventoryPage(req, response) {
+		return protocol.ScanExistingPageResult{}, fmt.Errorf("%w: response", errInvalidAdapterInventory)
 	}
 	seen := make(map[string]struct{}, len(response.Users))
 	out := make([]protocol.ScanExistingUser, 0, len(response.Users))
 	for _, user := range response.Users {
 		if !safeInventoryString(user.LocalUserID, 256) || !safeInventoryString(user.Handle, 128) ||
 			user.SizeBytes < 0 || !validInventoryDigest(user.DirectoryFingerprint) {
-			return nil, fmt.Errorf("%w: user", errInvalidAdapterInventory)
+			return protocol.ScanExistingPageResult{}, fmt.Errorf("%w: user", errInvalidAdapterInventory)
 		}
 		if _, exists := seen[user.LocalUserID]; exists {
-			return nil, fmt.Errorf("%w: duplicate user", errInvalidAdapterInventory)
+			return protocol.ScanExistingPageResult{}, fmt.Errorf("%w: duplicate user", errInvalidAdapterInventory)
+		}
+		if len(out) > 0 && out[len(out)-1].LocalUserID >= user.LocalUserID {
+			return protocol.ScanExistingPageResult{}, fmt.Errorf("%w: unstable user order", errInvalidAdapterInventory)
 		}
 		seen[user.LocalUserID] = struct{}{}
 		identities := make([]protocol.ScanExistingIdentity, 0, len(user.OAuthIdentities))
@@ -86,10 +120,10 @@ func (a *Agent) scanExistingUsersFromAdapter(ctx context.Context) ([]protocol.Sc
 		for _, identity := range user.OAuthIdentities {
 			if (identity.Provider != "discord" && identity.Provider != "linuxdo") ||
 				!safeInventoryString(identity.Subject, 512) {
-				return nil, fmt.Errorf("%w: identity", errInvalidAdapterInventory)
+				return protocol.ScanExistingPageResult{}, fmt.Errorf("%w: identity", errInvalidAdapterInventory)
 			}
 			if _, exists := providers[identity.Provider]; exists {
-				return nil, fmt.Errorf("%w: duplicate identity", errInvalidAdapterInventory)
+				return protocol.ScanExistingPageResult{}, fmt.Errorf("%w: duplicate identity", errInvalidAdapterInventory)
 			}
 			providers[identity.Provider] = struct{}{}
 			identities = append(identities, protocol.ScanExistingIdentity{
@@ -108,17 +142,22 @@ func (a *Agent) scanExistingUsersFromAdapter(ctx context.Context) ([]protocol.Sc
 			Identities: identities, IsAdmin: user.IsAdmin,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].LocalUserID < out[j].LocalUserID })
-	return out, nil
+	return protocol.ScanExistingPageResult{
+		Users: out, Cursor: response.Cursor, NextCursor: response.NextCursor,
+		TotalUsers: response.TotalUsers, InventoryRevision: response.InventoryRevision,
+		HasMore: response.HasMore,
+	}, nil
 }
 
-func (a *Agent) scanExistingUsersFromDisk() ([]protocol.ScanExistingUser, error) {
+func (a *Agent) scanExistingUsersFromDiskPage(
+	req protocol.ScanExistingPageRequest,
+) (protocol.ScanExistingPageResult, error) {
 	dataRoot := a.dataRoot()
 	entries, err := os.ReadDir(dataRoot)
 	if err != nil {
-		return nil, err
+		return protocol.ScanExistingPageResult{}, err
 	}
-	var out []protocol.ScanExistingUser
+	names := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -127,20 +166,71 @@ func (a *Agent) scanExistingUsersFromDisk() ([]protocol.ScanExistingUser, error)
 		if excludedDirs[name] || strings.HasPrefix(name, ".") {
 			continue
 		}
-		if len(out) >= protocol.MaxAccountInventoryUsers {
-			return nil, fmt.Errorf("inventory requires pagination")
+		if !safeInventoryString(name, 128) {
+			return protocol.ScanExistingPageResult{}, fmt.Errorf("invalid inventory directory name")
 		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) > protocol.MaxAccountInventoryUsers || req.Cursor > len(names) {
+		return protocol.ScanExistingPageResult{}, fmt.Errorf("inventory exceeds supported bound")
+	}
+	revision := controlcrypto.AgentInventoryFingerprint(
+		a.adapterPSK(), "directory-list", strings.Join(names, "\x00"),
+	)
+	if req.InventoryRevision != "" && !hmac.Equal([]byte(req.InventoryRevision), []byte(revision)) {
+		return protocol.ScanExistingPageResult{}, fmt.Errorf("inventory revision changed")
+	}
+	end := req.Cursor + req.Limit
+	if end > len(names) {
+		end = len(names)
+	}
+	out := make([]protocol.ScanExistingUser, 0, end-req.Cursor)
+	for _, name := range names[req.Cursor:end] {
 		size, fingerprint, err := directoryInventory(filepath.Join(dataRoot, name), a.Cfg.AgentPSK)
 		if err != nil {
-			return nil, err
+			return protocol.ScanExistingPageResult{}, err
 		}
 		out = append(out, protocol.ScanExistingUser{
 			LocalUserID: name, Handle: name, Size: size, DirectoryFingerprint: fingerprint,
 			Source: "directory_fallback", AccountKind: "unknown",
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Handle < out[j].Handle })
-	return out, nil
+	hasMore := end < len(names)
+	nextCursor := 0
+	if hasMore {
+		nextCursor = end
+	}
+	return protocol.ScanExistingPageResult{
+		Users: out, Cursor: req.Cursor, NextCursor: nextCursor, TotalUsers: len(names),
+		InventoryRevision: revision, HasMore: hasMore,
+	}, nil
+}
+
+func validInventoryPageRequest(req protocol.ScanExistingPageRequest) bool {
+	return req.Cursor >= 0 && req.Cursor <= protocol.MaxAccountInventoryUsers &&
+		req.Limit > 0 && req.Limit <= protocol.MaxAccountInventoryPageUsers &&
+		(req.InventoryRevision == "" && req.Cursor == 0 || validInventoryDigest(req.InventoryRevision))
+}
+
+func validAdapterInventoryPage(req protocol.ScanExistingPageRequest, response adapterInventoryResponse) bool {
+	if !response.OK || response.Cursor != req.Cursor || response.TotalUsers < 0 ||
+		response.TotalUsers > protocol.MaxAccountInventoryUsers || response.Cursor > response.TotalUsers ||
+		len(response.Users) > req.Limit || !validInventoryDigest(response.InventoryRevision) {
+		return false
+	}
+	if req.InventoryRevision != "" &&
+		!hmac.Equal([]byte(req.InventoryRevision), []byte(response.InventoryRevision)) {
+		return false
+	}
+	end := response.Cursor + len(response.Users)
+	if end > response.TotalUsers {
+		return false
+	}
+	if response.HasMore {
+		return len(response.Users) == req.Limit && response.NextCursor == end && end < response.TotalUsers
+	}
+	return response.NextCursor == 0 && end == response.TotalUsers
 }
 
 func inventoryAccountKind(hasPassword, hasOAuth bool) string {

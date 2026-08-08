@@ -46,7 +46,10 @@ const adminApi = {
   scanExisting: (id: number, operationID: string) => adminReq<any>(`/api/admin/nodes/${id}/scan-existing`, {
     method: 'POST', body: JSON.stringify({ operation_id: operationID }),
   }),
-  latestImport: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/imports/latest`),
+  latestImport: (id: number, offset = 0) => {
+    const params = new URLSearchParams({ limit: '100', offset: String(offset) })
+    return adminReq<any>(`/api/admin/nodes/${id}/imports/latest?${params}`)
+  },
   nodeLinks: () => adminReq<{ links: AdminNodeLink[] }>('/api/admin/node-links'),
   verifyNodeLink: (id: number, operationID: string, handle: string, password: string) =>
     adminReq<AdminNodeLink>(`/api/admin/nodes/${id}/admin-link`, {
@@ -340,6 +343,17 @@ function NodesAdmin() {
     }
   }
 
+  const viewImportPage = async (offset: number) => {
+    const nodeID = Number(scanResult?.batch?.node_id)
+    if (!nodeID || offset < 0) return
+    setError('')
+    try {
+      setScanResult(await adminApi.latestImport(nodeID, offset))
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }
+
   const importStateLabel = (state: string) => ({
     already_managed: '已在总控管理',
     auto_linked: 'OAuth 身份已自动关联',
@@ -423,6 +437,25 @@ function NodesAdmin() {
                   {candidate.is_admin ? ' · 节点管理员候选（尚未验证）' : ''}
                 </div>
               ))}
+              {scanResult.batch.candidate_count > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  当前显示第 {scanResult.candidate_offset + 1}–
+                  {scanResult.candidate_offset + (scanResult.candidates || []).length} 项。
+                  {' '}
+                  <button
+                    className="btn-sm"
+                    type="button"
+                    disabled={scanResult.candidate_offset <= 0}
+                    onClick={() => viewImportPage(Math.max(0, scanResult.candidate_offset - scanResult.candidate_limit))}
+                  >上一页</button>{' '}
+                  <button
+                    className="btn-sm"
+                    type="button"
+                    disabled={!scanResult.has_more}
+                    onClick={() => viewImportPage(scanResult.next_candidate_offset)}
+                  >下一页</button>
+                </div>
+              )}
             </>
           ) : '该节点还没有持久导入库存。'}
           <button className="btn-sm" style={{ marginTop: 8 }} onClick={() => setScanResult(null)}>关闭</button>

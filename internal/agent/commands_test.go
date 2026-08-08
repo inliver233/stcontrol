@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -212,7 +213,7 @@ func TestScanExistingUsersUsesAdapterAndRedactsOAuthSubject(t *testing.T) {
 			t.Errorf("path=%q", r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(adapterInventoryResponse{
-			OK: true,
+			OK: true, Cursor: 0, TotalUsers: 1, InventoryRevision: strings.Repeat("c", 64),
 			Users: []adapterInventoryUser{{
 				LocalUserID: "local-7", Handle: "alice", SizeBytes: 123,
 				DirectoryFingerprint: strings.Repeat("a", 64), HasPassword: true, IsAdmin: true,
@@ -242,6 +243,72 @@ func TestScanExistingUsersUsesAdapterAndRedactsOAuthSubject(t *testing.T) {
 		len(users[0].Identities) != 1 || users[0].Identities[0].Fingerprint != wantFingerprint ||
 		strings.Contains(string(encoded), subject) {
 		t.Fatalf("unsafe adapter inventory=%s", encoded)
+	}
+}
+
+func TestExecuteScanExistingPageKeepsDurableResultBounded(t *testing.T) {
+	t.Parallel()
+	tavernDir := t.TempDir()
+	for index := 0; index < 300; index++ {
+		name := fmt.Sprintf("user-%03d", index)
+		if err := os.MkdirAll(filepath.Join(tavernDir, "data", name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := &Agent{Cfg: &config.AgentConfig{AgentPSK: "agent-secret", TavernDir: tavernDir}}
+	command := encryptedTestCommand(t, a.Cfg.AgentPSK, "scan_existing_page", []byte(`{
+		"cursor":0,"limit":250
+	}`))
+	succeeded, raw := a.executeCommand(context.Background(), command)
+	if !succeeded {
+		t.Fatalf("result=%s", raw)
+	}
+	var result safeCommandResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	page := result.InventoryPage
+	if page == nil || len(page.Users) != protocol.MaxAccountInventoryPageUsers ||
+		!page.HasMore || page.NextCursor != protocol.MaxAccountInventoryPageUsers ||
+		page.TotalUsers != 300 || len(page.InventoryRevision) != 64 {
+		t.Fatalf("page=%+v", page)
+	}
+	if len(raw) >= 1<<20 {
+		t.Fatalf("bounded inventory page exceeded command result limit: %d", len(raw))
+	}
+
+	if err := os.MkdirAll(filepath.Join(tavernDir, "data", "user-new"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := a.ScanExistingUsersPage(context.Background(), protocol.ScanExistingPageRequest{
+		Cursor: page.NextCursor, InventoryRevision: page.InventoryRevision,
+		Limit: protocol.MaxAccountInventoryPageUsers,
+	})
+	if err == nil || !strings.Contains(err.Error(), "revision changed") {
+		t.Fatalf("directory inventory drift was accepted: %v", err)
+	}
+}
+
+func TestAdapterInventoryPageRejectsCursorAndRevisionInconsistency(t *testing.T) {
+	t.Parallel()
+	req := protocol.ScanExistingPageRequest{
+		Cursor: 250, Limit: 250, InventoryRevision: strings.Repeat("a", 64),
+	}
+	valid := adapterInventoryResponse{
+		OK: true, Cursor: 250, TotalUsers: 300, InventoryRevision: req.InventoryRevision,
+		Users: make([]adapterInventoryUser, 50),
+	}
+	if !validAdapterInventoryPage(req, valid) {
+		t.Fatal("valid final page was rejected")
+	}
+	valid.Cursor = 249
+	if validAdapterInventoryPage(req, valid) {
+		t.Fatal("mismatched cursor was accepted")
+	}
+	valid.Cursor = 250
+	valid.InventoryRevision = strings.Repeat("b", 64)
+	if validAdapterInventoryPage(req, valid) {
+		t.Fatal("mismatched revision was accepted")
 	}
 }
 

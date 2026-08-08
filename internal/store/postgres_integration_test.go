@@ -53,6 +53,10 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 		userID := insertIntegrationGlobalUser(t, stores[0], "handoff-user")
 		assertConcurrentHandoffRedemption(t, stores[0], userID, nodeA)
 	})
+
+	t.Run("ten-thousand account inventory is durable and page bounded", func(t *testing.T) {
+		assertPostgresAccountInventoryScale(t, stores[0], nodeA)
+	})
 }
 
 func newPostgresIntegrationSchema(t *testing.T) (string, func()) {
@@ -228,6 +232,60 @@ func insertIntegrationGlobalUser(t *testing.T, st *Store, displayName string) in
 		t.Fatalf("insert integration global user: %v", err)
 	}
 	return id
+}
+
+func assertPostgresAccountInventoryScale(t *testing.T, st *Store, nodeID int64) {
+	t.Helper()
+	var adminID int64
+	if err := st.DB.QueryRow(`
+		INSERT INTO admins (uuid,username,password_hash,status)
+		VALUES ('70000000-0000-4000-8000-000000000001','inventory-admin','test-hash','active')
+		RETURNING id`).Scan(&adminID); err != nil {
+		t.Fatalf("insert inventory administrator: %v", err)
+	}
+	candidates := make([]AccountImportCandidateInput, 0, maxAccountImportCandidates)
+	for index := 1; index <= maxAccountImportCandidates; index++ {
+		candidates = append(candidates, AccountImportCandidateInput{
+			ID:          fmt.Sprintf("60000000-0000-4000-8000-%012x", index),
+			LocalUserID: fmt.Sprintf("local-%05d", index),
+			LocalHandle: fmt.Sprintf("user-%05d", index),
+			SizeBytes:   int64(index), DirectoryFingerprint: strings.Repeat("a", 64),
+			Source: "directory_fallback", AccountKind: "unknown",
+		})
+	}
+	digest := sha256.Sum256([]byte("ten-thousand-account-inventory"))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	started := time.Now()
+	result, err := st.IngestAccountImportBatch(ctx, CreateAccountImportBatchParams{
+		ID:          "80000000-0000-4000-8000-000000000001",
+		OperationID: "80000000-0000-4000-8000-000000000002",
+		NodeID:      nodeID, InventoryDigest: digest[:], Source: "directory_fallback",
+		CreatedByAdminID: adminID, Candidates: candidates, Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("ingest ten-thousand account inventory: %v", err)
+	}
+	if result == nil || result.Batch.CandidateCount != maxAccountImportCandidates ||
+		len(result.Candidates) != MaxAccountImportPageSize || !result.HasMore ||
+		result.NextCandidateOffset != MaxAccountImportPageSize {
+		t.Fatalf("bounded first inventory page=%+v", result)
+	}
+	last, err := st.GetAccountImportBatchPage(
+		ctx, "80000000-0000-4000-8000-000000000001", maxAccountImportCandidates-10, 10,
+	)
+	if err != nil || last == nil || len(last.Candidates) != 10 || last.HasMore ||
+		last.Candidates[0].LocalHandle != "user-09991" || last.Candidates[9].LocalHandle != "user-10000" {
+		t.Fatalf("last inventory page=%+v err=%v", last, err)
+	}
+	var persisted int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT count(*) FROM account_import_candidates WHERE batch_id=$1`,
+		"80000000-0000-4000-8000-000000000001").Scan(&persisted); err != nil ||
+		persisted != maxAccountImportCandidates {
+		t.Fatalf("persisted inventory candidates=%d err=%v", persisted, err)
+	}
+	t.Logf("persisted and paged %d inventory candidates in %s", persisted, time.Since(started))
 }
 
 func assertConcurrentSingleWriter(

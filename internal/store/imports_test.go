@@ -41,7 +41,7 @@ func expectImportBatchRead(
 			"id", "node_id", "source", "state", "candidate_count", "auto_linked_count",
 			"unresolved_count", "scanned_at", "created_at",
 		}).AddRow(p.ID, p.NodeID, p.Source, state, 1, autoLinked, 1-autoLinked, p.Now, p.Now))
-	mock.ExpectQuery(`SELECT candidate.id,candidate.local_handle`).WithArgs(p.ID).
+	mock.ExpectQuery(`SELECT candidate.id,candidate.local_handle`).WithArgs(p.ID, 101, 0).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "local_handle", "size_bytes", "source", "account_kind", "identity_fingerprints",
 			"is_admin", "resolution_state", "matched_user_uuid", "reason_code",
@@ -137,7 +137,7 @@ func TestIngestAccountImportAutoLinksUniqueOAuthIdentity(t *testing.T) {
 			"id", "node_id", "source", "state", "candidate_count", "auto_linked_count",
 			"unresolved_count", "scanned_at", "created_at",
 		}).AddRow(p.ID, p.NodeID, p.Source, "resolved", 1, 1, 0, now, now))
-	mock.ExpectQuery(`SELECT candidate.id,candidate.local_handle`).WithArgs(p.ID).
+	mock.ExpectQuery(`SELECT candidate.id,candidate.local_handle`).WithArgs(p.ID, 101, 0).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "local_handle", "size_bytes", "source", "account_kind", "identity_fingerprints",
 			"is_admin", "resolution_state", "matched_user_uuid", "reason_code",
@@ -182,7 +182,7 @@ func TestLatestAccountImportBatchReturnsSafeEmptyCandidateList(t *testing.T) {
 			"id", "node_id", "source", "state", "candidate_count", "auto_linked_count",
 			"unresolved_count", "scanned_at", "created_at",
 		}).AddRow("batch-id", int64(12), "adapter", "resolved", 0, 0, 0, now, now))
-	mock.ExpectQuery(`SELECT candidate.id,candidate.local_handle`).WithArgs("batch-id").
+	mock.ExpectQuery(`SELECT candidate.id,candidate.local_handle`).WithArgs("batch-id", 101, 0).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "local_handle", "size_bytes", "source", "account_kind", "identity_fingerprints",
 			"is_admin", "resolution_state", "matched_user_uuid", "reason_code",
@@ -201,6 +201,44 @@ func TestOAuthIdentitySubjectModelNeverSerializesRawSubject(t *testing.T) {
 	})
 	if err != nil || string(encoded) != `{}` {
 		t.Fatalf("encoded=%s err=%v", encoded, err)
+	}
+}
+
+func TestAccountImportCandidatePagesAreBoundedAndStable(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 8, 3, 30, 0, 0, time.UTC)
+	mock.ExpectQuery(`SELECT id,node_id,source,state,candidate_count`).WithArgs("batch-id").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "node_id", "source", "state", "candidate_count", "auto_linked_count",
+			"unresolved_count", "scanned_at", "created_at",
+		}).AddRow("batch-id", int64(12), "adapter", "review", 10, 0, 10, now, now))
+	rows := sqlmock.NewRows([]string{
+		"id", "local_handle", "size_bytes", "source", "account_kind", "identity_fingerprints",
+		"is_admin", "resolution_state", "matched_user_uuid", "reason_code",
+	}).AddRow("candidate-5", "user-005", int64(5), "adapter", "password", []byte(`{}`), false, "recovery_required", "", "proof_required").
+		AddRow("candidate-6", "user-006", int64(6), "adapter", "password", []byte(`{}`), false, "recovery_required", "", "proof_required").
+		AddRow("candidate-7", "user-007", int64(7), "adapter", "password", []byte(`{}`), false, "recovery_required", "", "proof_required")
+	mock.ExpectQuery(`SELECT candidate.id,candidate.local_handle`).WithArgs("batch-id", 3, 5).
+		WillReturnRows(rows)
+	result, err := st.GetAccountImportBatchPage(context.Background(), "batch-id", 5, 2)
+	if err != nil || result == nil || len(result.Candidates) != 2 || !result.HasMore ||
+		result.CandidateOffset != 5 || result.CandidateLimit != 2 || result.NextCandidateOffset != 7 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestAccountImportCapacityBoundIsTenThousand(t *testing.T) {
+	t.Parallel()
+	p := importBatchParams(time.Now().UTC())
+	p.Candidates = make([]AccountImportCandidateInput, 10_001)
+	if err := validateAccountImportBatch(p); !errors.Is(err, ErrInvalidAccountImport) {
+		t.Fatalf("oversized inventory error=%v", err)
+	}
+	if _, err := (&Store{}).GetAccountImportBatchPage(context.Background(), "batch", 0, 101); !errors.Is(err, ErrInvalidAccountImport) {
+		t.Fatalf("unbounded page error=%v", err)
 	}
 }
 

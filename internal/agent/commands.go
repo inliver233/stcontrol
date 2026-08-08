@@ -28,6 +28,7 @@ type safeCommandResult struct {
 	Code               string                              `json:"code,omitempty"`
 	LocalUserID        string                              `json:"local_user_id,omitempty"`
 	Users              []protocol.ScanExistingUser         `json:"users,omitempty"`
+	InventoryPage      *protocol.ScanExistingPageResult    `json:"inventory_page,omitempty"`
 	Snapshot           *protocol.SnapshotTransferReceipt   `json:"snapshot,omitempty"`
 	ConflictEvidence   *protocol.ConflictEvidenceReceipt   `json:"conflict_evidence,omitempty"`
 	ConflictResolution *protocol.ConflictResolutionReceipt `json:"conflict_resolution,omitempty"`
@@ -183,6 +184,16 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
 	}
 	switch command.CommandType {
+	case "scan_existing_page":
+		var payload protocol.ScanExistingPageRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil || !validInventoryPageRequest(payload) {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		page, err := a.ScanExistingUsersPage(ctx, payload)
+		if err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "scan_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, InventoryPage: &page})
 	case "scan_existing":
 		var payload struct{}
 		if err := json.Unmarshal(plaintext, &payload); err != nil {

@@ -248,9 +248,36 @@ type FinishCommandRequest struct {
 	Result               json.RawMessage `json:"result"`
 }
 
-// MaxAccountInventoryUsers keeps a single durable command result below the
-// authenticated 1 MiB result limit. Larger nodes require paged inventory.
-const MaxAccountInventoryUsers = 500
+const (
+	// MaxAccountInventoryUsers is the supported per-node inventory bound from
+	// R21. Inventory above this bound is rejected rather than silently
+	// truncated.
+	MaxAccountInventoryUsers = 10_000
+	// MaxAccountInventoryPageUsers keeps every durable Agent command result
+	// comfortably below the authenticated 1 MiB result limit.
+	MaxAccountInventoryPageUsers = 250
+)
+
+// ScanExistingPageRequest identifies one stable, bounded inventory page. The
+// first request has cursor zero and an empty revision; every continuation must
+// bind to the revision returned by the first page.
+type ScanExistingPageRequest struct {
+	Cursor            int    `json:"cursor"`
+	InventoryRevision string `json:"inventory_revision,omitempty"`
+	Limit             int    `json:"limit"`
+}
+
+// ScanExistingPageResult is safe to persist as an Agent command result. Cursor
+// progression and the revision fence prevent duplicates or omissions when the
+// local account set changes during a scan.
+type ScanExistingPageResult struct {
+	Users             []ScanExistingUser `json:"users"`
+	Cursor            int                `json:"cursor"`
+	NextCursor        int                `json:"next_cursor,omitempty"`
+	TotalUsers        int                `json:"total_users"`
+	InventoryRevision string             `json:"inventory_revision"`
+	HasMore           bool               `json:"has_more"`
+}
 
 // ScanExistingIdentity is a node-keyed fingerprint of an OAuth stable subject.
 // The raw provider subject never leaves the Agent's process.

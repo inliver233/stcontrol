@@ -41,7 +41,7 @@ type adapterSessionResponse struct {
 }
 
 var requiredAdapterCapabilities = []string{
-	"account_restore", "activity_leases", "local_account_proof", "login_handoff", "node_admin_handoff", "node_admin_verify", "password_update", "registration_policy",
+	"account_inventory_paging", "account_restore", "activity_leases", "local_account_proof", "login_handoff", "node_admin_handoff", "node_admin_verify", "password_update", "registration_policy",
 	"snapshot_boundary", "user_provision", "write_gate", "control_mode", "independent_reconciliation",
 }
 

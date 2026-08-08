@@ -33,6 +33,7 @@ type agentCommandSummary struct {
 	Code               string                              `json:"code,omitempty"`
 	LocalUserID        string                              `json:"local_user_id,omitempty"`
 	Users              []protocol.ScanExistingUser         `json:"users,omitempty"`
+	InventoryPage      *protocol.ScanExistingPageResult    `json:"inventory_page,omitempty"`
 	Snapshot           *protocol.SnapshotTransferReceipt   `json:"snapshot,omitempty"`
 	ConflictEvidence   *protocol.ConflictEvidenceReceipt   `json:"conflict_evidence,omitempty"`
 	ConflictResolution *protocol.ConflictResolutionReceipt `json:"conflict_resolution,omitempty"`

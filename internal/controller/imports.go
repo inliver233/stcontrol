@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -137,17 +138,35 @@ func (s *Server) handleAdminScanExisting(w http.ResponseWriter, r *http.Request)
 		protocol.WriteError(w, http.StatusNotFound, "计算节点不存在")
 		return
 	}
-	commandOperationID := deriveWorkflowOperationID(req.OperationID, "scan-existing")
-	result, err := s.runAgentCommandWithOperation(
-		r.Context(), node, "scan_existing", struct{}{}, commandOperationID, 45*time.Second,
-	)
-	if err != nil {
-		protocol.WriteError(w, http.StatusBadGateway, "扫描结果尚未确认，请使用同一操作重试")
-		return
-	}
 	sess := currentSession(r)
 	if sess == nil || sess.AdminID <= 0 {
 		protocol.WriteError(w, http.StatusUnauthorized, "管理员会话无效")
+		return
+	}
+	existing, err := s.Store.GetAccountImportBatchByOperation(
+		r.Context(), req.OperationID, 0, store.MaxAccountImportPageSize,
+	)
+	if err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "读取重复导入操作失败")
+		return
+	}
+	if existing != nil {
+		if existing.Batch.NodeID != node.ID {
+			protocol.WriteError(w, http.StatusConflict, "重复操作已绑定其他节点")
+			return
+		}
+		existing.Batch.Replayed = true
+		protocol.WriteJSON(w, http.StatusOK, existing)
+		return
+	}
+	scanAttemptID, err := newUUID()
+	if err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "创建扫描尝试失败")
+		return
+	}
+	users, err := s.scanAccountInventory(r.Context(), node, scanAttemptID)
+	if err != nil {
+		protocol.WriteError(w, http.StatusBadGateway, "扫描结果尚未确认，请使用同一操作重试")
 		return
 	}
 	batchID, err := newUUID()
@@ -156,7 +175,7 @@ func (s *Server) handleAdminScanExisting(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	params, err := s.buildAccountImportBatch(
-		r.Context(), node, batchID, req.OperationID, sess.AdminID, result.Users, time.Now().UTC(),
+		r.Context(), node, batchID, req.OperationID, sess.AdminID, users, time.Now().UTC(),
 	)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidAccountImport) {
@@ -195,18 +214,112 @@ func (s *Server) handleAdminLatestAccountImport(w http.ResponseWriter, r *http.R
 		protocol.WriteError(w, http.StatusBadRequest, "非法节点 ID")
 		return
 	}
-	result, err := s.Store.GetLatestAccountImportBatch(r.Context(), nodeID)
+	limit, rawOffset, err := parseAdminPage(r, "offset")
+	if err != nil || rawOffset > protocol.MaxAccountInventoryUsers {
+		protocol.WriteError(w, http.StatusBadRequest, "非法库存分页参数")
+		return
+	}
+	result, err := s.Store.GetLatestAccountImportBatchPage(r.Context(), nodeID, int(rawOffset), limit)
 	if err != nil {
 		protocol.WriteError(w, http.StatusServiceUnavailable, "读取导入库存失败")
 		return
 	}
 	if result == nil {
 		protocol.WriteJSON(w, http.StatusOK, map[string]any{
-			"batch": nil, "candidates": []any{},
+			"batch": nil, "candidates": []any{}, "candidate_offset": int(rawOffset),
+			"candidate_limit": limit, "has_more": false,
 		})
 		return
 	}
 	protocol.WriteJSON(w, http.StatusOK, result)
+}
+
+type accountInventoryScan struct {
+	revision string
+	total    int
+	source   string
+	users    []protocol.ScanExistingUser
+}
+
+func (s *Server) scanAccountInventory(
+	ctx context.Context,
+	node *store.Node,
+	attemptID string,
+) ([]protocol.ScanExistingUser, error) {
+	if node == nil || !isUUID(attemptID) {
+		return nil, store.ErrInvalidAccountImport
+	}
+	state := accountInventoryScan{}
+	cursor := 0
+	maxPages := (protocol.MaxAccountInventoryUsers + protocol.MaxAccountInventoryPageUsers - 1) /
+		protocol.MaxAccountInventoryPageUsers
+	for pageIndex := 0; pageIndex < maxPages; pageIndex++ {
+		operationID := deriveWorkflowOperationID(
+			attemptID, fmt.Sprintf("scan-existing-page-%04d", pageIndex),
+		)
+		result, err := s.runAgentCommandWithOperation(
+			ctx, node, "scan_existing_page", protocol.ScanExistingPageRequest{
+				Cursor: cursor, InventoryRevision: state.revision,
+				Limit: protocol.MaxAccountInventoryPageUsers,
+			}, operationID, 45*time.Second,
+		)
+		if err != nil || result.InventoryPage == nil {
+			return nil, store.ErrInvalidAccountImport
+		}
+		complete, err := state.appendPage(cursor, *result.InventoryPage)
+		if err != nil {
+			return nil, err
+		}
+		if complete {
+			return state.users, nil
+		}
+		cursor = result.InventoryPage.NextCursor
+	}
+	return nil, store.ErrInvalidAccountImport
+}
+
+func (scan *accountInventoryScan) appendPage(
+	requestedCursor int,
+	page protocol.ScanExistingPageResult,
+) (bool, error) {
+	if requestedCursor < 0 || page.Cursor != requestedCursor ||
+		page.TotalUsers < 0 || page.TotalUsers > protocol.MaxAccountInventoryUsers ||
+		!validScannedFingerprint(page.InventoryRevision) ||
+		len(page.Users) > protocol.MaxAccountInventoryPageUsers ||
+		page.Cursor+len(page.Users) > page.TotalUsers {
+		return false, store.ErrInvalidAccountImport
+	}
+	if scan.revision == "" {
+		scan.revision = page.InventoryRevision
+		scan.total = page.TotalUsers
+		scan.users = make([]protocol.ScanExistingUser, 0, page.TotalUsers)
+	} else if scan.revision != page.InventoryRevision || scan.total != page.TotalUsers {
+		return false, store.ErrInvalidAccountImport
+	}
+	for _, user := range page.Users {
+		if !validScannedInventoryUser(user) ||
+			(len(scan.users) > 0 && scan.users[len(scan.users)-1].LocalUserID >= user.LocalUserID) {
+			return false, store.ErrInvalidAccountImport
+		}
+		if scan.source == "" {
+			scan.source = user.Source
+		} else if scan.source != user.Source {
+			return false, store.ErrInvalidAccountImport
+		}
+		scan.users = append(scan.users, user)
+	}
+	end := page.Cursor + len(page.Users)
+	if page.HasMore {
+		if len(page.Users) != protocol.MaxAccountInventoryPageUsers ||
+			page.NextCursor != end || end >= page.TotalUsers {
+			return false, store.ErrInvalidAccountImport
+		}
+		return false, nil
+	}
+	if page.NextCursor != 0 || end != page.TotalUsers || len(scan.users) != scan.total {
+		return false, store.ErrInvalidAccountImport
+	}
+	return true, nil
 }
 
 func (s *Server) buildAccountImportBatch(
