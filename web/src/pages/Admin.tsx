@@ -56,13 +56,25 @@ const adminApi = {
   adminHandoff: (id: number, operationID: string) => adminReq<BrowserHandoff>(`/api/admin/nodes/${id}/admin-handoff`, {
     method: 'POST', body: JSON.stringify({ operation_id: operationID }),
   }),
-  users: () => adminReq<{ users: any[] }>('/api/admin/users'),
+  users: (after = 0, q = '', status = '') => {
+    const params = new URLSearchParams({ limit: '50' })
+    if (after > 0) params.set('after', String(after))
+    if (q) params.set('q', q)
+    if (status) params.set('status', status)
+    return adminReq<{ users: any[]; has_more: boolean; next_cursor: number }>(`/api/admin/users?${params}`)
+  },
   recoverUserIdentity: (uuid: string, operationID: string, password: string) => adminReq<any>(`/api/admin/users/${uuid}/identity-recovery`, {
     method: 'POST', body: JSON.stringify({ operation_id: operationID, password }),
   }),
   triggerBackup: (id: number) => adminReq<any>(`/api/admin/users/${id}/backup`, { method: 'POST' }),
   disableUser: (id: number) => adminReq<any>(`/api/admin/users/${id}/disable`, { method: 'POST' }),
-  backups: () => adminReq<{ backups: any[] }>('/api/admin/backups'),
+  backups: (before = 0, status = '', userID = '') => {
+    const params = new URLSearchParams({ limit: '50' })
+    if (before > 0) params.set('before', String(before))
+    if (status) params.set('status', status)
+    if (userID) params.set('user_id', userID)
+    return adminReq<{ backups: any[]; has_more: boolean; next_cursor: number }>(`/api/admin/backups?${params}`)
+  },
   abortBackup: (id: number) => adminReq<any>(`/api/admin/backups/${id}/abort`, { method: 'POST' }),
   protectionAlerts: () => adminReq<{ alerts: any[] }>('/api/admin/alerts/protection?limit=100'),
   admins: () => adminReq<{ admins: any[] }>('/api/admin/admins'),
@@ -493,14 +505,48 @@ function NodesAdmin() {
 // ---------- 用户管理 ----------
 function UsersAdmin() {
   const [users, setUsers] = useState<any[]>([])
+  const [query, setQuery] = useState('')
+  const [queryDraft, setQueryDraft] = useState('')
+  const [status, setStatus] = useState('')
+  const [cursor, setCursor] = useState(0)
+  const [cursorHistory, setCursorHistory] = useState<number[]>([])
+  const [nextCursor, setNextCursor] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [recoveryUser, setRecoveryUser] = useState<any>(null)
   const [recoveryPassword, setRecoveryPassword] = useState('')
   const [recovering, setRecovering] = useState(false)
   const recoveryOperations = useRef<Record<string, string>>({})
-  const load = () => adminApi.users().then(d => setUsers(d.users)).catch(e => setError(e.message))
-  useEffect(() => { load() }, [])
+  const load = (pageCursor = cursor, pageQuery = query, pageStatus = status) => {
+    setLoading(true)
+    return adminApi.users(pageCursor, pageQuery, pageStatus)
+      .then(d => {
+        setUsers(d.users); setHasMore(d.has_more); setNextCursor(d.next_cursor); setError('')
+      })
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false))
+  }
+  useEffect(() => { load(0, '', '') }, [])
+
+  const applyFilters = (event: React.FormEvent) => {
+    event.preventDefault()
+    const normalized = queryDraft.trim()
+    setQuery(normalized); setCursor(0); setCursorHistory([])
+    load(0, normalized, status)
+  }
+  const nextPage = () => {
+    if (!hasMore || nextCursor <= 0) return
+    setCursorHistory(history => [...history, cursor]); setCursor(nextCursor)
+    load(nextCursor)
+  }
+  const previousPage = () => {
+    if (cursorHistory.length === 0) return
+    const previous = cursorHistory[cursorHistory.length - 1]
+    setCursorHistory(history => history.slice(0, -1)); setCursor(previous)
+    load(previous)
+  }
 
   const userUUID = (user: any) => user.UUID ?? user.uuid
   const beginRecovery = (user: any) => {
@@ -545,6 +591,11 @@ function UsersAdmin() {
       <h2>用户管理</h2>
       {error && <div className="error-msg">{error}</div>}
       {message && <div className="success-msg">{message}</div>}
+      <form onSubmit={applyFilters} className="card" style={{ margin: '0 0 16px', display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
+        <div className="field" style={{ margin: 0, minWidth: 260 }}><label>用户名、昵称或 UUID</label><input value={queryDraft} onChange={event => setQueryDraft(event.target.value)} maxLength={128} /></div>
+        <div className="field" style={{ margin: 0 }}><label>状态</label><select value={status} onChange={event => setStatus(event.target.value)}><option value="">全部</option><option value="active">有效</option><option value="disabled">禁用</option><option value="conflict">冲突冻结</option></select></div>
+        <button className="btn-sm primary" type="submit" disabled={loading}>{loading ? '查询中…' : '筛选'}</button>
+      </form>
       {recoveryUser && (
         <form onSubmit={recoverIdentity} className="card" style={{ margin: '0 0 20px', maxWidth: 560 }}>
           <h3>人工恢复登录身份</h3>
@@ -575,14 +626,19 @@ function UsersAdmin() {
               <td>{(u.HomeNodeID?.Int64 ?? u.home_node_id?.Int64 ?? u.home_node_id) || '-'}</td>
               <td><span className={`badge ${(u.Status ?? u.status) === 'active' ? 'green' : 'red'}`}>{u.Status ?? u.status}</span></td>
               <td style={{ whiteSpace: 'nowrap' }}>
-                <button className="btn-sm primary" onClick={() => adminApi.triggerBackup(u.ID ?? u.id).then(load)}>备份</button>{' '}
-                <button className="btn-sm danger" onClick={() => adminApi.disableUser(u.ID ?? u.id).then(load)}>禁用</button>{' '}
+                <button className="btn-sm primary" onClick={() => adminApi.triggerBackup(u.ID ?? u.id).then(() => load())}>备份</button>{' '}
+                <button className="btn-sm danger" onClick={() => adminApi.disableUser(u.ID ?? u.id).then(() => load())}>禁用</button>{' '}
                 <button className="btn-sm" onClick={() => beginRecovery(u)}>人工恢复身份</button>
               </td>
             </tr>
           ))}
+          {!loading && users.length === 0 && <tr><td colSpan={7}>没有符合条件的用户</td></tr>}
         </tbody>
       </table>
+      <div style={{ marginTop: 12 }}>
+        <button className="btn-sm" onClick={previousPage} disabled={loading || cursorHistory.length === 0}>上一页</button>{' '}
+        <button className="btn-sm" onClick={nextPage} disabled={loading || !hasMore}>下一页</button>
+      </div>
     </>
   )
 }
@@ -591,8 +647,42 @@ function UsersAdmin() {
 function BackupsAdmin() {
   const [jobs, setJobs] = useState<any[]>([])
   const [error, setError] = useState('')
-  const load = () => adminApi.backups().then(d => setJobs(d.backups)).catch(e => setError(e.message))
-  useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t) }, [])
+  const [status, setStatus] = useState('')
+  const [userID, setUserID] = useState('')
+  const [userDraft, setUserDraft] = useState('')
+  const [cursor, setCursor] = useState(0)
+  const [cursorHistory, setCursorHistory] = useState<number[]>([])
+  const [nextCursor, setNextCursor] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const load = (pageCursor = cursor, pageStatus = status, pageUserID = userID) => {
+    setLoading(true)
+    return adminApi.backups(pageCursor, pageStatus, pageUserID)
+      .then(d => { setJobs(d.backups); setHasMore(d.has_more); setNextCursor(d.next_cursor); setError('') })
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false))
+  }
+  useEffect(() => {
+    load(cursor, status, userID)
+    const timer = setInterval(() => load(cursor, status, userID), 10000)
+    return () => clearInterval(timer)
+  }, [cursor, status, userID])
+
+  const applyFilters = (event: React.FormEvent) => {
+    event.preventDefault()
+    const normalized = userDraft.trim()
+    if (normalized && (!/^\d+$/.test(normalized) || Number(normalized) <= 0)) { setError('用户 ID 必须是正整数'); return }
+    setUserID(normalized); setCursor(0); setCursorHistory([])
+  }
+  const nextPage = () => {
+    if (!hasMore || nextCursor <= 0) return
+    setCursorHistory(history => [...history, cursor]); setCursor(nextCursor)
+  }
+  const previousPage = () => {
+    if (cursorHistory.length === 0) return
+    const previous = cursorHistory[cursorHistory.length - 1]
+    setCursorHistory(history => history.slice(0, -1)); setCursor(previous)
+  }
 
   const statusBadge = (s: string) => {
     const map: any = { done: 'green', running: 'yellow', verifying: 'yellow', failed: 'red', aborted: 'gray', pending: 'gray' }
@@ -603,6 +693,11 @@ function BackupsAdmin() {
     <>
       <h2>备份任务</h2>
       {error && <div className="error-msg">{error}</div>}
+      <form onSubmit={applyFilters} className="card" style={{ margin: '0 0 16px', display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
+        <div className="field" style={{ margin: 0 }}><label>状态</label><select value={status} onChange={event => { setStatus(event.target.value); setCursor(0); setCursorHistory([]) }}><option value="">全部</option><option value="pending">等待</option><option value="running">运行中</option><option value="verifying">校验中</option><option value="done">完成</option><option value="failed">失败</option><option value="aborted">已中止</option></select></div>
+        <div className="field" style={{ margin: 0 }}><label>用户 ID</label><input inputMode="numeric" value={userDraft} onChange={event => setUserDraft(event.target.value)} /></div>
+        <button className="btn-sm primary" type="submit" disabled={loading}>{loading ? '查询中…' : '筛选'}</button>
+      </form>
       <table className="table">
         <thead>
           <tr><th>ID</th><th>用户</th><th>源节点</th><th>目标节点</th><th>触发</th><th>状态</th><th>大小</th><th>错误</th><th>操作</th></tr>
@@ -620,13 +715,18 @@ function BackupsAdmin() {
               <td style={{ fontSize: 12, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{j.Error?.String ?? j.error?.String ?? ''}</td>
               <td>
                 {(j.Status ?? j.status) === 'running' && (
-                  <button className="btn-sm danger" onClick={() => adminApi.abortBackup(j.ID ?? j.id).then(load)}>中止</button>
+                  <button className="btn-sm danger" onClick={() => adminApi.abortBackup(j.ID ?? j.id).then(() => load())}>中止</button>
                 )}
               </td>
             </tr>
           ))}
+          {!loading && jobs.length === 0 && <tr><td colSpan={9}>没有符合条件的备份任务</td></tr>}
         </tbody>
       </table>
+      <div style={{ marginTop: 12 }}>
+        <button className="btn-sm" onClick={previousPage} disabled={loading || cursorHistory.length === 0}>上一页</button>{' '}
+        <button className="btn-sm" onClick={nextPage} disabled={loading || !hasMore}>下一页</button>
+      </div>
     </>
   )
 }

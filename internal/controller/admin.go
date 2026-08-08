@@ -15,53 +15,12 @@ import (
 
 // handleAdminOverview 仪表盘总览。
 func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	nodes, _ := s.Store.ListNodes(ctx)
-	users, _ := s.Store.ListUsers(ctx)
-	jobs, _ := s.Store.ListBackupJobs(ctx, 200)
-
-	online, offline, full, busy, maintenance, faults := 0, 0, 0, 0, 0, 0
-	for _, n := range nodes {
-		switch n.ConnectivityState {
-		case "online":
-			online++
-		case "offline":
-			offline++
-		}
-		if n.CapacityState == "full" && n.Role == "compute" {
-			full++
-		}
-		if n.CapacityState == "busy" && n.Role == "compute" {
-			busy++
-		}
-		if n.OperationalState == "maintenance" || n.OperationalState == "draining" {
-			maintenance++
-		}
-		if n.ConnectivityState == "offline" || n.OperationalState == "failed" || n.OperationalState == "degraded" {
-			faults++
-		}
+	counts, err := s.Store.GetAdminOverviewCounts(r.Context())
+	if err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "总览统计暂不可用")
+		return
 	}
-	running, failed := 0, 0
-	for _, j := range jobs {
-		switch j.Status {
-		case "running", "pending", "verifying":
-			running++
-		case "failed":
-			failed++
-		}
-	}
-	protocol.WriteJSON(w, http.StatusOK, map[string]any{
-		"nodes":             len(nodes),
-		"nodes_online":      online,
-		"nodes_offline":     offline,
-		"nodes_full":        full,
-		"nodes_busy":        busy,
-		"nodes_maintenance": maintenance,
-		"nodes_fault":       faults,
-		"users":             len(users),
-		"backup_running":    running,
-		"backup_failed":     failed,
-	})
+	protocol.WriteJSON(w, http.StatusOK, counts)
 }
 
 // handleAdminListNodes 列出节点。
@@ -218,12 +177,27 @@ func (s *Server) handleAdminNodeRegisterToken(w http.ResponseWriter, r *http.Req
 
 // handleAdminListUsers 列出用户。
 func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := s.Store.ListUsers(r.Context())
+	limit, cursor, err := parseAdminPage(r, "after")
+	query := r.URL.Query().Get("q")
+	status := r.URL.Query().Get("status")
+	if err != nil || len(query) > 128 {
+		protocol.WriteError(w, http.StatusBadRequest, "分页或筛选参数无效")
+		return
+	}
+	page, err := s.Store.ListUsersPage(r.Context(), store.UserPageParams{
+		AfterID: cursor, Limit: limit, Query: query, Status: status,
+	})
 	if err != nil {
+		if errors.Is(err, store.ErrInvalidAdminPage) {
+			protocol.WriteError(w, http.StatusBadRequest, "分页或筛选参数无效")
+			return
+		}
 		protocol.WriteError(w, http.StatusInternalServerError, "查询失败")
 		return
 	}
-	protocol.WriteJSON(w, http.StatusOK, map[string]any{"users": users})
+	protocol.WriteJSON(w, http.StatusOK, map[string]any{
+		"users": page.Users, "has_more": page.HasMore, "next_cursor": page.NextCursor,
+	})
 }
 
 // handleAdminTriggerBackup 手动触发某用户备份。
@@ -267,12 +241,30 @@ func (s *Server) handleAdminDisableUser(w http.ResponseWriter, r *http.Request) 
 
 // handleAdminListBackups 列出备份任务。
 func (s *Server) handleAdminListBackups(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.Store.ListBackupJobs(r.Context(), 200)
+	limit, cursor, err := parseAdminPage(r, "before")
+	status := r.URL.Query().Get("status")
+	userID := int64(0)
+	if raw := r.URL.Query().Get("user_id"); raw != "" {
+		userID, err = strconv.ParseInt(raw, 10, 64)
+	}
 	if err != nil {
+		protocol.WriteError(w, http.StatusBadRequest, "分页或筛选参数无效")
+		return
+	}
+	page, err := s.Store.ListBackupJobsPage(r.Context(), store.BackupPageParams{
+		BeforeID: cursor, Limit: limit, Status: status, UserID: userID,
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrInvalidAdminPage) {
+			protocol.WriteError(w, http.StatusBadRequest, "分页或筛选参数无效")
+			return
+		}
 		protocol.WriteError(w, http.StatusInternalServerError, "查询失败")
 		return
 	}
-	protocol.WriteJSON(w, http.StatusOK, map[string]any{"backups": jobs})
+	protocol.WriteJSON(w, http.StatusOK, map[string]any{
+		"backups": page.Jobs, "has_more": page.HasMore, "next_cursor": page.NextCursor,
+	})
 }
 
 // handleAdminAbortBackup 中止备份任务。
@@ -306,4 +298,23 @@ func (s *Server) handleAdminAbortBackup(w http.ResponseWriter, r *http.Request) 
 
 func parseID(s string) (int64, error) {
 	return strconv.ParseInt(s, 10, 64)
+}
+
+func parseAdminPage(r *http.Request, cursorName string) (int, int64, error) {
+	limit := 50
+	var err error
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		limit, err = strconv.Atoi(raw)
+	}
+	if err != nil || limit <= 0 || limit > 100 {
+		return 0, 0, store.ErrInvalidAdminPage
+	}
+	cursor := int64(0)
+	if raw := r.URL.Query().Get(cursorName); raw != "" {
+		cursor, err = strconv.ParseInt(raw, 10, 64)
+	}
+	if err != nil || cursor < 0 {
+		return 0, 0, store.ErrInvalidAdminPage
+	}
+	return limit, cursor, nil
 }
