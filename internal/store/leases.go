@@ -41,7 +41,11 @@ type AcquireActivityLeaseParams struct {
 	SessionID            string
 	ControllerGeneration int64
 	TTL                  time.Duration
-	Now                  time.Time
+	// ExistingWriterOnly is used by login handoff creation for standby
+	// selections. It is intentionally evaluated only after the user and lease
+	// rows are locked, so a standby can never win a first-writer race.
+	ExistingWriterOnly bool
+	Now                time.Time
 }
 
 // AcquireActivityLeaseResult distinguishes a newly acquired writer from an
@@ -143,6 +147,9 @@ func acquireActivityLeaseLocked(
 			return AcquireActivityLeaseResult{}, false, err
 		}
 		return result, false, nil
+	}
+	if p.ExistingWriterOnly {
+		return AcquireActivityLeaseResult{}, false, ErrExistingWriterRequired
 	}
 
 	nextEpoch := int64(1)

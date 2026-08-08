@@ -94,6 +94,11 @@ func TestControllerAgentTavernProcessesRecoverAcrossRestarts(t *testing.T) {
 	controllerConfig.DatabaseURL = dsn
 	controllerConfig.StaticDir = filepath.Join(testRoot, "missing-static")
 	controllerConfig.Relay.Listen = ""
+	// The acceptance workspace may run under a small filesystem quota even
+	// when the host volume has ample capacity. Keep the deterministic capacity
+	// reserve positive while avoiding an environment-specific false "full".
+	controllerConfig.Node.MinDiskFreeBytes = 1 << 20
+	controllerConfig.Node.AllocationHardPct = 99.9
 	controllerConfig.SecretKeyEnv = "STCONTROL_PROCESS_E2E_SECRET_KEY"
 	controllerConfig.Admin.PasswordEnv = "STCONTROL_PROCESS_E2E_ADMIN_PASSWORD"
 	if err := config.Save(controllerConfigPath, controllerConfig); err != nil {
@@ -115,79 +120,20 @@ func TestControllerAgentTavernProcessesRecoverAcrossRestarts(t *testing.T) {
 	}
 	controllerProcess := startController()
 
-	node := &store.Node{Name: "process-compute", Role: "compute", Status: "pending"}
-	if err := st.CreateNode(ctx, node); err != nil {
-		t.Fatalf("create process node: %v", err)
-	}
-	enrollmentToken := "process-e2e-one-use-enrollment-token"
-	tokenHash := sha256.Sum256([]byte(enrollmentToken))
-	if err := st.CreateEnrollmentToken(ctx, store.CreateEnrollmentTokenParams{
-		ID: "81000000-0000-4000-8000-000000000001", OperationID: "81000000-0000-4000-8000-000000000002",
-		TokenHash: tokenHash[:], ExpectedNodeID: node.ID, ExpectedRole: "compute",
-		ExpiresAt: time.Now().UTC().Add(10 * time.Minute), Now: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("create process enrollment: %v", err)
-	}
-
-	tavernDir := filepath.Join(testRoot, "tavern")
-	if err := os.MkdirAll(tavernDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	tavernConfigPath := filepath.Join(tavernDir, "config.yaml")
-	copyProcessE2EFile(t, fixtureConfig, tavernConfigPath)
-	copyProcessE2EFile(t, filepath.Join(tavernRoot, "package.json"), filepath.Join(tavernDir, "package.json"))
-	agentConfigPath := filepath.Join(testRoot, "agent.yaml")
-	agentDataDir := filepath.Join(testRoot, "agent-data")
-	agentConfig := config.DefaultAgent()
-	agentConfig.ControllerURL = controllerURL
-	agentConfig.Listen = fmt.Sprintf("127.0.0.1:%d", reserveProcessE2EPort(t))
-	agentConfig.TavernDir = tavernDir
-	agentConfig.DataDir = agentDataDir
-	agentConfig.BackupDir = filepath.Join(testRoot, "agent-backups")
-	agentConfig.HeartbeatSec = 1
-	if err := config.Save(agentConfigPath, agentConfig); err != nil {
-		t.Fatalf("write initial agent config: %v", err)
-	}
-	register := exec.Command(agentBinary,
-		"--config", agentConfigPath, "--register", "--token", enrollmentToken,
-		"--controller", controllerURL, "--role", "compute", "--tavern-dir", tavernDir,
-	)
-	register.Dir = repositoryRoot
-	register.Env = os.Environ()
-	if output, err := register.CombinedOutput(); err != nil {
-		t.Fatalf("register Agent process: %v\n%s", err, output)
-	}
-	if err := config.Load(agentConfigPath, agentConfig); err != nil {
-		t.Fatalf("load enrolled Agent config: %v", err)
-	}
-	if agentConfig.NodeID != node.ID || agentConfig.AgentPSK == "" ||
-		agentConfig.TavernAdapterPSK != agentConfig.AgentPSK || agentConfig.ControllerGeneration <= 0 {
-		t.Fatalf("incomplete enrolled Agent identity: node=%d generation=%d", agentConfig.NodeID, agentConfig.ControllerGeneration)
-	}
-	initialAgentPSK := agentConfig.AgentPSK
-	assertProcessE2ETavernMount(t, tavernConfigPath, node.ID, controllerURL, initialAgentPSK)
-
-	adapterDataRoot := filepath.Join(testRoot, "tavern-data")
-	adapterPortFile := filepath.Join(testRoot, "adapter.port")
-	adapterProcess := startProcessE2EChild(t, "tavern-adapter", nodeBinary, []string{fixture}, tavernRoot,
-		append(os.Environ(),
-			"STCONTROL_E2E_DATA_ROOT="+adapterDataRoot,
-			"STCONTROL_E2E_PORT_FILE="+adapterPortFile,
-			"STCONTROL_E2E_CONFIG_PATH="+tavernConfigPath,
-		),
-	)
-	adapterPort := waitForProcessE2EPortFile(t, adapterProcess, adapterPortFile, 20*time.Second)
-	agentConfig.TavernURL = "http://127.0.0.1:" + adapterPort
-	if err := config.Save(agentConfigPath, agentConfig); err != nil {
-		t.Fatalf("write running Agent config: %v", err)
-	}
-	startAgent := func() *processE2EChild {
-		return startProcessE2EChild(
-			t, "agent", agentBinary, []string{"--config", agentConfigPath}, repositoryRoot, os.Environ(),
-		)
-	}
-	agentProcess := startAgent()
-	waitForProcessE2ENodeReady(t, st, node.ID, 45*time.Second)
+	primary := startProcessE2ENode(t, processE2ENodeOptions{
+		Sequence: 1, AllowRegister: true, Store: st, Context: ctx,
+		TestRoot: testRoot, RepositoryRoot: repositoryRoot, TavernRoot: tavernRoot,
+		Fixture: fixture, FixtureConfig: fixtureConfig, NodeBinary: nodeBinary,
+		AgentBinary: agentBinary, ControllerURL: controllerURL,
+	})
+	secondary := startProcessE2ENode(t, processE2ENodeOptions{
+		Sequence: 2, AllowRegister: false, Store: st, Context: ctx,
+		TestRoot: testRoot, RepositoryRoot: repositoryRoot, TavernRoot: tavernRoot,
+		Fixture: fixture, FixtureConfig: fixtureConfig, NodeBinary: nodeBinary,
+		AgentBinary: agentBinary, ControllerURL: controllerURL,
+	})
+	node := primary.node
+	agentProcess := primary.agentProcess
 
 	adminClient := newProcessE2EAdminClient(t, controllerURL)
 	if err := adminClient.login(ctx, "admin", adminPassword); err != nil {
@@ -217,7 +163,8 @@ func TestControllerAgentTavernProcessesRecoverAcrossRestarts(t *testing.T) {
 			SELECT count(*) FROM agent_commands WHERE node_id=$1 AND state='queued'`, node.ID).Scan(&queued)
 		return queued > 0, err
 	}, "Controller did not durably queue a command while Agent was stopped")
-	agentProcess = startAgent()
+	agentProcess = primary.startAgent(t)
+	primary.agentProcess = agentProcess
 	select {
 	case result := <-scanDone:
 		if result.err != nil {
@@ -244,7 +191,7 @@ func TestControllerAgentTavernProcessesRecoverAcrossRestarts(t *testing.T) {
 		}
 		ready, err := st.IsControlPlaneReady(ctx)
 		return rebuild != nil && rebuild.Generation == generation && rebuild.State == "succeeded" &&
-			rebuild.ReconciledNodes == 1 && ready, err
+			rebuild.ReconciledNodes == 2 && ready, err
 	}, "Controller generation rebuild did not reconcile the running Agent")
 	if err := adminClient.login(ctx, "admin", adminPassword); err != nil {
 		t.Fatalf("admin re-login after Controller generation change: %v", err)
@@ -253,12 +200,385 @@ func TestControllerAgentTavernProcessesRecoverAcrossRestarts(t *testing.T) {
 	if response, err := adminClient.scan(ctx, node.ID, thirdScan); err != nil {
 		t.Fatalf("post-rebuild Controller-Agent-Tavern scan: %v response=%s", err, response)
 	}
+	userClient := newProcessE2EUserClient(t, controllerURL)
+	registrationOperation := "81000000-0000-4000-8000-000000000006"
+	registration := processE2ERegistrationRequest{
+		OperationID: registrationOperation, Username: "process-alice", DisplayName: "Process Alice",
+		Password: "process-e2e-user-password", NodeID: primary.node.ID,
+	}
+	if status, body, err := userClient.register(ctx, registration); err != nil ||
+		(status != http.StatusAccepted && status != http.StatusOK) {
+		t.Fatalf("start real registration: status=%d err=%v body=%s", status, err, body)
+	}
+	// A new browser retries the exact operation after the original response is
+	// presumed lost. The durable workflow must be reused and issue a fresh
+	// pending capability rather than provisioning a second account.
+	userClient = newProcessE2EUserClient(t, controllerURL)
+	if err := userClient.registerUntilComplete(ctx, registration, 60*time.Second); err != nil {
+		t.Fatalf("idempotent registration retry did not complete: %v", err)
+	}
+	registeredUser, err := st.GetUserByUsername(ctx, registration.Username)
+	if err != nil || registeredUser == nil || registeredUser.HomeNodeID.Int64 != primary.node.ID {
+		t.Fatalf("registered user facts=%+v err=%v", registeredUser, err)
+	}
+	var workflowCount, userCount int
+	if err := st.DB.QueryRowContext(ctx, `SELECT count(*) FROM workflows WHERE operation_id=$1`, registrationOperation).Scan(&workflowCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE username=$1`, registration.Username).Scan(&userCount); err != nil {
+		t.Fatal(err)
+	}
+	if workflowCount != 1 || userCount != 1 {
+		t.Fatalf("registration replay duplicated facts: workflows=%d users=%d", workflowCount, userCount)
+	}
+	conflicting := registration
+	conflicting.DisplayName = "Conflicting Replay"
+	if status, _, err := userClient.register(ctx, conflicting); err != nil || status != http.StatusConflict {
+		t.Fatalf("conflicting registration replay status=%d err=%v", status, err)
+	}
+	if err := st.UpsertReplica(ctx, &store.UserReplica{
+		UserID: registeredUser.ID, NodeID: secondary.node.ID, Kind: "hot_standby", State: "ready",
+	}); err != nil {
+		t.Fatalf("authorize ready standby replica: %v", err)
+	}
+
+	firstHandoff, err := userClient.createHandoff(
+		ctx, primary.node.ID, "81000000-0000-4000-8000-000000000007",
+	)
+	if err != nil || firstHandoff.ExistingWriter || firstHandoff.TargetNodeID != primary.node.ID {
+		t.Fatalf("first writer handoff=%+v err=%v", firstHandoff, err)
+	}
+	wrongNodeURL := strings.TrimRight(secondary.adapterURL, "/") + "/api/users/me?stcontrol_handoff=user"
+	if status, err := redeemProcessE2EHandoff(ctx, wrongNodeURL, firstHandoff.Code); err != nil || status != http.StatusForbidden {
+		t.Fatalf("wrong-node redemption status=%d err=%v", status, err)
+	}
+	if status, err := redeemProcessE2EHandoff(ctx, firstHandoff.PostURL, firstHandoff.Code); err != nil || status != http.StatusSeeOther {
+		t.Fatalf("correct-node redemption status=%d err=%v", status, err)
+	}
+
+	standbyHandoff, err := userClient.createHandoff(
+		ctx, secondary.node.ID, "81000000-0000-4000-8000-000000000008",
+	)
+	if err != nil || !standbyHandoff.ExistingWriter || standbyHandoff.TargetNodeID != primary.node.ID ||
+		!strings.HasPrefix(standbyHandoff.PostURL, primary.adapterURL) {
+		t.Fatalf("standby did not route to existing writer: handoff=%+v err=%v", standbyHandoff, err)
+	}
+	if status, err := redeemProcessE2EHandoff(ctx, standbyHandoff.PostURL, standbyHandoff.Code); err != nil || status != http.StatusSeeOther {
+		t.Fatalf("existing-writer redemption status=%d err=%v", status, err)
+	}
+	if status, err := redeemProcessE2EHandoff(ctx, standbyHandoff.PostURL, standbyHandoff.Code); err != nil || status != http.StatusForbidden {
+		t.Fatalf("one-use handoff replay status=%d err=%v", status, err)
+	}
 
 	// No process output may reveal the enrollment/controller credential.
-	logs := controllerProcess.output.String() + agentProcess.output.String() + adapterProcess.output.String()
-	if strings.Contains(logs, initialAgentPSK) {
+	logs := controllerProcess.output.String() + agentProcess.output.String() + secondary.agentProcess.output.String() +
+		primary.adapterProcess.output.String() + secondary.adapterProcess.output.String()
+	if strings.Contains(logs, primary.initialAgentPSK) || strings.Contains(logs, secondary.initialAgentPSK) {
 		t.Fatal("process logs exposed the Agent credential")
 	}
+}
+
+type processE2ENodeOptions struct {
+	Sequence       int
+	AllowRegister  bool
+	Store          *store.Store
+	Context        context.Context
+	TestRoot       string
+	RepositoryRoot string
+	TavernRoot     string
+	Fixture        string
+	FixtureConfig  string
+	NodeBinary     string
+	AgentBinary    string
+	ControllerURL  string
+}
+
+type processE2ENode struct {
+	node            *store.Node
+	agentBinary     string
+	agentConfigPath string
+	repositoryRoot  string
+	adapterURL      string
+	initialAgentPSK string
+	agentProcess    *processE2EChild
+	adapterProcess  *processE2EChild
+}
+
+func startProcessE2ENode(t *testing.T, options processE2ENodeOptions) *processE2ENode {
+	t.Helper()
+	if options.Sequence <= 0 || options.Store == nil {
+		t.Fatal("invalid process node options")
+	}
+	node := &store.Node{
+		Name: fmt.Sprintf("process-compute-%d", options.Sequence), Role: "compute", Status: "pending",
+		AllowRegister: options.AllowRegister,
+	}
+	if err := options.Store.CreateNode(options.Context, node); err != nil {
+		t.Fatalf("create process node %d: %v", options.Sequence, err)
+	}
+	enrollmentToken := fmt.Sprintf("process-e2e-one-use-enrollment-token-%d", options.Sequence)
+	tokenHash := sha256.Sum256([]byte(enrollmentToken))
+	id := fmt.Sprintf("81000000-0000-4000-8000-%012d", options.Sequence*10+1)
+	operationID := fmt.Sprintf("81000000-0000-4000-8000-%012d", options.Sequence*10+2)
+	if err := options.Store.CreateEnrollmentToken(options.Context, store.CreateEnrollmentTokenParams{
+		ID: id, OperationID: operationID, TokenHash: tokenHash[:], ExpectedNodeID: node.ID,
+		ExpectedRole: "compute", ExpiresAt: time.Now().UTC().Add(10 * time.Minute), Now: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create process enrollment %d: %v", options.Sequence, err)
+	}
+
+	nodeRoot := filepath.Join(options.TestRoot, fmt.Sprintf("node-%d", options.Sequence))
+	tavernDir := filepath.Join(nodeRoot, "tavern")
+	if err := os.MkdirAll(tavernDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tavernConfigPath := filepath.Join(tavernDir, "config.yaml")
+	copyProcessE2EFile(t, options.FixtureConfig, tavernConfigPath)
+	copyProcessE2EFile(t, filepath.Join(options.TavernRoot, "package.json"), filepath.Join(tavernDir, "package.json"))
+	agentConfigPath := filepath.Join(nodeRoot, "agent.yaml")
+	agentConfig := config.DefaultAgent()
+	agentConfig.ControllerURL = options.ControllerURL
+	agentConfig.Listen = fmt.Sprintf("127.0.0.1:%d", reserveProcessE2EPort(t))
+	agentConfig.TavernDir = tavernDir
+	agentConfig.DataDir = filepath.Join(nodeRoot, "agent-data")
+	agentConfig.BackupDir = filepath.Join(nodeRoot, "agent-backups")
+	agentConfig.HeartbeatSec = 1
+	if err := config.Save(agentConfigPath, agentConfig); err != nil {
+		t.Fatalf("write initial Agent %d config: %v", options.Sequence, err)
+	}
+	register := exec.Command(options.AgentBinary,
+		"--config", agentConfigPath, "--register", "--token", enrollmentToken,
+		"--controller", options.ControllerURL, "--role", "compute", "--tavern-dir", tavernDir,
+	)
+	register.Dir = options.RepositoryRoot
+	register.Env = os.Environ()
+	if output, err := register.CombinedOutput(); err != nil {
+		t.Fatalf("register Agent %d process: %v\n%s", options.Sequence, err, output)
+	}
+	if err := config.Load(agentConfigPath, agentConfig); err != nil {
+		t.Fatalf("load enrolled Agent %d config: %v", options.Sequence, err)
+	}
+	if agentConfig.NodeID != node.ID || agentConfig.AgentPSK == "" ||
+		agentConfig.TavernAdapterPSK != agentConfig.AgentPSK || agentConfig.ControllerGeneration <= 0 {
+		t.Fatalf("incomplete enrolled Agent %d identity: node=%d generation=%d",
+			options.Sequence, agentConfig.NodeID, agentConfig.ControllerGeneration)
+	}
+	assertProcessE2ETavernMount(
+		t, tavernConfigPath, node.ID, options.ControllerURL, "http://"+agentConfig.Listen, agentConfig.AgentPSK,
+	)
+
+	adapterDataRoot := filepath.Join(tavernDir, "data")
+	if err := os.MkdirAll(adapterDataRoot, 0o700); err != nil {
+		t.Fatalf("create Tavern data root %d: %v", options.Sequence, err)
+	}
+	adapterPortFile := filepath.Join(nodeRoot, "adapter.port")
+	adapterProcess := startProcessE2EChild(
+		t, fmt.Sprintf("tavern-adapter-%d", options.Sequence), options.NodeBinary, []string{options.Fixture},
+		options.TavernRoot, append(os.Environ(),
+			"STCONTROL_E2E_DATA_ROOT="+adapterDataRoot,
+			"STCONTROL_E2E_PORT_FILE="+adapterPortFile,
+			"STCONTROL_E2E_CONFIG_PATH="+tavernConfigPath,
+		),
+	)
+	adapterPort := waitForProcessE2EPortFile(t, adapterProcess, adapterPortFile, 20*time.Second)
+	adapterURL := "http://127.0.0.1:" + adapterPort
+	agentConfig.TavernURL = adapterURL
+	if err := config.Save(agentConfigPath, agentConfig); err != nil {
+		t.Fatalf("write running Agent %d config: %v", options.Sequence, err)
+	}
+	node.BaseURL = adapterURL
+	if err := options.Store.UpdateNodeSettings(options.Context, node); err != nil {
+		t.Fatalf("publish process node %d base URL: %v", options.Sequence, err)
+	}
+	harness := &processE2ENode{
+		node: node, agentBinary: options.AgentBinary, agentConfigPath: agentConfigPath,
+		repositoryRoot: options.RepositoryRoot, adapterURL: adapterURL,
+		initialAgentPSK: agentConfig.AgentPSK, adapterProcess: adapterProcess,
+	}
+	harness.agentProcess = harness.startAgent(t)
+	waitForProcessE2ENodeReady(t, options.Store, node.ID, 45*time.Second)
+	return harness
+}
+
+func (node *processE2ENode) startAgent(t *testing.T) *processE2EChild {
+	t.Helper()
+	return startProcessE2EChild(
+		t, "agent-"+node.node.Name, node.agentBinary, []string{"--config", node.agentConfigPath},
+		node.repositoryRoot, os.Environ(),
+	)
+}
+
+type processE2ERegistrationRequest struct {
+	OperationID string `json:"operation_id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	Password    string `json:"password"`
+	NodeID      int64  `json:"node_id"`
+}
+
+type processE2EHandoff struct {
+	PostURL        string `json:"post_url"`
+	Code           string `json:"code"`
+	TargetNodeID   int64  `json:"target_node_id"`
+	ExistingWriter bool   `json:"existing_writer"`
+}
+
+type processE2EUserClient struct {
+	baseURL string
+	client  *http.Client
+	csrf    string
+}
+
+func newProcessE2EUserClient(t *testing.T, baseURL string) *processE2EUserClient {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &processE2EUserClient{baseURL: baseURL, client: &http.Client{Jar: jar, Timeout: 30 * time.Second}}
+}
+
+func (client *processE2EUserClient) register(
+	ctx context.Context,
+	registration processE2ERegistrationRequest,
+) (int, []byte, error) {
+	encoded, err := json.Marshal(registration)
+	if err != nil {
+		return 0, nil, err
+	}
+	request, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, client.baseURL+"/api/auth/register", bytes.NewReader(encoded),
+	)
+	if err != nil {
+		return 0, nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", client.baseURL)
+	response, err := client.client.Do(request)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	client.refreshCSRF()
+	return response.StatusCode, data, err
+}
+
+func (client *processE2EUserClient) registerUntilComplete(
+	ctx context.Context,
+	registration processE2ERegistrationRequest,
+	timeout time.Duration,
+) error {
+	status, body, err := client.register(ctx, registration)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusOK {
+		return nil
+	}
+	if status != http.StatusAccepted {
+		return fmt.Errorf("registration status %d: %s", status, body)
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		request, err := http.NewRequestWithContext(
+			ctx, http.MethodGet, client.baseURL+"/api/auth/registration/status", nil,
+		)
+		if err != nil {
+			return err
+		}
+		response, err := client.client.Do(request)
+		if err != nil {
+			return err
+		}
+		data, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+		_ = response.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+		client.refreshCSRF()
+		if response.StatusCode == http.StatusOK {
+			return nil
+		}
+		if response.StatusCode != http.StatusAccepted {
+			return fmt.Errorf("registration poll status %d: %s", response.StatusCode, data)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("registration completion timed out")
+}
+
+func (client *processE2EUserClient) createHandoff(
+	ctx context.Context,
+	nodeID int64,
+	operationID string,
+) (processE2EHandoff, error) {
+	if client.csrf == "" {
+		return processE2EHandoff{}, fmt.Errorf("user CSRF cookie missing")
+	}
+	encoded, _ := json.Marshal(map[string]any{"node_id": nodeID, "operation_id": operationID})
+	request, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, client.baseURL+"/api/login/redirect", bytes.NewReader(encoded),
+	)
+	if err != nil {
+		return processE2EHandoff{}, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", client.baseURL)
+	request.Header.Set("X-CSRF-Token", client.csrf)
+	response, err := client.client.Do(request)
+	if err != nil {
+		return processE2EHandoff{}, err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if err != nil {
+		return processE2EHandoff{}, err
+	}
+	if response.StatusCode != http.StatusOK {
+		return processE2EHandoff{}, fmt.Errorf("handoff status %d: %s", response.StatusCode, data)
+	}
+	var handoff processE2EHandoff
+	if err := json.Unmarshal(data, &handoff); err != nil {
+		return processE2EHandoff{}, err
+	}
+	if handoff.Code == "" || handoff.PostURL == "" || handoff.TargetNodeID <= 0 {
+		return processE2EHandoff{}, fmt.Errorf("incomplete handoff: %s", data)
+	}
+	return handoff, nil
+}
+
+func (client *processE2EUserClient) refreshCSRF() {
+	parsed, err := url.Parse(client.baseURL)
+	if err != nil {
+		return
+	}
+	for _, cookie := range client.client.Jar.Cookies(parsed) {
+		if cookie.Name == "stcontrol_csrf" {
+			client.csrf = cookie.Value
+			return
+		}
+	}
+}
+
+func redeemProcessE2EHandoff(ctx context.Context, endpoint, code string) (int, error) {
+	encoded, _ := json.Marshal(map[string]string{"stcontrol_code": code})
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encoded))
+	if err != nil {
+		return 0, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	client := &http.Client{
+		Timeout:       15 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
+	return response.StatusCode, nil
 }
 
 func processE2ERepositoryRoots(t *testing.T) (string, string) {
@@ -500,7 +820,12 @@ func copyProcessE2EFile(t *testing.T, source, destination string) {
 	}
 }
 
-func assertProcessE2ETavernMount(t *testing.T, path string, nodeID int64, controllerURL, psk string) {
+func assertProcessE2ETavernMount(
+	t *testing.T,
+	path string,
+	nodeID int64,
+	controllerURL, agentURL, psk string,
+) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -512,6 +837,7 @@ func assertProcessE2ETavernMount(t *testing.T, path string, nodeID int64, contro
 			NodeID               int64  `yaml:"nodeId"`
 			AgentPSK             string `yaml:"agentPsk"`
 			ControllerURL        string `yaml:"controllerUrl"`
+			AgentURL             string `yaml:"agentUrl"`
 			ControllerGeneration int64  `yaml:"controllerGeneration"`
 		} `yaml:"stcontrol"`
 	}
@@ -520,6 +846,7 @@ func assertProcessE2ETavernMount(t *testing.T, path string, nodeID int64, contro
 	}
 	if !mounted.STControl.Enabled || mounted.STControl.NodeID != nodeID ||
 		mounted.STControl.AgentPSK != psk || mounted.STControl.ControllerURL != controllerURL ||
+		mounted.STControl.AgentURL != agentURL ||
 		mounted.STControl.ControllerGeneration <= 0 {
 		t.Fatalf("SillyTavern adapter identity was not atomically mounted: node=%d generation=%d",
 			mounted.STControl.NodeID, mounted.STControl.ControllerGeneration)

@@ -28,6 +28,8 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("GET /agent/health", func(w http.ResponseWriter, _ *http.Request) {
 		protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
+	mux.HandleFunc("POST /agent/tickets/redeem", a.handleAdapterTicketRedeem(false))
+	mux.HandleFunc("POST /agent/tickets/redeem-admin", a.handleAdapterTicketRedeem(true))
 	mux.HandleFunc("POST "+a.snapshotTransferRoute()+"/{snapshotID}", a.handleSnapshotTransfer)
 	return mux
 }

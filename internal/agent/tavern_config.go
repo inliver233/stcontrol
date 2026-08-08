@@ -2,6 +2,8 @@ package agent
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 
@@ -22,8 +24,12 @@ func ConfigureTavernAdapter(cfg *config.AgentConfig) error {
 		}
 	}
 	if cfg == nil || cfg.Role != "compute" || cfg.TavernDir == "" || cfg.NodeID <= 0 ||
-		adapterPSK == "" || cfg.ControllerURL == "" {
+		adapterPSK == "" || cfg.ControllerURL == "" || cfg.Listen == "" {
 		return fmt.Errorf("complete compute enrollment is required")
+	}
+	agentURL, err := tavernAdapterAgentURL(cfg)
+	if err != nil {
+		return err
 	}
 	configPath := filepath.Join(cfg.TavernDir, "config.yaml")
 	info, err := os.Lstat(configPath)
@@ -42,6 +48,7 @@ func ConfigureTavernAdapter(cfg *config.AgentConfig) error {
 	stcontrol := ensureYAMLMapping(root, "stcontrol")
 	setYAMLScalar(stcontrol, "enabled", "true", "!!bool")
 	setYAMLScalar(stcontrol, "controllerUrl", cfg.ControllerURL, "!!str")
+	setYAMLScalar(stcontrol, "agentUrl", agentURL, "!!str")
 	setYAMLScalar(stcontrol, "nodeId", fmt.Sprintf("%d", cfg.NodeID), "!!int")
 	setYAMLScalar(stcontrol, "agentPsk", adapterPSK, "!!str")
 	setYAMLScalar(stcontrol, "controllerGeneration", fmt.Sprintf("%d", cfg.ControllerGeneration), "!!int")
@@ -90,6 +97,21 @@ func ConfigureTavernAdapter(cfg *config.AgentConfig) error {
 	}
 	_ = os.Remove(oldPath)
 	return nil
+}
+
+func tavernAdapterAgentURL(cfg *config.AgentConfig) (string, error) {
+	if cfg == nil {
+		return "", fmt.Errorf("Agent listener is required")
+	}
+	host, port, err := net.SplitHostPort(cfg.Listen)
+	if err != nil || host == "" || port == "" {
+		return "", fmt.Errorf("Agent listener cannot be mounted into SillyTavern")
+	}
+	scheme := "http"
+	if cfg.TLSCertFile != "" {
+		scheme = "https"
+	}
+	return (&url.URL{Scheme: scheme, Host: net.JoinHostPort(host, port)}).String(), nil
 }
 
 func ensureYAMLMapping(parent *yaml.Node, key string) *yaml.Node {

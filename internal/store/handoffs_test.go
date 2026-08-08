@@ -136,6 +136,84 @@ func TestCreateLoginHandoffRollsBackLeaseWhenTicketInsertFails(t *testing.T) {
 	assertMockExpectations(t, mock)
 }
 
+func TestCreateLoginHandoffStandbyCannotAcquireFirstWriter(t *testing.T) {
+	t.Parallel()
+	store, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 9, 8, 0, 0, 0, time.UTC)
+	p := testHandoffParams(now)
+	p.ExistingWriterOnly = true
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT id FROM global_users WHERE id=\$1 FOR UPDATE`).
+		WithArgs(p.UserID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(p.UserID))
+	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
+		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(3)))
+	mock.ExpectQuery(`SELECT user_id, requested_node_id, requested_session_id, outcome`).
+		WithArgs(p.OperationID).
+		WillReturnRows(sqlmock.NewRows(splitColumns(opColumns)))
+	mock.ExpectQuery(`SELECT user_id, writer_node_id, session_id, activity_epoch, state, lease_expires_at`).
+		WithArgs(p.UserID).
+		WillReturnRows(sqlmock.NewRows(splitColumns(leaseColumns)))
+	mock.ExpectRollback()
+
+	if _, err := store.CreateLoginHandoff(context.Background(), p); !errors.Is(err, ErrExistingWriterRequired) {
+		t.Fatalf("standby first-writer error=%v, want ErrExistingWriterRequired", err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestCreateLoginHandoffStandbyReturnsExistingWriter(t *testing.T) {
+	t.Parallel()
+	store, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 9, 8, 5, 0, 0, time.UTC)
+	p := testHandoffParams(now)
+	p.ExistingWriterOnly = true
+	existingNodeID := int64(30)
+	existingSession := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	existingEpoch := int64(8)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT id FROM global_users WHERE id=\$1 FOR UPDATE`).
+		WithArgs(p.UserID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(p.UserID))
+	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
+		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(3)))
+	mock.ExpectQuery(`SELECT user_id, requested_node_id, requested_session_id, outcome`).
+		WithArgs(p.OperationID).
+		WillReturnRows(sqlmock.NewRows(splitColumns(opColumns)))
+	mock.ExpectQuery(`SELECT user_id, writer_node_id, session_id, activity_epoch, state, lease_expires_at`).
+		WithArgs(p.UserID).
+		WillReturnRows(sqlmock.NewRows(splitColumns(leaseColumns)).AddRow(
+			p.UserID, existingNodeID, existingSession, existingEpoch, "active", now.Add(5*time.Minute),
+			now, now, 0, 0, int64(3), now,
+		))
+	mock.ExpectExec(`INSERT INTO activity_lease_operations`).
+		WithArgs(p.OperationID, p.UserID, p.RequestedNodeID, p.SessionID, "existing",
+			existingNodeID, existingSession, existingEpoch, now).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`SELECT base_url FROM nodes`).
+		WithArgs(existingNodeID, true).
+		WillReturnRows(sqlmock.NewRows([]string{"base_url"}).AddRow("https://writer.example"))
+	mock.ExpectExec(`INSERT INTO control_tickets`).
+		WithArgs(p.JTI, p.OperationID, p.SecretHash, p.Issuer, "https://writer.example", p.Subject,
+			p.UserID, existingNodeID, existingSession, existingEpoch, p.KeyID, int64(3), now, now.Add(p.TicketTTL)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	handoff, err := store.CreateLoginHandoff(context.Background(), p)
+	if err != nil {
+		t.Fatalf("standby CreateLoginHandoff: %v", err)
+	}
+	if !handoff.Existing || handoff.Acquired || handoff.TargetNodeID != existingNodeID ||
+		handoff.SessionID != existingSession || handoff.ActivityEpoch != existingEpoch {
+		t.Fatalf("standby did not preserve existing writer: %+v", handoff)
+	}
+	assertMockExpectations(t, mock)
+}
+
 func TestCreateLoginHandoffReplaysOriginalResult(t *testing.T) {
 	t.Parallel()
 	store, mock, closeDB := newMockStore(t)

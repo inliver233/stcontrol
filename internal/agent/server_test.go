@@ -3,13 +3,76 @@ package agent
 import (
 	"bytes"
 	"crypto/tls"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"stcontrol/internal/config"
+	"stcontrol/internal/protocol"
 )
+
+func TestAdapterTicketProxySeparatesLocalAndRotatedControllerCredentials(t *testing.T) {
+	t.Parallel()
+	const (
+		adapterPSK    = "stable-local-adapter-secret"
+		controllerPSK = "rotated-controller-secret"
+		requestPath   = "/agent/tickets/redeem"
+	)
+	controllerCalls := 0
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.URL.Path != "/api/tickets/redeem" || r.Header.Get(protocol.HeaderAgentID) != "7" ||
+			protocol.VerifyRequest(r, controllerPSK, body) != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		controllerCalls++
+		protocol.WriteJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "handle": "alice", "controller_generation": 9,
+		})
+	}))
+	defer controller.Close()
+	agent, err := New(&config.AgentConfig{
+		Role: "compute", NodeID: 7, AgentPSK: controllerPSK, TavernAdapterPSK: adapterPSK,
+		ControllerURL: controller.URL, DataDir: t.TempDir(), ControllerGeneration: 9,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"code":"opaque-one-use-code"}`)
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	nonce := "00112233445566778899aabbccddeeff"
+	doRequest := func(secret string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, requestPath, bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set(protocol.HeaderAgentID, "7")
+		request.Header.Set(protocol.HeaderTimestamp, timestamp)
+		request.Header.Set(protocol.HeaderNonce, nonce)
+		request.Header.Set(protocol.HeaderSignature,
+			protocol.Sign(secret, http.MethodPost, requestPath, timestamp, nonce, body))
+		response := httptest.NewRecorder()
+		agent.Handler().ServeHTTP(response, request)
+		return response
+	}
+	if response := doRequest(adapterPSK); response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `"handle":"alice"`) {
+		t.Fatalf("proxy response=%d %s", response.Code, response.Body.String())
+	}
+	if controllerCalls != 1 {
+		t.Fatalf("controller calls=%d", controllerCalls)
+	}
+	if response := doRequest(adapterPSK); response.Code != http.StatusUnauthorized {
+		t.Fatalf("replayed adapter nonce status=%d", response.Code)
+	}
+	if controllerCalls != 1 {
+		t.Fatalf("nonce replay reached controller: calls=%d", controllerCalls)
+	}
+}
 
 func TestAgentListenerRequiresTLSOutsideLoopback(t *testing.T) {
 	t.Parallel()

@@ -18,7 +18,7 @@ func TestConfigureTavernAdapterPreservesUnrelatedConfiguration(t *testing.T) {
 	}
 	cfg := &config.AgentConfig{
 		Role: "compute", TavernDir: root, ControllerURL: "https://controller.example",
-		NodeID: 7, AgentPSK: "node-secret", ControllerGeneration: 4,
+		Listen: "127.0.0.1:9100", NodeID: 7, AgentPSK: "node-secret", ControllerGeneration: 4,
 	}
 	if err := ConfigureTavernAdapter(cfg); err != nil {
 		t.Fatal(err)
@@ -35,7 +35,8 @@ func TestConfigureTavernAdapterPreservesUnrelatedConfiguration(t *testing.T) {
 	legacy := decoded["federated"].(map[string]any)
 	feature := decoded["feature"].(map[string]any)
 	if adapter["enabled"] != true || adapter["nodeId"] != 7 || adapter["agentPsk"] != "node-secret" ||
-		adapter["controllerGeneration"] != 4 || legacy["enabled"] != false || legacy["other"] != "keep" ||
+		adapter["agentUrl"] != "http://127.0.0.1:9100" || adapter["controllerGeneration"] != 4 ||
+		legacy["enabled"] != false || legacy["other"] != "keep" ||
 		feature["nested"] != "value" {
 		t.Fatalf("decoded=%+v", decoded)
 	}
@@ -59,7 +60,7 @@ func TestConfigureTavernAdapterRejectsSymlinkedConfiguration(t *testing.T) {
 	}
 	err := ConfigureTavernAdapter(&config.AgentConfig{
 		Role: "compute", TavernDir: root, ControllerURL: "https://controller.example",
-		NodeID: 7, AgentPSK: "node-secret", ControllerGeneration: 4,
+		Listen: "127.0.0.1:9100", NodeID: 7, AgentPSK: "node-secret", ControllerGeneration: 4,
 	})
 	if err == nil {
 		t.Fatal("symlinked config was accepted")

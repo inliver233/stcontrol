@@ -78,7 +78,9 @@ func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusForbidden, "存储节点不可登录")
 		return
 	}
-	if !replicaIsCurrentHome(user, node, replica) {
+	isCurrentHome := replicaIsCurrentHome(user, node, replica)
+	isReadyStandby := replica.Kind == "hot_standby" && replica.State == "ready"
+	if !isCurrentHome && !isReadyStandby {
 		protocol.WriteError(w, http.StatusConflict, "备用节点必须先确认接管风险")
 		return
 	}
@@ -88,7 +90,7 @@ func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 	}
 	// Backup mutation must stop before a writer lease is handed to the browser.
 	// The abort is delivered over the Agent-initiated command channel.
-	if s.Cfg.Backup.AbortOnLogin {
+	if isCurrentHome && s.Cfg.Backup.AbortOnLogin {
 		if job, _ := s.Store.FindRunningBackupForUserOnNode(ctx, legacyUserID, node.ID); job != nil {
 			if _, err := s.runAgentCommand(ctx, node, "abort_backup", map[string]int64{"job_id": job.ID}, 15*time.Second); err != nil {
 				protocol.WriteError(w, http.StatusConflict, "节点正在结束备份，请稍后重试")
@@ -120,21 +122,24 @@ func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 	issuer := strings.TrimRight(s.Cfg.PublicURL, "/")
 
 	handoff, err := s.Store.CreateLoginHandoff(ctx, store.CreateLoginHandoffParams{
-		OperationID:     req.OperationID,
-		JTI:             jti,
-		SecretHash:      secretHash[:],
-		UserID:          user.GlobalID,
-		RequestedNodeID: node.ID,
-		SessionID:       sessionID,
-		Issuer:          issuer,
-		Subject:         user.Username,
-		KeyID:           handoffKeyID,
-		TicketTTL:       ticketTTL,
-		LeaseTTL:        activityLeaseTTL,
-		Now:             time.Now().UTC(),
+		OperationID:        req.OperationID,
+		JTI:                jti,
+		SecretHash:         secretHash[:],
+		UserID:             user.GlobalID,
+		RequestedNodeID:    node.ID,
+		SessionID:          sessionID,
+		Issuer:             issuer,
+		Subject:            user.Username,
+		KeyID:              handoffKeyID,
+		TicketTTL:          ticketTTL,
+		LeaseTTL:           activityLeaseTTL,
+		ExistingWriterOnly: !isCurrentHome,
+		Now:                time.Now().UTC(),
 	})
 	if err != nil {
 		switch {
+		case errors.Is(err, store.ErrExistingWriterRequired):
+			protocol.WriteError(w, http.StatusConflict, "备用节点必须先确认接管风险")
 		case errors.Is(err, store.ErrLoginHandoffUnavailable), errors.Is(err, store.ErrStaleControllerLease):
 			protocol.WriteError(w, http.StatusConflict, "当前活动会话暂不可交接")
 		case errors.Is(err, store.ErrNoActiveController):

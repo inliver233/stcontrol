@@ -11,6 +11,7 @@ import (
 var (
 	ErrInvalidLoginHandoff     = errors.New("invalid login handoff input")
 	ErrLoginHandoffUnavailable = errors.New("login handoff unavailable")
+	ErrExistingWriterRequired  = errors.New("an existing writer is required for this login handoff")
 	ErrNoActiveController      = errors.New("no active controller generation")
 	ErrStaleControllerLease    = errors.New("activity lease belongs to a stale controller generation")
 )
@@ -30,7 +31,11 @@ type CreateLoginHandoffParams struct {
 	KeyID           string
 	TicketTTL       time.Duration
 	LeaseTTL        time.Duration
-	Now             time.Time
+	// ExistingWriterOnly permits a ready standby to route a browser back to an
+	// already-live writer, but forbids that standby from acquiring a new lease.
+	// The check runs under the same global-user lock as lease acquisition.
+	ExistingWriterOnly bool
+	Now                time.Time
 }
 
 // LoginHandoff is the durable result returned for both first execution and an
@@ -91,6 +96,7 @@ func (s *Store) CreateLoginHandoff(ctx context.Context, p CreateLoginHandoffPara
 		SessionID:            p.SessionID,
 		ControllerGeneration: generation,
 		TTL:                  p.LeaseTTL,
+		ExistingWriterOnly:   p.ExistingWriterOnly,
 		Now:                  p.Now,
 	}
 	leaseResult, replayed, err := acquireActivityLeaseLocked(ctx, tx, leaseParams)
