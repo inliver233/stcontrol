@@ -64,6 +64,10 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 		assertPostgresIndependentTakeoverAudit(t, stores[0], generation)
 	})
 
+	t.Run("unmapped independent user is durably frozen and alerted", func(t *testing.T) {
+		assertPostgresIndependentUnmappedUser(t, stores[0], generation)
+	})
+
 	t.Run("node lifecycle binds replay and retires only after durable drain", func(t *testing.T) {
 		assertPostgresNodeLifecycleHardening(t, stores[0], nodeA)
 	})
@@ -127,6 +131,52 @@ func assertPostgresIndependentTakeoverAudit(t *testing.T, st *Store, generation 
 	if _, err := st.ReconcileNodeControlMode(ctx, nodeID, fact); err == nil ||
 		!strings.Contains(err.Error(), "operation conflict") {
 		t.Fatalf("mutated takeover replay error=%v", err)
+	}
+}
+
+func assertPostgresIndependentUnmappedUser(t *testing.T, st *Store, generation int64) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	nodeID := insertIntegrationNode(t, st, "independent-unmapped")
+	fact := NodeControlModeFact{
+		Mode: NodeModeIndependent, ModeGeneration: 2, ControllerGeneration: generation,
+		ReasonCode:                "sustained_peer_confirmed_controller_loss",
+		ConsecutiveHeartbeatFails: 3, ConsecutiveHealthProbeFails: 3, ConsecutivePeerWitnessFails: 3,
+		OutageStartedAt: now.Add(-4 * time.Minute), ConfirmedOutageStartedAt: now.Add(-3 * time.Minute),
+		IndependentSince: now.Add(-time.Minute), PendingUserSyncs: 1, ObservedAt: now,
+		PendingUsers: []IndependentSyncFact{{
+			Handle: "unmapped-user", Marker: "76000000-0000-4000-8000-000000000011",
+			ChangedAt: now.Add(-time.Second), Reason: "independent_login",
+		}},
+	}
+	decision, err := st.ReconcileNodeControlMode(ctx, nodeID, fact)
+	if err != nil || decision.DesiredMode != NodeModeIndependentDraining {
+		t.Fatalf("record unmapped independent user: decision=%+v err=%v", decision, err)
+	}
+	fact.ObservedAt = now.Add(time.Second)
+	if _, err := st.ReconcileNodeControlMode(ctx, nodeID, fact); err != nil {
+		t.Fatalf("replay unmapped independent user: %v", err)
+	}
+	var reconciliationCount, alertCount, occurrenceCount int
+	var state, category string
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT count(*),min(state) FROM independent_user_reconciliations
+		WHERE node_id=$1 AND local_handle='unmapped-user'`, nodeID).
+		Scan(&reconciliationCount, &state); err != nil {
+		t.Fatalf("read unmapped reconciliation: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT count(*),min(category),max(occurrence_count) FROM alerts
+		WHERE node_id=$1 AND deduplication_key=$2`, nodeID,
+		"independent-unmapped:"+fmt.Sprint(nodeID)+":unmapped-user").
+		Scan(&alertCount, &category, &occurrenceCount); err != nil {
+		t.Fatalf("read unmapped alert: %v", err)
+	}
+	if reconciliationCount != 1 || state != "unmapped" || alertCount != 1 ||
+		category != "independent_reconciliation" || occurrenceCount != 2 {
+		t.Fatalf("unmapped facts reconciliations=%d state=%q alerts=%d category=%q occurrences=%d",
+			reconciliationCount, state, alertCount, category, occurrenceCount)
 	}
 }
 

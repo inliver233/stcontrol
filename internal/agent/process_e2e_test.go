@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -25,6 +26,7 @@ import (
 	"github.com/lib/pq"
 	"gopkg.in/yaml.v3"
 	"stcontrol/internal/config"
+	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
 
@@ -200,6 +202,8 @@ func TestControllerAgentTavernProcessesRecoverAcrossRestarts(t *testing.T) {
 	if response, err := adminClient.scan(ctx, node.ID, thirdScan); err != nil {
 		t.Fatalf("post-rebuild Controller-Agent-Tavern scan: %v response=%s", err, response)
 	}
+	configureProcessE2EDisasterPeers(t, st, primary, secondary)
+	agentProcess = primary.agentProcess
 	userClient := newProcessE2EUserClient(t, controllerURL)
 	registrationOperation := "81000000-0000-4000-8000-000000000006"
 	registration := processE2ERegistrationRequest{
@@ -241,6 +245,7 @@ func TestControllerAgentTavernProcessesRecoverAcrossRestarts(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("authorize ready standby replica: %v", err)
 	}
+	provisionProcessE2EReplicaAccount(t, ctx, st, secondary, registeredUser)
 
 	firstHandoff, err := userClient.createHandoff(
 		ctx, primary.node.ID, "81000000-0000-4000-8000-000000000007",
@@ -269,6 +274,55 @@ func TestControllerAgentTavernProcessesRecoverAcrossRestarts(t *testing.T) {
 	if status, err := redeemProcessE2EHandoff(ctx, standbyHandoff.PostURL, standbyHandoff.Code); err != nil || status != http.StatusForbidden {
 		t.Fatalf("one-use handoff replay status=%d err=%v", status, err)
 	}
+	waitForProcessE2EOwnership(t, primary, registration.Username, primary.node.ID, 0, 10*time.Second)
+	waitForProcessE2EOwnership(t, secondary, registration.Username, primary.node.ID, 0, 10*time.Second)
+
+	// The managed redemption above made primary the immutable last-active
+	// owner and replicated that claim to secondary. Stop the Controller long
+	// enough for two signed heartbeat/health/witness failures, then kill only
+	// the owner's real adapter. Secondary must require a password-first,
+	// one-use risk confirmation before its Agent can commit a majority CAS.
+	controllerProcess.stop()
+	waitForProcessE2EAgentMode(t, primary, protocol.NodeModeIndependent, 20*time.Second)
+	waitForProcessE2EAgentMode(t, secondary, protocol.NodeModeIndependent, 20*time.Second)
+	primary.adapterProcess.stop()
+	wrongPassword, err := processE2ELogin(ctx, secondary.adapterURL, map[string]any{
+		"handle": registration.Username, "password": "wrong-password",
+	})
+	if err != nil || wrongPassword.status != http.StatusForbidden {
+		t.Fatalf("disaster wrong-password login status=%d err=%v body=%s", wrongPassword.status, err, wrongPassword.body)
+	}
+	confirmation, err := processE2ELogin(ctx, secondary.adapterURL, map[string]any{
+		"handle": registration.Username, "password": registration.Password,
+	})
+	if err != nil || confirmation.status != http.StatusLocked || confirmation.code != "last_active_node_unavailable_confirmation_required" ||
+		confirmation.challenge == "" {
+		t.Fatalf("disaster confirmation status=%d code=%q err=%v body=%s", confirmation.status, confirmation.code, err, confirmation.body)
+	}
+	confirmed, err := processE2ELogin(ctx, secondary.adapterURL, map[string]any{
+		"handle": registration.Username, "password": registration.Password,
+		"stcontrol_takeover_confirm": true, "stcontrol_takeover_challenge": confirmation.challenge,
+	})
+	if err != nil || confirmed.status != http.StatusOK {
+		t.Fatalf("disaster confirmed login status=%d err=%v body=%s", confirmed.status, err, confirmed.body)
+	}
+	waitForProcessE2EOwnership(t, primary, registration.Username, secondary.node.ID, 1, 10*time.Second)
+	waitForProcessE2EOwnership(t, secondary, registration.Username, secondary.node.ID, 1, 10*time.Second)
+	assertProcessE2ETakeoverAuditRedacted(t, secondary, registration.Username)
+
+	restartProcessE2EAdapter(t, ctx, st, primary)
+	agentProcess = primary.agentProcess
+	controllerProcess = startController()
+	waitForProcessE2ETakeoverPersistence(
+		t, ctx, st, controllerProcess, primary, secondary, registration.Username, 60*time.Second,
+	)
+	logout, err := processE2EPostJSON(ctx, secondary.adapterURL+"/api/users/logout", map[string]any{})
+	if err != nil || logout.status != http.StatusOK {
+		t.Fatalf("disaster logout status=%d err=%v body=%s", logout.status, err, logout.body)
+	}
+	waitForProcessE2EConflictDrain(
+		t, ctx, st, controllerProcess, primary, secondary, registeredUser.GlobalID, 60*time.Second,
+	)
 
 	// No process output may reveal the enrollment/controller credential.
 	logs := controllerProcess.output.String() + agentProcess.output.String() + secondary.agentProcess.output.String() +
@@ -294,14 +348,21 @@ type processE2ENodeOptions struct {
 }
 
 type processE2ENode struct {
-	node            *store.Node
-	agentBinary     string
-	agentConfigPath string
-	repositoryRoot  string
-	adapterURL      string
-	initialAgentPSK string
-	agentProcess    *processE2EChild
-	adapterProcess  *processE2EChild
+	node             *store.Node
+	nodeBinary       string
+	agentBinary      string
+	agentConfigPath  string
+	repositoryRoot   string
+	tavernRoot       string
+	fixture          string
+	adapterDataRoot  string
+	adapterPortFile  string
+	tavernConfigPath string
+	adapterURL       string
+	initialAgentPSK  string
+	agentEnvironment []string
+	agentProcess     *processE2EChild
+	adapterProcess   *processE2EChild
 }
 
 func startProcessE2ENode(t *testing.T, options processE2ENodeOptions) *processE2ENode {
@@ -391,8 +452,11 @@ func startProcessE2ENode(t *testing.T, options processE2ENodeOptions) *processE2
 		t.Fatalf("publish process node %d base URL: %v", options.Sequence, err)
 	}
 	harness := &processE2ENode{
-		node: node, agentBinary: options.AgentBinary, agentConfigPath: agentConfigPath,
-		repositoryRoot: options.RepositoryRoot, adapterURL: adapterURL,
+		node: node, nodeBinary: options.NodeBinary, agentBinary: options.AgentBinary,
+		agentConfigPath: agentConfigPath, repositoryRoot: options.RepositoryRoot,
+		tavernRoot: options.TavernRoot, fixture: options.Fixture,
+		adapterDataRoot: adapterDataRoot, adapterPortFile: adapterPortFile,
+		tavernConfigPath: tavernConfigPath, adapterURL: adapterURL,
 		initialAgentPSK: agentConfig.AgentPSK, adapterProcess: adapterProcess,
 	}
 	harness.agentProcess = harness.startAgent(t)
@@ -404,8 +468,453 @@ func (node *processE2ENode) startAgent(t *testing.T) *processE2EChild {
 	t.Helper()
 	return startProcessE2EChild(
 		t, "agent-"+node.node.Name, node.agentBinary, []string{"--config", node.agentConfigPath},
-		node.repositoryRoot, os.Environ(),
+		node.repositoryRoot, append(os.Environ(), node.agentEnvironment...),
 	)
+}
+
+func restartProcessE2EAdapter(
+	t *testing.T,
+	ctx context.Context,
+	st *store.Store,
+	node *processE2ENode,
+) {
+	t.Helper()
+	node.agentProcess.stop()
+	if err := os.Remove(node.adapterPortFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remove stale adapter port file for %s: %v", node.node.Name, err)
+	}
+	node.adapterProcess = startProcessE2EChild(
+		t, "tavern-adapter-restarted-"+node.node.Name, node.nodeBinary, []string{node.fixture},
+		node.tavernRoot, append(os.Environ(),
+			"STCONTROL_E2E_DATA_ROOT="+node.adapterDataRoot,
+			"STCONTROL_E2E_PORT_FILE="+node.adapterPortFile,
+			"STCONTROL_E2E_CONFIG_PATH="+node.tavernConfigPath,
+		),
+	)
+	adapterPort := waitForProcessE2EPortFile(t, node.adapterProcess, node.adapterPortFile, 20*time.Second)
+	node.adapterURL = "http://127.0.0.1:" + adapterPort
+	agentConfig := config.DefaultAgent()
+	if err := config.Load(node.agentConfigPath, agentConfig); err != nil {
+		t.Fatalf("load Agent config while restarting adapter for %s: %v", node.node.Name, err)
+	}
+	agentConfig.TavernURL = node.adapterURL
+	if err := config.Save(node.agentConfigPath, agentConfig); err != nil {
+		t.Fatalf("save Agent config while restarting adapter for %s: %v", node.node.Name, err)
+	}
+	node.node.BaseURL = node.adapterURL
+	if err := st.UpdateNodeSettings(ctx, node.node); err != nil {
+		t.Fatalf("publish restarted adapter URL for %s: %v", node.node.Name, err)
+	}
+	node.agentProcess = node.startAgent(t)
+	waitForProcessE2EAgentMode(t, node, protocol.NodeModeIndependent, 20*time.Second)
+}
+
+func configureProcessE2EDisasterPeers(
+	t *testing.T,
+	st *store.Store,
+	primary, secondary *processE2ENode,
+) {
+	t.Helper()
+	primary.agentProcess.stop()
+	secondary.agentProcess.stop()
+	primaryConfig := config.DefaultAgent()
+	secondaryConfig := config.DefaultAgent()
+	if err := config.Load(primary.agentConfigPath, primaryConfig); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Load(secondary.agentConfigPath, secondaryConfig); err != nil {
+		t.Fatal(err)
+	}
+	const secretEnv = "STCONTROL_PROCESS_E2E_PEER_WITNESS_PSK"
+	const secret = "process-e2e-peer-witness-secret-0123456789"
+	primaryConfig.Disaster = config.AgentDisasterPolicy{
+		UnreachableAfterSec: 1, IndependentAfterSec: 2, MinFailedHeartbeats: 2,
+		PeerWitnessURLs: []string{"http://" + secondaryConfig.Listen}, PeerWitnessSecretEnv: secretEnv,
+	}
+	secondaryConfig.Disaster = config.AgentDisasterPolicy{
+		UnreachableAfterSec: 1, IndependentAfterSec: 2, MinFailedHeartbeats: 2,
+		PeerWitnessURLs: []string{"http://" + primaryConfig.Listen}, PeerWitnessSecretEnv: secretEnv,
+	}
+	if err := config.Save(primary.agentConfigPath, primaryConfig); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Save(secondary.agentConfigPath, secondaryConfig); err != nil {
+		t.Fatal(err)
+	}
+	primary.agentEnvironment = []string{secretEnv + "=" + secret}
+	secondary.agentEnvironment = []string{secretEnv + "=" + secret}
+	primary.agentProcess = primary.startAgent(t)
+	secondary.agentProcess = secondary.startAgent(t)
+	waitForProcessE2ENodeReady(t, st, primary.node.ID, 45*time.Second)
+	waitForProcessE2ENodeReady(t, st, secondary.node.ID, 45*time.Second)
+}
+
+func provisionProcessE2EReplicaAccount(
+	t *testing.T,
+	ctx context.Context,
+	st *store.Store,
+	node *processE2ENode,
+	user *store.User,
+) {
+	t.Helper()
+	var passwordHash, passwordSalt string
+	var accountVersion int64
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT password_hash,password_salt,password_material_version
+		FROM node_accounts WHERE user_id=$1 AND node_id=$2`, user.GlobalID, user.HomeNodeID.Int64).
+		Scan(&passwordHash, &passwordSalt, &accountVersion); err != nil {
+		t.Fatalf("read registered node password material: %v", err)
+	}
+	payload := map[string]any{
+		"operation_id":   "81000000-0000-4000-8000-000000000009",
+		"workflow_id":    "81000000-0000-4000-8000-000000000010",
+		"global_user_id": user.GlobalID, "account_version": accountVersion,
+		"handle": user.Username, "name": user.DisplayName,
+		"password_hash": passwordHash, "password_salt": passwordSalt,
+	}
+	response, err := processE2EPostSigned(
+		ctx, node.adapterURL+"/api/stcontrol/internal/users/restore",
+		"/api/stcontrol/internal/users/restore", node.node.ID, node.initialAgentPSK, payload,
+	)
+	if err != nil || response.status != http.StatusOK {
+		t.Fatalf("provision disaster replica account status=%d err=%v body=%s", response.status, err, response.body)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO node_accounts (
+		  user_id,node_id,local_handle,status,account_version,password_material_version,
+		  password_hash,password_salt,verified_at
+		) VALUES ($1,$2,$3,'active',$4,$4,$5,$6,now())
+		ON CONFLICT (user_id,node_id) DO UPDATE SET
+		  local_handle=EXCLUDED.local_handle,status='active',
+		  account_version=EXCLUDED.account_version,
+		  password_material_version=EXCLUDED.password_material_version,
+		  password_hash=EXCLUDED.password_hash,password_salt=EXCLUDED.password_salt,
+		  verified_at=EXCLUDED.verified_at,updated_at=now()`,
+		user.GlobalID, node.node.ID, user.Username, accountVersion, passwordHash, passwordSalt,
+	); err != nil {
+		t.Fatalf("publish restored disaster replica account: %v", err)
+	}
+}
+
+type processE2EHTTPResponse struct {
+	status    int
+	body      []byte
+	code      string
+	challenge string
+}
+
+func processE2ELogin(
+	ctx context.Context,
+	adapterURL string,
+	payload map[string]any,
+) (processE2EHTTPResponse, error) {
+	return processE2EPostJSON(ctx, strings.TrimRight(adapterURL, "/")+"/api/users/login", payload)
+}
+
+func processE2EPostJSON(
+	ctx context.Context,
+	endpoint string,
+	payload map[string]any,
+) (processE2EHTTPResponse, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return processE2EHTTPResponse{}, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return processE2EHTTPResponse{}, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	return doProcessE2EJSONRequest(request)
+}
+
+func processE2EPostSigned(
+	ctx context.Context,
+	endpoint, requestPath string,
+	nodeID int64,
+	psk string,
+	payload map[string]any,
+) (processE2EHTTPResponse, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return processE2EHTTPResponse{}, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return processE2EHTTPResponse{}, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	protocol.SignRequest(request, nodeID, psk, body)
+	if request.URL.Path != requestPath {
+		return processE2EHTTPResponse{}, fmt.Errorf("signed request path mismatch")
+	}
+	return doProcessE2EJSONRequest(request)
+}
+
+func doProcessE2EJSONRequest(request *http.Request) (processE2EHTTPResponse, error) {
+	client := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	response, err := client.Do(request)
+	if err != nil {
+		return processE2EHTTPResponse{}, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if err != nil {
+		return processE2EHTTPResponse{}, err
+	}
+	result := processE2EHTTPResponse{status: response.StatusCode, body: body}
+	var decoded struct {
+		Code      string `json:"code"`
+		Challenge string `json:"takeover_challenge"`
+	}
+	if json.Unmarshal(body, &decoded) == nil {
+		result.code = decoded.Code
+		result.challenge = decoded.Challenge
+	}
+	return result, nil
+}
+
+func loadProcessE2ERuntime(node *processE2ENode) (agentRuntimeState, error) {
+	cfg := config.DefaultAgent()
+	if err := config.Load(node.agentConfigPath, cfg); err != nil {
+		return agentRuntimeState{}, err
+	}
+	body, err := os.ReadFile(filepath.Join(cfg.DataDir, "runtime-state.json"))
+	if err != nil {
+		return agentRuntimeState{}, err
+	}
+	var state agentRuntimeState
+	if err := json.Unmarshal(body, &state); err != nil {
+		return agentRuntimeState{}, err
+	}
+	return state, nil
+}
+
+func waitForProcessE2EAgentMode(t *testing.T, node *processE2ENode, mode string, timeout time.Duration) {
+	t.Helper()
+	waitForProcessE2ECondition(t, timeout, func() (bool, error) {
+		state, err := loadProcessE2ERuntime(node)
+		return err == nil && state.ControlMode.Mode == mode, err
+	}, "Agent did not enter expected disaster mode "+mode)
+}
+
+func waitForProcessE2EOwnership(
+	t *testing.T,
+	node *processE2ENode,
+	handle string,
+	ownerNodeID, takeoverSequence int64,
+	timeout time.Duration,
+) {
+	t.Helper()
+	waitForProcessE2ECondition(t, timeout, func() (bool, error) {
+		state, err := loadProcessE2ERuntime(node)
+		if err != nil {
+			return false, err
+		}
+		claim, found := state.ActivityOwnership[handle]
+		return found && claim.OwnerNodeID == ownerNodeID && claim.TakeoverSequence == takeoverSequence, nil
+	}, "Agent did not retain the expected activity owner")
+}
+
+func assertProcessE2ETakeoverAuditRedacted(t *testing.T, node *processE2ENode, handle string) {
+	t.Helper()
+	cfg := config.DefaultAgent()
+	if err := config.Load(node.agentConfigPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(cfg.DataDir, "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(body), "user_confirmed_activity_takeover") != 1 || strings.Contains(string(body), handle) {
+		t.Fatalf("takeover audit was duplicated or exposed handle: %s", body)
+	}
+}
+
+func waitForProcessE2ETakeoverPersistence(
+	t *testing.T,
+	ctx context.Context,
+	st *store.Store,
+	controller *processE2EChild,
+	primary, secondary *processE2ENode,
+	handle string,
+	timeout time.Duration,
+) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	count := 0
+	var lastErr error
+	for time.Now().Before(deadline) {
+		lastErr = st.DB.QueryRowContext(ctx, `
+			SELECT count(*) FROM independent_activity_takeovers
+			WHERE node_id=$1 AND local_handle=$2`, secondary.node.ID, handle).Scan(&count)
+		if lastErr == nil && count == 1 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	primaryNode, primaryNodeErr := st.GetNodeByID(ctx, primary.node.ID)
+	secondaryNode, secondaryNodeErr := st.GetNodeByID(ctx, secondary.node.ID)
+	primaryRuntime, primaryRuntimeErr := loadProcessE2ERuntime(primary)
+	secondaryRuntime, secondaryRuntimeErr := loadProcessE2ERuntime(secondary)
+	var total int
+	totalErr := st.DB.QueryRowContext(ctx, `SELECT count(*) FROM independent_activity_takeovers`).Scan(&total)
+	var activeGeneration, previousCredentialGeneration, storedCredentialGeneration, storedCredentialVersion int64
+	var rebuildState, rebuildNodeState string
+	rebuildErr := st.DB.QueryRowContext(ctx, `
+		SELECT epoch.generation,rebuild.state,item.state,item.previous_credential_generation,
+		  credential.controller_generation,credential.credential_version
+		FROM controller_epochs epoch
+		JOIN controller_rebuild_operations rebuild ON rebuild.generation=epoch.generation
+		JOIN controller_rebuild_nodes item ON item.rebuild_id=rebuild.id AND item.node_id=$1
+		JOIN LATERAL (
+		  SELECT controller_generation,credential_version FROM agent_credentials
+		  WHERE node_id=item.node_id AND revoked_at IS NULL
+		  ORDER BY credential_version DESC LIMIT 1
+		) credential ON true
+		WHERE epoch.state='active'`, secondary.node.ID).Scan(
+		&activeGeneration, &rebuildState, &rebuildNodeState, &previousCredentialGeneration,
+		&storedCredentialGeneration, &storedCredentialVersion,
+	)
+	t.Fatalf(
+		"recovered Controller did not preserve user-confirmed takeover: matching=%d total=%d last_err=%v total_err=%v\n"+
+			"rebuild=active-g%d/%s/%s previous-credential-g%d stored-credential=v%d/g%d err=%v\n"+
+			"primary_node=%s/%s/g%d err=%v primary_runtime=%s/g%d/credential-v%d-g%d/takeovers=%d err=%v\n"+
+			"secondary_node=%s/%s/g%d err=%v secondary_runtime=%s/g%d/credential-v%d-g%d/takeovers=%d err=%v\n"+
+			"controller:\n%s\nprimary Agent:\n%s\nsecondary Agent:\n%s",
+		count, total, lastErr, totalErr,
+		activeGeneration, rebuildState, rebuildNodeState, previousCredentialGeneration,
+		storedCredentialVersion, storedCredentialGeneration, rebuildErr,
+		processE2ENodeMode(primaryNode), processE2ENodeDesiredMode(primaryNode), processE2ENodeGeneration(primaryNode), primaryNodeErr,
+		primaryRuntime.ControlMode.Mode, primaryRuntime.HighestGeneration,
+		primaryRuntime.Credential.CurrentVersion, primaryRuntime.Credential.CurrentGeneration,
+		len(primaryRuntime.OwnershipTakeovers), primaryRuntimeErr,
+		processE2ENodeMode(secondaryNode), processE2ENodeDesiredMode(secondaryNode), processE2ENodeGeneration(secondaryNode), secondaryNodeErr,
+		secondaryRuntime.ControlMode.Mode, secondaryRuntime.HighestGeneration,
+		secondaryRuntime.Credential.CurrentVersion, secondaryRuntime.Credential.CurrentGeneration,
+		len(secondaryRuntime.OwnershipTakeovers), secondaryRuntimeErr,
+		controller.output.String(), primary.agentProcess.output.String(), secondary.agentProcess.output.String(),
+	)
+}
+
+func waitForProcessE2EConflictDrain(
+	t *testing.T,
+	ctx context.Context,
+	st *store.Store,
+	controller *processE2EChild,
+	primary, secondary *processE2ENode,
+	globalUserID int64,
+	timeout time.Duration,
+) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		primaryNode, err := st.GetNodeByID(ctx, primary.node.ID)
+		if err != nil {
+			lastErr = err
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		secondaryNode, err := st.GetNodeByID(ctx, secondary.node.ID)
+		if err != nil {
+			lastErr = err
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		secondaryRuntime, err := loadProcessE2ERuntime(secondary)
+		if err != nil {
+			lastErr = err
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		var reconciliationState, globalState, legacyState, leaseState, protectionState string
+		var openConflicts, takeoverCount int
+		err = st.DB.QueryRowContext(ctx, `
+			SELECT reconciliation.state,global_user.status,legacy.status,
+			  COALESCE(lease.state,''),COALESCE(protection.state,''),
+			  (SELECT count(*) FROM replica_conflicts conflict
+			   WHERE conflict.user_id=global_user.id AND conflict.state NOT IN ('resolved','failed')),
+			  (SELECT count(*) FROM independent_activity_takeovers takeover
+			   WHERE takeover.node_id=$2 AND takeover.local_handle=reconciliation.local_handle)
+			FROM independent_user_reconciliations reconciliation
+			JOIN global_users global_user ON global_user.id=reconciliation.user_id
+			JOIN users legacy ON legacy.id=global_user.legacy_user_id
+			LEFT JOIN user_activity_leases lease ON lease.user_id=global_user.id
+			LEFT JOIN user_protection_states protection ON protection.user_id=global_user.id
+			WHERE reconciliation.user_id=$1 AND reconciliation.node_id=$2`,
+			globalUserID, secondary.node.ID).Scan(
+			&reconciliationState, &globalState, &legacyState, &leaseState, &protectionState,
+			&openConflicts, &takeoverCount,
+		)
+		if err == sql.ErrNoRows {
+			lastErr = nil
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		if err != nil {
+			lastErr = err
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		ready, err := st.IsControlPlaneReady(ctx)
+		if err != nil {
+			lastErr = err
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		if primaryNode.ControlMode == protocol.NodeModeManaged &&
+			primaryNode.DesiredControlMode == protocol.NodeModeManaged &&
+			secondaryNode.ControlMode == protocol.NodeModeIndependentDraining &&
+			secondaryNode.DesiredControlMode == protocol.NodeModeIndependentDraining &&
+			secondaryRuntime.ControlMode.Mode == protocol.NodeModeIndependentDraining &&
+			secondaryRuntime.ControlMode.ActiveIndependentSessions == 0 &&
+			secondaryRuntime.ControlMode.PendingUserSyncs == 1 &&
+			len(secondaryRuntime.OwnershipTakeovers) == 0 &&
+			reconciliationState == "conflict" && globalState == "conflict" && legacyState == "conflict" &&
+			leaseState == "conflict" && protectionState == "conflict" &&
+			openConflicts == 1 && takeoverCount == 1 && !ready {
+			return
+		}
+		lastErr = fmt.Errorf(
+			"primary=%s/%s secondary=%s/%s runtime=%s sessions=%d pending=%d takeover_journal=%d "+
+				"reconciliation=%s identity=%s/%s lease=%s protection=%s conflicts=%d takeovers=%d ready=%v",
+			primaryNode.ControlMode, primaryNode.DesiredControlMode,
+			secondaryNode.ControlMode, secondaryNode.DesiredControlMode,
+			secondaryRuntime.ControlMode.Mode, secondaryRuntime.ControlMode.ActiveIndependentSessions,
+			secondaryRuntime.ControlMode.PendingUserSyncs, len(secondaryRuntime.OwnershipTakeovers),
+			reconciliationState, globalState, legacyState, leaseState, protectionState,
+			openConflicts, takeoverCount, ready,
+		)
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf(
+		"Controller recovery did not durably freeze the non-home disaster write: %v\ncontroller:\n%s\nprimary Agent:\n%s\nsecondary Agent:\n%s",
+		lastErr, controller.output.String(), primary.agentProcess.output.String(), secondary.agentProcess.output.String(),
+	)
+}
+
+func processE2ENodeMode(node *store.Node) string {
+	if node == nil {
+		return "missing"
+	}
+	return node.ControlMode
+}
+
+func processE2ENodeDesiredMode(node *store.Node) string {
+	if node == nil {
+		return "missing"
+	}
+	return node.DesiredControlMode
+}
+
+func processE2ENodeGeneration(node *store.Node) int64 {
+	if node == nil {
+		return 0
+	}
+	return node.ControlModeGeneration
 }
 
 type processE2ERegistrationRequest struct {

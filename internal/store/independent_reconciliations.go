@@ -105,7 +105,7 @@ func recordIndependentSyncFactsTx(
 				  id,deduplication_key,severity,state,category,node_id,summary,
 				  first_seen_at,last_seen_at,notify_after,occurrence_count
 				) VALUES (gen_random_uuid(),'independent-unmapped:'||$1::text||':'||$2,
-				  'critical','open','independent_reconciliation',$1,
+				  'critical','open','independent_reconciliation',$1::bigint,
 				  '独立模式用户无法映射到全局账户，已冻结自动回归',$3,$3,$3,1)
 				ON CONFLICT (deduplication_key) DO UPDATE SET
 				  state='open',last_seen_at=EXCLUDED.last_seen_at,resolved_at=NULL,
