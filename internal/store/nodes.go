@@ -222,12 +222,17 @@ func (s *Store) UpdateNodeHeartbeat(
 	defer func() { _ = tx.Rollback() }()
 	var current nodeCapacityCursor
 	var currentReason sql.NullString
+	var compatibility nodeCompatibilityCursor
+	var currentFingerprint sql.NullString
+	var compatibilityReportedAt sql.NullTime
 	if err := tx.QueryRowContext(ctx, `
 		SELECT capacity_state,capacity_reason_code,capacity_pressure_since,
-		  capacity_recovery_since,capacity_changed_at,capacity_cooldown_until
+		  capacity_recovery_since,capacity_changed_at,capacity_cooldown_until,
+		  connectivity_state,compatibility_fingerprint,compatibility_reported_at
 		FROM nodes WHERE id=$1 FOR UPDATE`, id).Scan(
 		&current.State, &currentReason, &current.PressureSince,
 		&current.RecoverySince, &current.ChangedAt, &current.CooldownUntil,
+		&compatibility.ConnectivityState, &currentFingerprint, &compatibilityReportedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("node not found")
@@ -235,6 +240,16 @@ func (s *Store) UpdateNodeHeartbeat(
 		return err
 	}
 	current.Reason = currentReason.String
+	compatibility.HasHistory = compatibilityReportedAt.Valid
+	compatibility.Fingerprint = currentFingerprint.String
+	if compatibilityReportedAt.Valid {
+		if facts.ObservedAt.Before(compatibilityReportedAt.Time) {
+			return ErrStaleNodeHeartbeat
+		}
+		if facts.ObservedAt.Equal(compatibilityReportedAt.Time) {
+			return tx.Commit()
+		}
+	}
 	var window nodeMetricWindow
 	if facts.MetricsValid {
 		if _, err := tx.ExecContext(ctx, `
@@ -249,7 +264,7 @@ func (s *Store) UpdateNodeHeartbeat(
 			  online_users=EXCLUDED.online_users,task_queue_depth=EXCLUDED.task_queue_depth`,
 			id, facts.ObservedAt, facts.CPUPct, facts.MemPct, facts.DiskPct,
 			facts.DiskAvailableBytes, facts.OnlineUsers, facts.TaskQueueDepth); err != nil {
-			return err
+			return fmt.Errorf("insert node metric sample: %w", err)
 		}
 		if err := tx.QueryRowContext(ctx, `
 			SELECT COALESCE(AVG(cpu_avg_pct),0),COALESCE(MAX(cpu_peak_pct),0),
@@ -260,10 +275,15 @@ func (s *Store) UpdateNodeHeartbeat(
 			&window.CPUAvg, &window.CPUPeak, &window.MemAvg, &window.MemPeak,
 			&window.DiskAvg, &window.DiskPeak,
 		); err != nil {
-			return err
+			return fmt.Errorf("read node metric window: %w", err)
 		}
 	}
 	decision := evaluateNodeCapacity(facts.ObservedAt, current, facts, window, capacityPolicy)
+	effectiveCompatibilityState, effectiveCompatibilityReason, err :=
+		reconcileNodeCompatibilityIncidentLocked(ctx, tx, id, compatibility, facts)
+	if err != nil {
+		return fmt.Errorf("reconcile node compatibility: %w", err)
+	}
 	metric := func(value float64) any {
 		if !facts.MetricsValid {
 			return nil
@@ -279,16 +299,16 @@ func (s *Store) UpdateNodeHeartbeat(
 	_, err = tx.ExecContext(ctx, `
 	  UPDATE nodes SET cpu_pct=$2,mem_pct=$3,disk_pct=$4,
 	    tavern_version=$5,agent_version=$6,transfer_url=$7,
-	    last_seen_at=$8,status='online',connectivity_state='online',
+	    last_seen_at=$8::timestamptz,status='online',connectivity_state='online',
 	    operational_state=CASE WHEN operational_state='pending' THEN 'active' ELSE operational_state END,
 	    allocated_disk_bytes=$9,disk_available_bytes=$10,disk_total_bytes=$11,disk_quota_bytes=$12,
-	    online_users=$13,task_queue_depth=$14,metrics_observed_at=$8,
+	    online_users=$13,task_queue_depth=$14,metrics_observed_at=$8::timestamptz,
 	    cpu_window_avg=$15,cpu_window_peak=$16,mem_window_avg=$17,mem_window_peak=$18,
 	    disk_window_avg=$19,disk_window_peak=$20,capacity_state=$21,
 	    capacity_reason_code=NULLIF($22,''),capacity_pressure_since=$23,
 	    capacity_recovery_since=$24,capacity_changed_at=$25,capacity_cooldown_until=$26,
 	    compatibility_state=$27,compatibility_fingerprint=$28,
-	    compatibility_reason_code=NULLIF($29,''),compatibility_reported_at=$8,telemetry_source=$34,
+	    compatibility_reason_code=NULLIF($29,''),compatibility_reported_at=$8::timestamptz,telemetry_source=$34,
 	    registration_policy_state=CASE
 	      WHEN $30 IN ('open','invitation_required','closed')
 	        AND ($31>registration_policy_version
@@ -298,9 +318,9 @@ func (s *Store) UpdateNodeHeartbeat(
 	    registration_policy_expires_at=CASE
 	      WHEN $30 IN ('open','invitation_required','closed')
 	        AND ($31>registration_policy_version
-	          OR ($31=registration_policy_version AND $30=registration_policy_state)) THEN $32
-	      ELSE $8 END,
-	    registration_policy_observed_at=$8,
+	          OR ($31=registration_policy_version AND $30=registration_policy_state)) THEN $32::timestamptz
+	      ELSE $8::timestamptz END,
+	    registration_policy_observed_at=$8::timestamptz,
 	    registration_policy_error_code=CASE
 	      WHEN $30 IN ('open','invitation_required','closed')
 	        AND ($31>registration_policy_version
@@ -317,12 +337,12 @@ func (s *Store) UpdateNodeHeartbeat(
 		metric(window.CPUAvg), metric(window.CPUPeak), metric(window.MemAvg), metric(window.MemPeak),
 		metric(window.DiskAvg), metric(window.DiskPeak), decision.State, decision.Reason,
 		nullTimeValue(decision.PressureSince), nullTimeValue(decision.RecoverySince), decision.ChangedAt,
-		nullTimeValue(decision.CooldownUntil), facts.CompatibilityState, facts.CompatibilityFingerprint,
-		facts.CompatibilityReasonCode,
+		nullTimeValue(decision.CooldownUntil), effectiveCompatibilityState, facts.CompatibilityFingerprint,
+		effectiveCompatibilityReason,
 		facts.RegistrationPolicy.State, facts.RegistrationPolicy.Version,
 		facts.RegistrationPolicy.ExpiresAt, facts.RegistrationPolicy.ErrorCode, facts.TelemetrySource)
 	if err != nil {
-		return err
+		return fmt.Errorf("update node heartbeat facts: %w", err)
 	}
 	return tx.Commit()
 }

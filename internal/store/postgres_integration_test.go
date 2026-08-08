@@ -66,6 +66,10 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 		assertPostgresTieredReplicaIntegrity(t, stores[0], generation)
 	})
 
+	t.Run("external upgrade compatibility incidents isolate and require stable reopen", func(t *testing.T) {
+		assertPostgresNodeCompatibilityIncident(t, stores[0])
+	})
+
 	t.Run("ten-thousand account inventory is durable and page bounded", func(t *testing.T) {
 		assertPostgresAccountInventoryScale(t, stores[0], nodeA)
 	})
@@ -244,6 +248,163 @@ func insertIntegrationGlobalUser(t *testing.T, st *Store, displayName string) in
 		t.Fatalf("insert integration global user: %v", err)
 	}
 	return id
+}
+
+func assertPostgresNodeCompatibilityIncident(t *testing.T, st *Store) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	nodeID := insertIntegrationNode(t, st, "compatibility-upgrade")
+	fingerprintA := strings.Repeat("a", 64)
+	fingerprintB := strings.Repeat("b", 64)
+
+	heartbeat := func(at time.Time, state, reason, fingerprint, version string) {
+		t.Helper()
+		facts := testNodeHeartbeat(at)
+		facts.CompatibilityState = state
+		facts.CompatibilityReasonCode = reason
+		facts.CompatibilityFingerprint = fingerprint
+		facts.AgentVersion = version
+		facts.TavernVersion = version
+		facts.RegistrationPolicy.ObservedAt = at
+		facts.RegistrationPolicy.ExpiresAt = at.Add(time.Minute)
+		if err := st.UpdateNodeHeartbeat(ctx, nodeID, facts, testNodeCapacityPolicy()); err != nil {
+			t.Fatalf("heartbeat at %s (%s): %v", at, state, err)
+		}
+	}
+	assertNodeState := func(wantState, wantReason string) {
+		t.Helper()
+		node, err := st.GetNodeByID(ctx, nodeID)
+		if err != nil || node == nil || node.CompatibilityState != wantState ||
+			node.CompatibilityReasonCode.String != wantReason {
+			t.Fatalf("node compatibility state=%+v err=%v, want %s/%s", node, err, wantState, wantReason)
+		}
+	}
+	assertIncident := func(wantState, wantReason string, wantObservations int) {
+		t.Helper()
+		status, err := st.GetNodeCompatibilityIncidentStatus(ctx, nodeID)
+		if err != nil || status == nil || status.State != wantState || status.ReasonCode != wantReason ||
+			status.CompatibleObservations != wantObservations || status.RequiredObservations != 3 {
+			t.Fatalf("incident=%+v err=%v, want %s/%s/%d", status, err, wantState, wantReason, wantObservations)
+		}
+	}
+
+	heartbeat(now, "compatible", "", fingerprintA, "v1")
+	assertNodeState("compatible", "")
+	if status, err := st.GetNodeCompatibilityIncidentStatus(ctx, nodeID); err != nil || status != nil {
+		t.Fatalf("initial enrollment created an incident: status=%+v err=%v", status, err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET status='offline',connectivity_state='offline' WHERE id=$1`, nodeID); err != nil {
+		t.Fatalf("mark compatibility node offline: %v", err)
+	}
+
+	reconnectedAt := now.Add(10 * time.Second)
+	heartbeat(reconnectedAt, "compatible", "", fingerprintA, "v1")
+	assertNodeState("unknown", "upgrade_verifying")
+	assertIncident("verifying", "node_reconnected", 1)
+	restartedGeneration := advanceIntegrationControllerGeneration(t, st, now.Add(20*time.Second))
+	heartbeat(now.Add(25*time.Second), "compatible", "", fingerprintA, "v1")
+	assertIncident("verifying", "node_reconnected", 2)
+	var incidentGeneration int64
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT controller_generation FROM node_compatibility_incidents
+		WHERE node_id=$1 AND state='verifying'`, nodeID).Scan(&incidentGeneration); err != nil ||
+		incidentGeneration != restartedGeneration {
+		t.Fatalf("incident generation=%d err=%v, want restarted generation %d", incidentGeneration, err, restartedGeneration)
+	}
+	heartbeat(now.Add(40*time.Second), "compatible", "", fingerprintA, "v1")
+	assertNodeState("compatible", "")
+	assertIncident("resolved", "node_reconnected", 3)
+
+	heartbeat(now.Add(50*time.Second), "compatible", "", fingerprintB, "v2")
+	assertNodeState("unknown", "upgrade_verifying")
+	assertIncident("verifying", "fingerprint_changed", 1)
+	heartbeat(now.Add(60*time.Second), "incompatible", "missing_capability", fingerprintB, "v2")
+	assertNodeState("incompatible", "missing_capability")
+	assertIncident("isolated", "missing_capability", 0)
+	heartbeat(now.Add(70*time.Second), "compatible", "", fingerprintB, "v2")
+	assertIncident("verifying", "missing_capability", 1)
+	heartbeat(now.Add(85*time.Second), "compatible", "", fingerprintB, "v2")
+	assertIncident("verifying", "missing_capability", 2)
+	heartbeat(now.Add(100*time.Second), "compatible", "", fingerprintB, "v2")
+	assertNodeState("compatible", "")
+	assertIncident("resolved", "missing_capability", 3)
+
+	// A lost response may cause an exact heartbeat retry. It must be a no-op,
+	// while an older observation must never regress the durable state.
+	heartbeat(now.Add(100*time.Second), "compatible", "", fingerprintB, "v2")
+	stale := testNodeHeartbeat(now.Add(99 * time.Second))
+	stale.CompatibilityFingerprint = fingerprintB
+	stale.AgentVersion = "v2"
+	stale.TavernVersion = "v2"
+	stale.RegistrationPolicy.ObservedAt = stale.ObservedAt
+	stale.RegistrationPolicy.ExpiresAt = stale.ObservedAt.Add(time.Minute)
+	if err := st.UpdateNodeHeartbeat(ctx, nodeID, stale, testNodeCapacityPolicy()); !errors.Is(err, ErrStaleNodeHeartbeat) {
+		t.Fatalf("older heartbeat error=%v, want ErrStaleNodeHeartbeat", err)
+	}
+	assertNodeState("compatible", "")
+
+	var resolvedIncidents, metricSamples, auditEvents int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT count(*) FROM node_compatibility_incidents
+		WHERE node_id=$1 AND state='resolved'`, nodeID).Scan(&resolvedIncidents); err != nil {
+		t.Fatalf("count resolved compatibility incidents: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `SELECT count(*) FROM node_metric_samples WHERE node_id=$1`, nodeID).
+		Scan(&metricSamples); err != nil {
+		t.Fatalf("count compatibility metrics: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT count(*) FROM audit_events
+		WHERE target_type='node' AND target_id=$1::text AND action LIKE 'node-compatibility-%'`, nodeID).
+		Scan(&auditEvents); err != nil {
+		t.Fatalf("count compatibility audits: %v", err)
+	}
+	var alertState string
+	var alertOccurrences int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT state,occurrence_count FROM alerts
+		WHERE deduplication_key='node-compatibility:'||$1::text`, nodeID).
+		Scan(&alertState, &alertOccurrences); err != nil {
+		t.Fatalf("read compatibility alert: %v", err)
+	}
+	if resolvedIncidents != 2 || metricSamples != 9 || auditEvents != 6 ||
+		alertState != "resolved" || alertOccurrences != 3 {
+		t.Fatalf("resolved=%d metrics=%d audits=%d alert=%s/%d",
+			resolvedIncidents, metricSamples, auditEvents, alertState, alertOccurrences)
+	}
+}
+
+func advanceIntegrationControllerGeneration(t *testing.T, st *Store, now time.Time) int64 {
+	t.Helper()
+	tx, err := st.DB.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		t.Fatalf("begin controller restart: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var generation, signingKeyVersion int64
+	if err := tx.QueryRow(`
+		SELECT generation,signing_key_version FROM controller_epochs
+		WHERE state='active' FOR UPDATE`).Scan(&generation, &signingKeyVersion); err != nil {
+		t.Fatalf("lock active controller for restart: %v", err)
+	}
+	if _, err := tx.Exec(`
+		UPDATE controller_epochs SET state='revoked',revoked_at=$2
+		WHERE generation=$1 AND state='active'`, generation, now); err != nil {
+		t.Fatalf("revoke controller for restart: %v", err)
+	}
+	next := generation + 1
+	if _, err := tx.Exec(`
+		INSERT INTO controller_epochs (
+		  generation,operation_id,controller_id,source,state,signing_key_version,activated_at
+		) VALUES ($1,gen_random_uuid(),gen_random_uuid(),'integration-restart','active',$2,$3)`,
+		next, signingKeyVersion+1, now); err != nil {
+		t.Fatalf("activate restarted controller: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit controller restart: %v", err)
+	}
+	return next
 }
 
 func assertPostgresTieredReplicaIntegrity(t *testing.T, st *Store, generation int64) {

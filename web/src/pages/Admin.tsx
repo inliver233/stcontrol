@@ -43,6 +43,7 @@ const adminApi = {
       method: 'POST', body: JSON.stringify({ operation_id: crypto.randomUUID(), state, reason_code, acknowledge_risk }),
     }),
   retirement: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/retirement`),
+  compatibilityIncident: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/compatibility-incident`),
   registerToken: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/register-token`, { method: 'POST' }),
   scanExisting: (id: number, operationID: string) => adminReq<any>(`/api/admin/nodes/${id}/scan-existing`, {
     method: 'POST', body: JSON.stringify({ operation_id: operationID }),
@@ -187,6 +188,7 @@ function Overview() {
 function NodesAdmin() {
   const [nodes, setNodes] = useState<any[]>([])
   const [retirements, setRetirements] = useState<Record<number, any>>({})
+  const [compatibilityIncidents, setCompatibilityIncidents] = useState<Record<number, any>>({})
   const [nodeLinks, setNodeLinks] = useState<AdminNodeLink[]>([])
   const [tokenInfo, setTokenInfo] = useState<any>(null)
   const [scanResult, setScanResult] = useState<any>(null)
@@ -215,6 +217,16 @@ function NodesAdmin() {
         if (result.status === 'fulfilled') progress[node.id] = result.value
       })
       setRetirements(progress)
+      const compatibilityTracked = nodeData.nodes.filter((node: any) => node.compatibility_state !== 'compatible')
+      const compatibilityResults = await Promise.allSettled(
+        compatibilityTracked.map((node: any) => adminApi.compatibilityIncident(node.id)),
+      )
+      const compatibilityProgress: Record<number, any> = {}
+      compatibilityTracked.forEach((node: any, index: number) => {
+        const result = compatibilityResults[index]
+        if (result.status === 'fulfilled') compatibilityProgress[node.id] = result.value
+      })
+      setCompatibilityIncidents(compatibilityProgress)
     })
     .catch(e => setError(e.message))
   useEffect(() => {
@@ -382,8 +394,8 @@ function NodesAdmin() {
   const healthLabel = (value: string) => ({
     online: '在线', offline: '离线', unknown: '未知', active: '运营', maintenance: '维护',
     draining: '排空', retiring: '迁移中', decommissioned: '已下线', scheduled: '待调度',
-    migrating: '迁移中', retry_wait: '等待重试', verifying: '校验中', blocked: '阻塞',
-    cancelled: '已取消', succeeded: '已完成',
+    migrating: '迁移中', retry_wait: '等待重试', verifying: '校验中', isolated: '已隔离', blocked: '阻塞',
+    cancelled: '已取消', succeeded: '已完成', resolved: '已恢复',
     degraded: '降级', failed: '故障', retired: '退役', pending: '待接入',
     open: '开放', busy: '繁忙', full: '满载', compatible: '兼容', incompatible: '不兼容',
   } as Record<string, string>)[value] || value
@@ -397,6 +409,8 @@ function NodesAdmin() {
     task_queue_limit: '任务队列达到上限', adapter_unavailable: '酒馆适配器不可用',
     version_unsupported: '版本不兼容', missing_capability: '适配器能力不完整',
     invalid_health: '适配器健康报告无效', invalid_report: '兼容性报告无效',
+    node_reconnected: '节点重连后复核', fingerprint_changed: '版本/插件/配置指纹变化',
+    upgrade_verifying: '升级后稳定性复核中',
   } as Record<string, string>)[value] || value
   const metric = (value: any) => Math.round(value?.Float64 ?? value ?? 0)
   const bytes = (value: any) => {
@@ -487,6 +501,7 @@ function NodesAdmin() {
           {nodes.map(n => {
             const link = nodeLink(n.id)
             const retirement = retirements[n.id]
+            const compatibilityIncident = compatibilityIncidents[n.id]
             return <tr key={n.id}>
               <td>{n.id}</td>
               <td>{n.name}<div className="mono" style={{ fontSize: 11 }}>{n.base_url || '未配置地址'}</div></td>
@@ -504,6 +519,11 @@ function NodesAdmin() {
                   {retirement.waiting_items > 0 && `，${retirement.waiting_items} 等待离线`}
                   {retirement.blocked_items > 0 && `，${retirement.blocked_items} 阻塞`}
                   {retirement.failed_items > 0 && `，${retirement.failed_items} 失败`}
+                </div>}
+                {compatibilityIncident && <div style={{ marginTop: 4 }}>
+                  兼容性复核：{healthLabel(compatibilityIncident.state)} · {reasonLabel(compatibilityIncident.reason_code)}
+                  {compatibilityIncident.state === 'verifying' &&
+                    ` · ${compatibilityIncident.compatible_observations}/${compatibilityIncident.required_observations} 次稳定心跳`}
                 </div>}
               </td>
               <td style={{ fontSize: 12 }}>

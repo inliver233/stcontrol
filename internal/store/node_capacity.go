@@ -69,7 +69,8 @@ type nodeCapacityDecision struct {
 
 func validNodeHeartbeatFacts(f NodeHeartbeatFacts) bool {
 	if f.ObservedAt.IsZero() || f.OnlineUsers < 0 || f.TaskQueueDepth < 0 ||
-		f.OnlineUsers > 1_000_000 || f.TaskQueueDepth > 1_000_000 {
+		f.OnlineUsers > 1_000_000 || f.TaskQueueDepth > 1_000_000 ||
+		len(f.AgentVersion) > 128 || len(f.TavernVersion) > 128 || len(f.TransferURL) > 2048 {
 		return false
 	}
 	if f.MetricsValid && (!validPercent(f.CPUPct) || !validPercent(f.MemPct) || !validPercent(f.DiskPct) ||

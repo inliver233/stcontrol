@@ -149,6 +149,24 @@ func (s *Server) handleAdminNodeRetirementStatus(w http.ResponseWriter, r *http.
 	protocol.WriteJSON(w, http.StatusOK, status)
 }
 
+func (s *Server) handleAdminNodeCompatibilityIncidentStatus(w http.ResponseWriter, r *http.Request) {
+	nodeID, err := parseID(chi.URLParam(r, "id"))
+	if err != nil || nodeID <= 0 {
+		protocol.WriteError(w, http.StatusBadRequest, "非法节点 ID")
+		return
+	}
+	status, err := s.Store.GetNodeCompatibilityIncidentStatus(r.Context(), nodeID)
+	if err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "节点兼容性复核进度暂不可用")
+		return
+	}
+	if status == nil {
+		protocol.WriteError(w, http.StatusNotFound, "节点没有兼容性复核记录")
+		return
+	}
+	protocol.WriteJSON(w, http.StatusOK, status)
+}
+
 // handleAdminNodeRegisterToken 为节点生成一次性注册令牌 + 安装命令。
 func (s *Server) handleAdminNodeRegisterToken(w http.ResponseWriter, r *http.Request) {
 	nodeID, err := parseID(chi.URLParam(r, "id"))

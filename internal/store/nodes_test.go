@@ -61,7 +61,8 @@ func TestUpdateNodeHeartbeatStoresWindowedHealthAndVersionedPolicy(t *testing.T)
 	mock.ExpectQuery(`SELECT capacity_state,capacity_reason_code`).WithArgs(int64(12)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"capacity_state", "capacity_reason_code", "pressure_since", "recovery_since", "changed_at", "cooldown_until",
-		}).AddRow("unknown", nil, nil, nil, now.Add(-time.Hour), nil))
+			"connectivity_state", "compatibility_fingerprint", "compatibility_reported_at",
+		}).AddRow("unknown", nil, nil, nil, now.Add(-time.Hour), nil, "unknown", nil, nil))
 	mock.ExpectExec(`INSERT INTO node_metric_samples`).WithArgs(
 		int64(12), now, 10.0, 20.0, 30.0, int64(100<<30), 3, 2,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -69,6 +70,8 @@ func TestUpdateNodeHeartbeatStoresWindowedHealthAndVersionedPolicy(t *testing.T)
 		WillReturnRows(sqlmock.NewRows([]string{
 			"cpu_avg", "cpu_peak", "mem_avg", "mem_peak", "disk_avg", "disk_peak",
 		}).AddRow(10.0, 10.0, 20.0, 20.0, 30.0, 30.0))
+	mock.ExpectQuery(`SELECT id::text,state,reason_code,observed_fingerprint`).WithArgs(int64(12)).
+		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec(`(?s)UPDATE nodes SET cpu_pct=.*connectivity_state='online'.*capacity_state=\$21.*compatibility_state=\$27.*telemetry_source=\$34.*\$31>registration_policy_version.*version_reuse`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -76,6 +79,41 @@ func TestUpdateNodeHeartbeatStoresWindowedHealthAndVersionedPolicy(t *testing.T)
 		t.Fatal(err)
 	}
 	assertMockExpectations(t, mock)
+}
+
+func TestUpdateNodeHeartbeatIsIdempotentAndRejectsOlderReport(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 9, 0, 5, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name       string
+		observedAt time.Time
+		wantErr    error
+	}{
+		{name: "duplicate", observedAt: now},
+		{name: "older", observedAt: now.Add(-time.Second), wantErr: ErrStaleNodeHeartbeat},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			st, mock, closeDB := newMockStore(t)
+			defer closeDB()
+			facts := testNodeHeartbeat(test.observedAt)
+			mock.ExpectBegin()
+			mock.ExpectQuery(`SELECT capacity_state,capacity_reason_code`).WithArgs(int64(12)).
+				WillReturnRows(sqlmock.NewRows([]string{
+					"capacity_state", "capacity_reason_code", "pressure_since", "recovery_since", "changed_at", "cooldown_until",
+					"connectivity_state", "compatibility_fingerprint", "compatibility_reported_at",
+				}).AddRow("open", nil, nil, nil, now.Add(-time.Hour), nil, "online", strings.Repeat("a", 64), now))
+			if test.wantErr == nil {
+				mock.ExpectCommit()
+			} else {
+				mock.ExpectRollback()
+			}
+			err := st.UpdateNodeHeartbeat(context.Background(), 12, facts, testNodeCapacityPolicy())
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("err=%v want=%v", err, test.wantErr)
+			}
+			assertMockExpectations(t, mock)
+		})
+	}
 }
 
 func TestUpdateNodeHeartbeatRejectsInvalidFactsBeforeTransaction(t *testing.T) {
@@ -96,6 +134,11 @@ func TestUpdateNodeHeartbeatRejectsInvalidFactsBeforeTransaction(t *testing.T) {
 	facts.CompatibilityReasonCode = "missing_capability"
 	if err := st.UpdateNodeHeartbeat(context.Background(), 12, facts, testNodeCapacityPolicy()); err == nil {
 		t.Fatal("compatible state with an error reason was accepted")
+	}
+	facts = testNodeHeartbeat(time.Now().UTC())
+	facts.AgentVersion = strings.Repeat("x", 129)
+	if err := st.UpdateNodeHeartbeat(context.Background(), 12, facts, testNodeCapacityPolicy()); err == nil {
+		t.Fatal("oversized version fact was accepted")
 	}
 	assertMockExpectations(t, mock)
 }
