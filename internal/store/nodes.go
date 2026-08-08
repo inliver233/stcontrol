@@ -37,12 +37,14 @@ func (s *Store) TransitionNodeLifecycle(ctx context.Context, p TransitionNodeLif
 		p.Now = time.Now().UTC()
 	}
 	allowed := map[string]map[string]bool{
-		"pending":     {"active": true, "retired": true},
-		"active":      {"maintenance": true, "draining": true, "degraded": true, "failed": true},
-		"maintenance": {"active": true, "draining": true, "retired": true},
-		"draining":    {"active": true, "maintenance": true, "retired": true},
-		"degraded":    {"active": true, "maintenance": true, "draining": true, "failed": true},
-		"failed":      {"maintenance": true, "retired": true},
+		"pending":        {"active": true, "retired": true},
+		"active":         {"maintenance": true, "draining": true, "degraded": true, "failed": true},
+		"maintenance":    {"active": true, "draining": true, "retired": true},
+		"draining":       {"active": true, "maintenance": true},
+		"retiring":       {"maintenance": true, "decommissioned": true},
+		"degraded":       {"active": true, "maintenance": true, "draining": true, "failed": true},
+		"failed":         {"maintenance": true, "retired": true},
+		"decommissioned": {"retired": true},
 	}
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
@@ -126,13 +128,23 @@ func (s *Store) TransitionNodeLifecycle(ctx context.Context, p TransitionNodeLif
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE nodes SET operational_state=$2,
-		  allow_register=CASE WHEN $2='retired' THEN false ELSE allow_register END,
-		  is_backup_target=CASE WHEN $2='retired' THEN false ELSE is_backup_target END,
-		  status=CASE WHEN $2='retired' THEN 'offline' ELSE status END
+		  allow_register=CASE WHEN $2 IN ('decommissioned','retired') THEN false ELSE allow_register END,
+		  is_backup_target=CASE WHEN $2 IN ('decommissioned','retired') THEN false ELSE is_backup_target END,
+		  status=CASE WHEN $2 IN ('decommissioned','retired') THEN 'offline' ELSE status END
 		WHERE id=$1`, p.NodeID, p.ToState); err != nil {
 		return "", err
 	}
-	if p.ToState == "retired" {
+	if p.ToState == "draining" {
+		if err := createNodeRetirementLocked(ctx, tx, p, activeGeneration); err != nil {
+			return "", err
+		}
+	} else if (fromState == "draining" || fromState == "retiring") &&
+		(p.ToState == "active" || p.ToState == "maintenance") {
+		if err := cancelNodeRetirementLocked(ctx, tx, p.NodeID, p.Now); err != nil {
+			return "", err
+		}
+	}
+	if p.ToState == "decommissioned" || p.ToState == "retired" {
 		statements := []struct {
 			query string
 			args  []any

@@ -106,6 +106,7 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Post("/nodes", s.handleAdminCreateNode)
 		r.Put("/nodes/{id}", s.handleAdminUpdateNode)
 		r.Post("/nodes/{id}/lifecycle", s.handleAdminTransitionNodeLifecycle)
+		r.Get("/nodes/{id}/retirement", s.handleAdminNodeRetirementStatus)
 		r.Post("/nodes/{id}/register-token", s.handleAdminNodeRegisterToken)
 		r.Post("/nodes/{id}/scan-existing", s.handleAdminScanExisting)
 		r.Post("/nodes/{id}/admin-link", s.handleVerifyAdminNodeLink)

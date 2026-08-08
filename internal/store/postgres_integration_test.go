@@ -310,6 +310,87 @@ func assertPostgresNodeLifecycleHardening(t *testing.T, st *Store, peerNodeID in
 		RETURNING id`).Scan(&adminID); err != nil {
 		t.Fatalf("insert lifecycle administrator: %v", err)
 	}
+	captureNodeID := insertIntegrationNode(t, st, "lifecycle-capture")
+	var captureLegacyUserID, captureGlobalUserID int64
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO users (username,display_name,auth_provider,home_node_id,status)
+		VALUES ('lifecycle-captured-user','Lifecycle Captured','password',$1,'active') RETURNING id`, captureNodeID).
+		Scan(&captureLegacyUserID); err != nil {
+		t.Fatalf("insert captured legacy user: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO global_users (uuid,legacy_user_id,display_name,status)
+		VALUES ('71000000-0000-4000-8000-000000000022',$1,'Lifecycle Captured','active') RETURNING id`,
+		captureLegacyUserID).Scan(&captureGlobalUserID); err != nil {
+		t.Fatalf("insert captured global user: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO node_accounts (user_id,node_id,local_handle,status)
+		VALUES ($1,$2,'lifecycle-captured-user','active')`, captureGlobalUserID, captureNodeID); err != nil {
+		t.Fatalf("insert captured retirement account: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO user_replicas (user_id,node_id,kind,state)
+		VALUES ($1,$2,'home','ready')`, captureLegacyUserID, captureNodeID); err != nil {
+		t.Fatalf("insert captured retirement replica: %v", err)
+	}
+	captureDrain := TransitionNodeLifecycleParams{
+		OperationID: "71000000-0000-4000-8000-000000000023",
+		NodeID:      captureNodeID, ToState: "draining", ReasonCode: "operator_draining",
+		AdminID: adminID, Now: now,
+	}
+	if state, err := st.TransitionNodeLifecycle(ctx, captureDrain); err != nil || state != "draining" {
+		t.Fatalf("capture retirement items: state=%q err=%v", state, err)
+	}
+	if state, err := st.TransitionNodeLifecycle(ctx, captureDrain); err != nil || state != "draining" {
+		t.Fatalf("replay captured retirement: state=%q err=%v", state, err)
+	}
+	captureStatus, err := st.GetNodeRetirementStatus(ctx, captureNodeID)
+	if err != nil || captureStatus == nil || captureStatus.TotalItems != 1 || captureStatus.PendingItems != 1 ||
+		captureStatus.State != "scheduled" {
+		t.Fatalf("captured retirement status=%+v err=%v", captureStatus, err)
+	}
+	var capturedKind string
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT item_kind FROM node_retirement_items WHERE retirement_id=$1`, captureStatus.ID).
+		Scan(&capturedKind); err != nil || capturedKind != "authoritative_home" {
+		t.Fatalf("captured retirement kind=%q err=%v", capturedKind, err)
+	}
+	drainingSecret := sha256.Sum256([]byte("draining-allocation"))
+	if _, err := st.CreateLoginHandoff(ctx, CreateLoginHandoffParams{
+		OperationID:     "71000000-0000-4000-8000-000000000026",
+		JTI:             "71000000-0000-4000-8000-000000000027",
+		SecretHash:      drainingSecret[:],
+		UserID:          captureGlobalUserID,
+		RequestedNodeID: captureNodeID,
+		SessionID:       "71000000-0000-4000-8000-000000000028",
+		Issuer:          "https://controller.example",
+		Subject:         "lifecycle-captured-user",
+		KeyID:           "controller-v1",
+		TicketTTL:       time.Minute,
+		LeaseTTL:        15 * time.Minute,
+		Now:             now.Add(500 * time.Millisecond),
+	}); !errors.Is(err, ErrLoginHandoffUnavailable) {
+		t.Fatalf("new draining allocation error=%v", err)
+	}
+	var drainingLeaseCount int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT count(*) FROM user_activity_leases WHERE user_id=$1`, captureGlobalUserID).
+		Scan(&drainingLeaseCount); err != nil || drainingLeaseCount != 0 {
+		t.Fatalf("draining allocation left lease count=%d err=%v", drainingLeaseCount, err)
+	}
+	captureCancel := TransitionNodeLifecycleParams{
+		OperationID: "71000000-0000-4000-8000-000000000024",
+		NodeID:      captureNodeID, ToState: "maintenance", ReasonCode: "operator_maintenance",
+		AdminID: adminID, Now: now.Add(time.Second),
+	}
+	if state, err := st.TransitionNodeLifecycle(ctx, captureCancel); err != nil || state != "maintenance" {
+		t.Fatalf("cancel captured retirement: state=%q err=%v", state, err)
+	}
+	captureStatus, err = st.GetNodeRetirementStatus(ctx, captureNodeID)
+	if err != nil || captureStatus.State != "cancelled" || captureStatus.CompletedItems != 1 {
+		t.Fatalf("cancelled retirement status=%+v err=%v", captureStatus, err)
+	}
 
 	maintenance := TransitionNodeLifecycleParams{
 		OperationID: "71000000-0000-4000-8000-000000000002",
@@ -349,6 +430,18 @@ func assertPostgresNodeLifecycleHardening(t *testing.T, st *Store, peerNodeID in
 	}
 	if state, err := st.TransitionNodeLifecycle(ctx, draining); err != nil || state != "draining" {
 		t.Fatalf("enter draining: state=%q err=%v", state, err)
+	}
+	drainStatus, err := st.GetNodeRetirementStatus(ctx, nodeID)
+	if err != nil || drainStatus == nil || drainStatus.State != "verifying" || drainStatus.TotalItems != 0 {
+		t.Fatalf("empty drain status=%+v err=%v", drainStatus, err)
+	}
+	pauseDrain := TransitionNodeLifecycleParams{
+		OperationID: "71000000-0000-4000-8000-000000000025",
+		NodeID:      nodeID, ToState: "maintenance", ReasonCode: "operator_maintenance",
+		AdminID: adminID, Now: now.Add(1500 * time.Millisecond),
+	}
+	if state, err := st.TransitionNodeLifecycle(ctx, pauseDrain); err != nil || state != "maintenance" {
+		t.Fatalf("pause empty drain: state=%q err=%v", state, err)
 	}
 	userID := insertIntegrationGlobalUser(t, st, "lifecycle-user")
 	if _, err := st.DB.ExecContext(ctx, `

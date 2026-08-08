@@ -332,3 +332,14 @@
 - 新增真实 PostgreSQL 矩阵验证维护/排空保留 operator 配置、精确重放成功、跨节点/改 reason 重放拒绝、active node account/规范化 ready 副本/independent-draining 阻止退役，以及排空后所有凭据/票据/能力原子撤销并可精确重放最终结果。
 - `STCONTROL_TEST_POSTGRES_DSN=... go test -count=1 -coverprofile=coverage/node_lifecycle_hardening.coverprofile ./...` 通过；总覆盖率 44.3%（Agent 54.1%、Controller 25.4%、Store 56.9%）。`go vet ./...`、Linux amd64 CGO0 build、web production build、29 个 embedded migration 并发应用/checksum 校验和 `git diff --check` 通过。
 - 尚未完成且未冒充完成：本批次只加固最终退役安全边界，没有把“进入 draining”冒充自动迁移。持久化 retirement operation/items、逐用户迁移与验证、retiring/decommissioned 进度、失败节点转普通恢复、升级失败和静默数据损坏矩阵仍是 R19 后续；总覆盖率也仍低于 80%。
+
+## 2026-08-08：节点退役持久清单与排空准入批次
+
+- 新增 `0030_node_retirement_workflows.sql`，运营状态图加入 `retiring/decommissioned`；`node_retirement_operations` 持久保存原 lifecycle operation、节点、管理员、机器 reason、controller generation、调度/租约/退避/终态，且每节点最多一个开放退役；`node_retirement_items` 按用户保存 source/target、责任类型、workflow、状态、重试和完成事实。
+- `active/degraded/maintenance -> draining` 与节点状态、lifecycle event、retirement operation/items 在同一个 serializable 事务提交。清单从 legacy home、副本、规范化 replica、node account 交叉生成，每用户只产生一个最高优先级责任：authoritative home 优先，其次 storage archive、compute redundant replica、最后 account metadata。相同 operation 精确重放不重复入队；切回 maintenance/active 原子取消 operation 并把未完成 item 标为 superseded，不回滚已安全完成的迁移事实。
+- 生命周期禁止 `draining -> retired` 跳步；后续执行器必须先进入 retiring、逐项完成并验证，再进入 decommissioned，之后管理员才能做兼容性的最终 retired 标记。空节点也会留下 state=verifying 的 durable operation，而不是因为“没有用户”绕过可审计流程。
+- 登录 handoff 在取得候选 lease 后再次读取节点的 connectivity/compatibility/reported+desired control mode 和 operational state。新 lease 只允许 active；已有 writer 可在 draining/retiring 返回原节点。新分配若撞上排空会让 lease operation 和票据一起回滚。真实 PostgreSQL 验证排空节点没有残留 writer 行。
+- 管理 API 新增 `/api/admin/nodes/{id}/retirement`，只返回 bounded progress 计数和机器错误码；节点页每 15 秒刷新完成/等待离线/阻塞/失败计数，显示 retiring/decommissioned 产品状态，并按后端合法图收窄排空、隔离和最终退役按钮。
+- 真实 PostgreSQL 验证 authoritative home 只捕获一个 item、精确 drain 重放不重复、暂停后 operation=cancelled/item=superseded、空清单进入 verifying，以及新登录 lease 全事务回滚。30 个 embedded migration 由并发 Store 完整应用并核对 checksum。
+- `STCONTROL_TEST_POSTGRES_DSN=... go test -count=1 -coverprofile=coverage/node_retirement_foundation.coverprofile ./...`、`go vet ./...`、Linux amd64 CGO0 build、web production build 和 `git diff --check` 通过；总覆盖率 44.4%（Agent 54.1%、Controller 25.4%、Store 57.2%）。
+- 尚未完成且未冒充完成：这一批只建立可重启的清单/准入/进度基础；后台 claim/lease、账号供应、不可变快照、权威 home 原子迁移、storage archive 重建和最终 decommission verifier 将在下一批实现，因此 R19 仍为 `部分`。

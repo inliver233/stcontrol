@@ -62,7 +62,7 @@ func TestCreateLoginHandoffCommitsLeaseAndTicketTogether(t *testing.T) {
 			p.RequestedNodeID, p.SessionID, int64(1), now).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery(`SELECT base_url FROM nodes`).
-		WithArgs(p.RequestedNodeID).
+		WithArgs(p.RequestedNodeID, false).
 		WillReturnRows(sqlmock.NewRows([]string{"base_url"}).AddRow("https://node.example"))
 	mock.ExpectExec(`INSERT INTO control_tickets`).
 		WithArgs(p.JTI, p.OperationID, p.SecretHash, p.Issuer, "https://node.example", p.Subject,
@@ -79,6 +79,34 @@ func TestCreateLoginHandoffCommitsLeaseAndTicketTogether(t *testing.T) {
 	}
 	if handoff.TargetNodeID != p.RequestedNodeID || handoff.ActivityEpoch != 1 || handoff.ControllerGeneration != 3 {
 		t.Fatalf("unexpected handoff: %+v", handoff)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestCreateLoginHandoffRollsBackNewLeaseWhenNodeStartsDraining(t *testing.T) {
+	t.Parallel()
+	store, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 8, 6, 0, 0, 0, time.UTC)
+	p := testHandoffParams(now)
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT id FROM global_users`).WithArgs(p.UserID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(p.UserID))
+	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
+		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(3)))
+	mock.ExpectQuery(`SELECT user_id, requested_node_id, requested_session_id, outcome`).WithArgs(p.OperationID).
+		WillReturnRows(sqlmock.NewRows(splitColumns(opColumns)))
+	mock.ExpectQuery(`SELECT user_id, writer_node_id`).WithArgs(p.UserID).
+		WillReturnRows(sqlmock.NewRows(splitColumns(leaseColumns)))
+	mock.ExpectExec(`INSERT INTO user_activity_leases`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`INSERT INTO activity_lease_operations`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`SELECT base_url FROM nodes`).WithArgs(p.RequestedNodeID, false).
+		WillReturnRows(sqlmock.NewRows([]string{"base_url"}))
+	mock.ExpectRollback()
+	if _, err := store.CreateLoginHandoff(context.Background(), p); !errors.Is(err, ErrLoginHandoffUnavailable) {
+		t.Fatalf("draining allocation error=%v", err)
 	}
 	assertMockExpectations(t, mock)
 }

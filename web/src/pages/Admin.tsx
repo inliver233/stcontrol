@@ -42,6 +42,7 @@ const adminApi = {
     adminReq<any>(`/api/admin/nodes/${id}/lifecycle`, {
       method: 'POST', body: JSON.stringify({ operation_id: crypto.randomUUID(), state, reason_code, acknowledge_risk }),
     }),
+  retirement: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/retirement`),
   registerToken: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/register-token`, { method: 'POST' }),
   scanExisting: (id: number, operationID: string) => adminReq<any>(`/api/admin/nodes/${id}/scan-existing`, {
     method: 'POST', body: JSON.stringify({ operation_id: operationID }),
@@ -185,6 +186,7 @@ function Overview() {
 // ---------- 节点管理 ----------
 function NodesAdmin() {
   const [nodes, setNodes] = useState<any[]>([])
+  const [retirements, setRetirements] = useState<Record<number, any>>({})
   const [nodeLinks, setNodeLinks] = useState<AdminNodeLink[]>([])
   const [tokenInfo, setTokenInfo] = useState<any>(null)
   const [scanResult, setScanResult] = useState<any>(null)
@@ -201,12 +203,25 @@ function NodesAdmin() {
   const handoffOperations = useRef<Record<number, string>>({})
 
   const load = () => Promise.all([adminApi.nodes(), adminApi.nodeLinks()])
-    .then(([nodeData, linkData]) => {
+    .then(async ([nodeData, linkData]) => {
       setNodes(nodeData.nodes)
       setNodeLinks(linkData.links || [])
+      const tracked = nodeData.nodes.filter((node: any) =>
+        ['draining', 'retiring', 'decommissioned'].includes(node.operational_state))
+      const results = await Promise.allSettled(tracked.map((node: any) => adminApi.retirement(node.id)))
+      const progress: Record<number, any> = {}
+      tracked.forEach((node: any, index: number) => {
+        const result = results[index]
+        if (result.status === 'fulfilled') progress[node.id] = result.value
+      })
+      setRetirements(progress)
     })
     .catch(e => setError(e.message))
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    const timer = window.setInterval(load, 15_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const nodeLink = (nodeID: number) => nodeLinks.find(link => link.node_id === nodeID)
   const beginNodeLink = (node: any) => {
@@ -366,7 +381,10 @@ function NodesAdmin() {
 
   const healthLabel = (value: string) => ({
     online: '在线', offline: '离线', unknown: '未知', active: '运营', maintenance: '维护',
-    draining: '排空', degraded: '降级', failed: '故障', retired: '退役', pending: '待接入',
+    draining: '排空', retiring: '迁移中', decommissioned: '已下线', scheduled: '待调度',
+    migrating: '迁移中', retry_wait: '等待重试', verifying: '校验中', blocked: '阻塞',
+    cancelled: '已取消', succeeded: '已完成',
+    degraded: '降级', failed: '故障', retired: '退役', pending: '待接入',
     open: '开放', busy: '繁忙', full: '满载', compatible: '兼容', incompatible: '不兼容',
   } as Record<string, string>)[value] || value
   const reasonLabel = (value: string) => ({
@@ -468,6 +486,7 @@ function NodesAdmin() {
         <tbody>
           {nodes.map(n => {
             const link = nodeLink(n.id)
+            const retirement = retirements[n.id]
             return <tr key={n.id}>
               <td>{n.id}</td>
               <td>{n.name}<div className="mono" style={{ fontSize: 11 }}>{n.base_url || '未配置地址'}</div></td>
@@ -480,6 +499,12 @@ function NodesAdmin() {
                 {(n.capacity_reason_code?.String || n.compatibility_reason_code?.String) && (
                   <div>{reasonLabel(n.capacity_reason_code?.String || n.compatibility_reason_code?.String)}</div>
                 )}
+                {retirement && <div style={{ marginTop: 4 }}>
+                  退役：{healthLabel(retirement.state)}，{retirement.completed_items}/{retirement.total_items} 完成
+                  {retirement.waiting_items > 0 && `，${retirement.waiting_items} 等待离线`}
+                  {retirement.blocked_items > 0 && `，${retirement.blocked_items} 阻塞`}
+                  {retirement.failed_items > 0 && `，${retirement.failed_items} 失败`}
+                </div>}
               </td>
               <td style={{ fontSize: 12 }}>
                 CPU {metric(n.cpu_window_avg)}%/{metric(n.cpu_window_peak)}% ·
@@ -504,11 +529,12 @@ function NodesAdmin() {
                 {' '}<button className="btn-sm" onClick={() => toggleMaintenance(n)}>
                   {n.operational_state === 'maintenance' ? '结束维护' : '进入维护'}
                 </button>
-                {n.operational_state !== 'retired' && <>
-                  {' '}<button className="btn-sm" onClick={() => transitionLifecycle(n, 'draining')}>排空迁移</button>
-                  {' '}<button className="btn-sm danger" onClick={() => transitionLifecycle(n, 'failed')}>隔离故障</button>
-                  {' '}<button className="btn-sm danger" onClick={() => transitionLifecycle(n, 'retired')}>退役</button>
-                </>}
+                {['active', 'degraded', 'maintenance'].includes(n.operational_state) &&
+                  <>{' '}<button className="btn-sm" onClick={() => transitionLifecycle(n, 'draining')}>排空迁移</button></>}
+                {['active', 'degraded'].includes(n.operational_state) &&
+                  <>{' '}<button className="btn-sm danger" onClick={() => transitionLifecycle(n, 'failed')}>隔离故障</button></>}
+                {['pending', 'maintenance', 'failed', 'decommissioned'].includes(n.operational_state) &&
+                  <>{' '}<button className="btn-sm danger" onClick={() => transitionLifecycle(n, 'retired')}>最终退役</button></>}
                 {n.role === 'compute' && <>
                   <div style={{ marginTop: 6, fontSize: 12 }}>
                     原生后台：{link?.state === 'verified'

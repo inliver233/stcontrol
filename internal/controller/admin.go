@@ -131,6 +131,24 @@ func (s *Server) handleAdminTransitionNodeLifecycle(w http.ResponseWriter, r *ht
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "state": state})
 }
 
+func (s *Server) handleAdminNodeRetirementStatus(w http.ResponseWriter, r *http.Request) {
+	nodeID, err := parseID(chi.URLParam(r, "id"))
+	if err != nil || nodeID <= 0 {
+		protocol.WriteError(w, http.StatusBadRequest, "非法节点 ID")
+		return
+	}
+	status, err := s.Store.GetNodeRetirementStatus(r.Context(), nodeID)
+	if err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "节点退役进度暂不可用")
+		return
+	}
+	if status == nil {
+		protocol.WriteError(w, http.StatusNotFound, "节点没有退役任务")
+		return
+	}
+	protocol.WriteJSON(w, http.StatusOK, status)
+}
+
 // handleAdminNodeRegisterToken 为节点生成一次性注册令牌 + 安装命令。
 func (s *Server) handleAdminNodeRegisterToken(w http.ResponseWriter, r *http.Request) {
 	nodeID, err := parseID(chi.URLParam(r, "id"))

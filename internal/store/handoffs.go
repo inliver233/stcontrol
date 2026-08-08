@@ -117,8 +117,12 @@ func (s *Store) CreateLoginHandoff(ctx context.Context, p CreateLoginHandoffPara
 	var nodeBaseURL string
 	if err := tx.QueryRowContext(ctx, `
 		SELECT base_url FROM nodes
-		WHERE id=$1 AND role='compute' AND status='online'
-		FOR SHARE`, targetNodeID).Scan(&nodeBaseURL); err != nil {
+		WHERE id=$1 AND role='compute' AND status='online' AND connectivity_state='online'
+		  AND compatibility_state='compatible' AND control_mode='managed'
+		  AND desired_control_mode='managed'
+		  AND (operational_state='active'
+		    OR ($2 AND operational_state IN ('draining','retiring')))
+		FOR SHARE`, targetNodeID, leaseResult.Existing).Scan(&nodeBaseURL); err != nil {
 		if err == sql.ErrNoRows {
 			return LoginHandoff{}, ErrLoginHandoffUnavailable
 		}
