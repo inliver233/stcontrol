@@ -37,6 +37,7 @@ type agentCommandSummary struct {
 	ConflictEvidence   *protocol.ConflictEvidenceReceipt   `json:"conflict_evidence,omitempty"`
 	ConflictResolution *protocol.ConflictResolutionReceipt `json:"conflict_resolution,omitempty"`
 	NodeAdmin          *protocol.NodeAdminVerification     `json:"node_admin,omitempty"`
+	LocalUserProof     *protocol.VerifyLocalUserResponse   `json:"local_user_proof,omitempty"`
 	Ciphertext         string                              `json:"ciphertext,omitempty"`
 }
 

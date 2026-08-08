@@ -301,6 +301,18 @@ type SetPasswordRequest struct {
 	Version      int64  `json:"version"`
 }
 
+type VerifyLocalUserRequest struct {
+	OperationID string `json:"operation_id"`
+	Handle      string `json:"handle"`
+	Password    string `json:"password"`
+}
+
+type VerifyLocalUserResponse struct {
+	Handle      string `json:"handle"`
+	LocalUserID string `json:"local_user_id,omitempty"`
+	Verified    bool   `json:"verified"`
+}
+
 // ---------- 备份 ----------
 
 type PrepareSnapshotReceiveRequest struct {

@@ -205,7 +205,8 @@ func (s *Store) IsControlPlaneReady(ctx context.Context) (bool, error) {
 		  AND NOT EXISTS (
 		    SELECT 1 FROM nodes
 		    WHERE role='compute'
-		      AND (control_mode<>'managed' OR desired_control_mode<>'managed')
+		      AND (control_mode<>'managed' OR desired_control_mode<>'managed'
+		        OR controller_generation<>(SELECT generation FROM controller_epochs WHERE state='active'))
 		  )`).Scan(&ready)
 	return ready, err
 }

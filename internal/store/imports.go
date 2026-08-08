@@ -14,6 +14,7 @@ import (
 var (
 	ErrInvalidAccountImport  = errors.New("invalid account import inventory")
 	ErrAccountImportConflict = errors.New("account import operation conflicts with existing inventory")
+	ErrAccountClaimRejected  = errors.New("account import claim rejected")
 )
 
 const maxAccountImportCandidates = 500
@@ -82,6 +83,167 @@ type AccountImportCandidate struct {
 type AccountImportResult struct {
 	Batch      AccountImportBatch       `json:"batch"`
 	Candidates []AccountImportCandidate `json:"candidates"`
+}
+
+type AccountImportClaimTarget struct {
+	NodeID      int64  `json:"node_id"`
+	NodeName    string `json:"node_name"`
+	LocalHandle string `json:"local_handle"`
+	AccountKind string `json:"account_kind"`
+}
+
+type CompleteAccountImportClaimParams struct {
+	OperationID  string
+	GlobalUserID int64
+	NodeID       int64
+	LocalHandle  string
+	LocalUserID  string
+	Now          time.Time
+}
+
+func (s *Store) ListAccountImportClaimTargets(ctx context.Context, globalUserID int64) ([]AccountImportClaimTarget, error) {
+	if globalUserID <= 0 {
+		return nil, ErrAccountClaimRejected
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT DISTINCT ON (candidate.node_id,candidate.local_user_id)
+		  candidate.node_id,node.name,candidate.local_handle,candidate.account_kind
+		FROM account_import_candidates candidate
+		JOIN nodes node ON node.id=candidate.node_id
+		JOIN global_users global_user ON global_user.id=$1
+		JOIN users legacy ON legacy.id=global_user.legacy_user_id
+		WHERE candidate.resolution_state='claim_required'
+		  AND lower(candidate.local_handle)=lower(legacy.username)
+		ORDER BY candidate.node_id,candidate.local_user_id,candidate.created_at DESC`, globalUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var targets []AccountImportClaimTarget
+	for rows.Next() {
+		var target AccountImportClaimTarget
+		if err := rows.Scan(&target.NodeID, &target.NodeName, &target.LocalHandle, &target.AccountKind); err != nil {
+			return nil, err
+		}
+		targets = append(targets, target)
+	}
+	return targets, rows.Err()
+}
+
+func (s *Store) CompleteAccountImportClaim(ctx context.Context, p CompleteAccountImportClaimParams) error {
+	if p.OperationID == "" || p.GlobalUserID <= 0 || p.NodeID <= 0 || p.LocalHandle == "" || p.LocalUserID == "" {
+		return ErrAccountClaimRejected
+	}
+	if p.Now.IsZero() {
+		p.Now = time.Now().UTC()
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var existingUserID, existingNodeID int64
+	var existingLocalID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT user_id,node_id,local_user_id FROM account_import_claim_operations
+		WHERE operation_id=$1 FOR UPDATE`, p.OperationID).Scan(&existingUserID, &existingNodeID, &existingLocalID)
+	if err == nil {
+		if existingUserID != p.GlobalUserID || existingNodeID != p.NodeID || existingLocalID != p.LocalUserID {
+			return ErrAccountImportConflict
+		}
+		return tx.Commit()
+	}
+	if err != sql.ErrNoRows {
+		return err
+	}
+	var candidateID, batchID, candidateLocalID, candidateHandle string
+	var isAdmin bool
+	err = tx.QueryRowContext(ctx, `
+		SELECT candidate.id,candidate.batch_id,candidate.local_user_id,candidate.local_handle,candidate.is_admin
+		FROM account_import_candidates candidate
+		WHERE candidate.node_id=$1 AND lower(candidate.local_handle)=lower($2)
+		  AND candidate.resolution_state='claim_required'
+		ORDER BY candidate.created_at DESC LIMIT 1 FOR UPDATE`, p.NodeID, p.LocalHandle).
+		Scan(&candidateID, &batchID, &candidateLocalID, &candidateHandle, &isAdmin)
+	if err != nil || candidateLocalID != p.LocalUserID {
+		return ErrAccountClaimRejected
+	}
+	var legacyUserID int64
+	var username, status string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT global_user.legacy_user_id,legacy.username,global_user.status
+		FROM global_users global_user JOIN users legacy ON legacy.id=global_user.legacy_user_id
+		WHERE global_user.id=$1 FOR UPDATE`, p.GlobalUserID).Scan(&legacyUserID, &username, &status); err != nil ||
+		status != "active" || !equalFoldASCII(username, candidateHandle) {
+		return ErrAccountClaimRejected
+	}
+	var collision int
+	err = tx.QueryRowContext(ctx, `
+		SELECT 1 FROM node_accounts WHERE node_id=$1 AND (user_id=$2 OR local_user_id=$3) LIMIT 1 FOR UPDATE`,
+		p.NodeID, p.GlobalUserID, p.LocalUserID).Scan(&collision)
+	if err == nil {
+		return ErrAccountClaimRejected
+	}
+	if err != sql.ErrNoRows {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO node_accounts (
+		  user_id,node_id,local_handle,local_user_id,status,account_version,is_admin,verified_at,updated_at
+		) VALUES ($1,$2,$3,$4,'active',1,$5,$6,$6)`,
+		p.GlobalUserID, p.NodeID, candidateHandle, p.LocalUserID, isAdmin, p.Now); err != nil {
+		return err
+	}
+	var homeNodeID sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT home_node_id FROM users WHERE id=$1 FOR UPDATE`, legacyUserID).Scan(&homeNodeID); err != nil {
+		return err
+	}
+	kind, replicaState := "hot_standby", "stale"
+	if !homeNodeID.Valid {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET home_node_id=$2 WHERE id=$1`, legacyUserID, p.NodeID); err != nil {
+			return err
+		}
+		kind, replicaState = "home", "ready"
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO user_replicas (user_id,node_id,kind,data_version,state,last_sync_at)
+		VALUES ($1,$2,$3,0,$4,$5)
+		ON CONFLICT (user_id,node_id) DO UPDATE SET kind=EXCLUDED.kind,state=EXCLUDED.state,last_sync_at=EXCLUDED.last_sync_at`,
+		legacyUserID, p.NodeID, kind, replicaState, p.Now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE account_import_candidates SET resolution_state='claimed',matched_user_id=$2,
+		  reason_code='password_control_proof',updated_at=$3 WHERE id=$1;
+		UPDATE account_import_batches SET auto_linked_count=auto_linked_count+1,
+		  unresolved_count=GREATEST(0,unresolved_count-1),
+		  state=CASE WHEN unresolved_count<=1 THEN 'resolved' ELSE state END,updated_at=$3 WHERE id=$4;
+		INSERT INTO account_import_claim_operations (
+		  operation_id,candidate_id,user_id,node_id,local_user_id,controller_generation,completed_at
+		) SELECT $5,$1,$2,$6,$7,generation,$3 FROM controller_epochs WHERE state='active'`,
+		candidateID, p.GlobalUserID, p.Now, batchID, p.OperationID, p.NodeID, p.LocalUserID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func equalFoldASCII(left, right string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		l, r := left[index], right[index]
+		if l >= 'A' && l <= 'Z' {
+			l += 'a' - 'A'
+		}
+		if r >= 'A' && r <= 'Z' {
+			r += 'a' - 'A'
+		}
+		if l != r {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) ListActiveOAuthIdentitySubjects(ctx context.Context) ([]OAuthIdentitySubject, error) {

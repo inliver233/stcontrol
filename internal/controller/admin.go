@@ -3,6 +3,7 @@ package controller
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -109,8 +110,7 @@ func (s *Server) handleAdminUpdateNode(w http.ResponseWriter, r *http.Request) {
 	}
 	nid, _ := parseID(id)
 	n.ID = nid
-	if n.Name == "" ||
-		(n.OperationalState != "active" && n.OperationalState != "maintenance") {
+	if n.Name == "" {
 		protocol.WriteError(w, http.StatusBadRequest, "节点配置无效")
 		return
 	}
@@ -120,12 +120,56 @@ func (s *Server) handleAdminUpdateNode(w http.ResponseWriter, r *http.Request) {
 	}
 	detail, _ := json.Marshal(map[string]any{
 		"allow_register": n.AllowRegister, "is_backup_target": n.IsBackupTarget,
-		"operational_state": n.OperationalState,
 	})
 	if sess := currentSession(r); sess != nil {
 		_ = s.Store.Audit(r.Context(), sess.Username, "node-settings", id, detail)
 	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+type nodeLifecycleRequest struct {
+	OperationID     string `json:"operation_id"`
+	State           string `json:"state"`
+	ReasonCode      string `json:"reason_code"`
+	AcknowledgeRisk bool   `json:"acknowledge_risk"`
+}
+
+func (s *Server) handleAdminTransitionNodeLifecycle(w http.ResponseWriter, r *http.Request) {
+	if !s.requireNewOperations(w) {
+		return
+	}
+	nodeID, err := parseID(chi.URLParam(r, "id"))
+	var req nodeLifecycleRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	if err != nil || decoder.Decode(&req) != nil || !isUUID(req.OperationID) ||
+		(req.State != "active" && req.State != "maintenance" && req.State != "draining" &&
+			req.State != "degraded" && req.State != "failed" && req.State != "retired") ||
+		len(req.ReasonCode) == 0 || len(req.ReasonCode) > 128 ||
+		((req.State == "failed" || req.State == "retired") && !req.AcknowledgeRisk) {
+		protocol.WriteError(w, http.StatusBadRequest, "节点生命周期请求无效")
+		return
+	}
+	sess := currentSession(r)
+	if sess == nil || sess.AdminID <= 0 {
+		protocol.WriteError(w, http.StatusUnauthorized, "管理员会话无效")
+		return
+	}
+	state, err := s.Store.TransitionNodeLifecycle(r.Context(), store.TransitionNodeLifecycleParams{
+		OperationID: req.OperationID, NodeID: nodeID, ToState: req.State,
+		ReasonCode: req.ReasonCode, AdminID: sess.AdminID, Now: time.Now().UTC(),
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNodeLifecycleBlocked) {
+			protocol.WriteError(w, http.StatusConflict, "节点仍承载活动用户或副本，必须先排空/迁移")
+			return
+		}
+		protocol.WriteError(w, http.StatusServiceUnavailable, "节点生命周期更新失败")
+		return
+	}
+	detail, _ := json.Marshal(map[string]string{"state": state, "reason_code": req.ReasonCode})
+	_ = s.Store.Audit(r.Context(), sess.Username, "node-lifecycle", chi.URLParam(r, "id"), detail)
+	protocol.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "state": state})
 }
 
 // handleAdminNodeRegisterToken 为节点生成一次性注册令牌 + 安装命令。

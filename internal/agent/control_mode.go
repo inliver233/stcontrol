@@ -12,6 +12,7 @@ import (
 type agentControlModeState struct {
 	Mode                        string    `json:"mode"`
 	AdapterMode                 string    `json:"adapter_mode"`
+	AdapterControllerGeneration int64     `json:"adapter_controller_generation"`
 	ModeGeneration              int64     `json:"mode_generation"`
 	ControllerGeneration        int64     `json:"controller_generation"`
 	ReasonCode                  string    `json:"reason_code"`
@@ -178,12 +179,13 @@ func (a *Agent) syncTavernControlMode(ctx context.Context) error {
 	state := a.state.ControlMode
 	controllerGeneration := a.state.HighestGeneration
 	a.stateMu.Unlock()
-	if state.AdapterMode == state.Mode {
+	if state.AdapterMode == state.Mode && state.AdapterControllerGeneration >= controllerGeneration {
 		return nil
 	}
 	if a.Cfg.Role == "storage" {
 		a.stateMu.Lock()
 		a.state.ControlMode.AdapterMode = state.Mode
+		a.state.ControlMode.AdapterControllerGeneration = controllerGeneration
 		err := a.saveRuntimeStateLocked()
 		a.stateMu.Unlock()
 		return err
@@ -207,6 +209,7 @@ func (a *Agent) syncTavernControlMode(ctx context.Context) error {
 		return nil
 	}
 	a.state.ControlMode.AdapterMode = response.AppliedMode
+	a.state.ControlMode.AdapterControllerGeneration = controllerGeneration
 	a.state.ControlMode.ActiveIndependentSessions = response.ActiveIndependentSessions
 	a.state.ControlMode.PendingUserSyncs = response.PendingUserSyncs
 	return a.saveRuntimeStateLocked()

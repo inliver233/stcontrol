@@ -21,6 +21,103 @@ type scanExistingRequest struct {
 	OperationID string `json:"operation_id"`
 }
 
+type claimImportedAccountRequest struct {
+	OperationID string `json:"operation_id"`
+	NodeID      int64  `json:"node_id"`
+	Password    string `json:"password"`
+}
+
+func (s *Server) handleListMyAccountImportClaims(w http.ResponseWriter, r *http.Request) {
+	legacyUserID, ok := CurrentUser(r)
+	if !ok {
+		protocol.WriteError(w, http.StatusUnauthorized, "未登录")
+		return
+	}
+	user, err := s.Store.GetUserByID(r.Context(), legacyUserID)
+	if err != nil || user == nil || user.GlobalID <= 0 {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "读取待认领节点账号失败")
+		return
+	}
+	targets, err := s.Store.ListAccountImportClaimTargets(r.Context(), user.GlobalID)
+	if err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "读取待认领节点账号失败")
+		return
+	}
+	protocol.WriteJSON(w, http.StatusOK, map[string]any{"claims": targets})
+}
+
+func (s *Server) handleClaimImportedAccount(w http.ResponseWriter, r *http.Request) {
+	if !s.requireNewOperations(w) {
+		return
+	}
+	var req claimImportedAccountRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&req) != nil || !isUUID(req.OperationID) || req.NodeID <= 0 ||
+		len(req.Password) == 0 || len(req.Password) > 256 {
+		protocol.WriteError(w, http.StatusBadRequest, "请输入该节点上的原密码")
+		return
+	}
+	legacyUserID, ok := CurrentUser(r)
+	if !ok {
+		protocol.WriteError(w, http.StatusUnauthorized, "未登录")
+		return
+	}
+	user, err := s.Store.GetUserByID(r.Context(), legacyUserID)
+	if err != nil || user == nil || user.GlobalID <= 0 || user.Status != "active" {
+		protocol.WriteError(w, http.StatusUnauthorized, "用户不可用")
+		return
+	}
+	targets, err := s.Store.ListAccountImportClaimTargets(r.Context(), user.GlobalID)
+	if err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "账号认领暂不可用")
+		return
+	}
+	var target *store.AccountImportClaimTarget
+	for index := range targets {
+		if targets[index].NodeID == req.NodeID {
+			target = &targets[index]
+			break
+		}
+	}
+	if target == nil || (target.AccountKind != "password" && target.AccountKind != "mixed") {
+		protocol.WriteError(w, http.StatusConflict, "该节点账号不能用密码证明认领")
+		return
+	}
+	node, err := s.Store.GetNodeByID(r.Context(), req.NodeID)
+	if err != nil || node == nil || !nodeReadyForManagedOperation(node) {
+		protocol.WriteError(w, http.StatusConflict, "节点当前不可验证账号")
+		return
+	}
+	commandOperationID := deriveWorkflowOperationID(req.OperationID, "verify-local-account")
+	result, err := s.runAgentCommandWithOperation(r.Context(), node, "verify_local_user", protocol.VerifyLocalUserRequest{
+		OperationID: commandOperationID, Handle: target.LocalHandle, Password: req.Password,
+	}, commandOperationID, 45*time.Second)
+	if err != nil || result.LocalUserProof == nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "节点账号验证暂不可用")
+		return
+	}
+	proof := result.LocalUserProof
+	if !proof.Verified || proof.Handle != target.LocalHandle || proof.LocalUserID == "" {
+		protocol.WriteError(w, http.StatusForbidden, "节点账号密码错误")
+		return
+	}
+	if err := s.Store.CompleteAccountImportClaim(r.Context(), store.CompleteAccountImportClaimParams{
+		OperationID: req.OperationID, GlobalUserID: user.GlobalID, NodeID: req.NodeID,
+		LocalHandle: target.LocalHandle, LocalUserID: proof.LocalUserID, Now: time.Now().UTC(),
+	}); err != nil {
+		if errors.Is(err, store.ErrAccountImportConflict) {
+			protocol.WriteError(w, http.StatusConflict, "重复认领操作与原请求不一致")
+			return
+		}
+		protocol.WriteError(w, http.StatusConflict, "节点账号已变化或已被认领")
+		return
+	}
+	detail, _ := json.Marshal(map[string]any{"node_id": req.NodeID, "handle": target.LocalHandle})
+	_ = s.Store.Audit(r.Context(), user.Username, "account-import-claim", node.Name, detail)
+	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (s *Server) handleAdminScanExisting(w http.ResponseWriter, r *http.Request) {
 	setHandoffNoStoreHeaders(w)
 	nodeID, err := parseID(chi.URLParam(r, "id"))

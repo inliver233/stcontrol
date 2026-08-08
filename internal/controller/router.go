@@ -80,6 +80,8 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Post("/users/me/identities/password", s.handleBindPasswordIdentity)
 		r.Post("/users/me/identities/{provider}/bind", s.handleBeginOAuthIdentityBinding)
 		r.Delete("/users/me/identities/{provider}", s.handleUnbindIdentity)
+		r.Get("/users/me/import-claims", s.handleListMyAccountImportClaims)
+		r.Post("/users/me/import-claims", s.handleClaimImportedAccount)
 	})
 
 	// 冲突恢复区只接受 conflict-frozen 用户，不继承普通用户权限。
@@ -102,6 +104,7 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Get("/node-links", s.handleAdminNodeLinks)
 		r.Post("/nodes", s.handleAdminCreateNode)
 		r.Put("/nodes/{id}", s.handleAdminUpdateNode)
+		r.Post("/nodes/{id}/lifecycle", s.handleAdminTransitionNodeLifecycle)
 		r.Post("/nodes/{id}/register-token", s.handleAdminNodeRegisterToken)
 		r.Post("/nodes/{id}/scan-existing", s.handleAdminScanExisting)
 		r.Post("/nodes/{id}/admin-link", s.handleVerifyAdminNodeLink)

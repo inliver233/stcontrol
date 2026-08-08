@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -201,4 +202,41 @@ func TestOAuthIdentitySubjectModelNeverSerializesRawSubject(t *testing.T) {
 	if err != nil || string(encoded) != `{}` {
 		t.Fatalf("encoded=%s err=%v", encoded, err)
 	}
+}
+
+func TestCompleteAccountImportClaimRequiresExactNodeProof(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 8, 4, 0, 0, 0, time.UTC)
+	p := CompleteAccountImportClaimParams{
+		OperationID: "11111111-1111-4111-8111-111111111111", GlobalUserID: 70, NodeID: 12,
+		LocalHandle: "alice", LocalUserID: "local-alice", Now: now,
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT user_id,node_id,local_user_id FROM account_import_claim_operations`).WithArgs(p.OperationID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`SELECT candidate.id,candidate.batch_id`).WithArgs(p.NodeID, p.LocalHandle).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "batch_id", "local_user_id", "local_handle", "is_admin"}).
+			AddRow("candidate-id", "batch-id", p.LocalUserID, p.LocalHandle, false))
+	mock.ExpectQuery(`SELECT global_user.legacy_user_id`).WithArgs(p.GlobalUserID).
+		WillReturnRows(sqlmock.NewRows([]string{"legacy_user_id", "username", "status"}).AddRow(int64(8), "alice", "active"))
+	mock.ExpectQuery(`SELECT 1 FROM node_accounts`).WithArgs(p.NodeID, p.GlobalUserID, p.LocalUserID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec(`INSERT INTO node_accounts`).WithArgs(p.GlobalUserID, p.NodeID, p.LocalHandle, p.LocalUserID, false, now).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`SELECT home_node_id FROM users`).WithArgs(int64(8)).
+		WillReturnRows(sqlmock.NewRows([]string{"home_node_id"}).AddRow(nil))
+	mock.ExpectExec(`UPDATE users SET home_node_id`).WithArgs(int64(8), p.NodeID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO user_replicas`).WithArgs(int64(8), p.NodeID, "home", "ready", now).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`(?s)UPDATE account_import_candidates.*INSERT INTO account_import_claim_operations`).
+		WithArgs("candidate-id", p.GlobalUserID, now, "batch-id", p.OperationID, p.NodeID, p.LocalUserID).
+		WillReturnResult(sqlmock.NewResult(1, 3))
+	mock.ExpectCommit()
+	if err := st.CompleteAccountImportClaim(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	assertMockExpectations(t, mock)
 }

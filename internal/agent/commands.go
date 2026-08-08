@@ -31,6 +31,7 @@ type safeCommandResult struct {
 	ConflictEvidence   *protocol.ConflictEvidenceReceipt   `json:"conflict_evidence,omitempty"`
 	ConflictResolution *protocol.ConflictResolutionReceipt `json:"conflict_resolution,omitempty"`
 	NodeAdmin          *protocol.NodeAdminVerification     `json:"node_admin,omitempty"`
+	LocalUserProof     *protocol.VerifyLocalUserResponse   `json:"local_user_proof,omitempty"`
 	Ciphertext         string                              `json:"ciphertext,omitempty"`
 }
 
@@ -250,6 +251,18 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "node_admin_verify_unavailable"})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, NodeAdmin: &verification})
+	case "verify_local_user":
+		var payload protocol.VerifyLocalUserRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "compute" ||
+			!validHandle(payload.Handle) || len(payload.Password) == 0 || len(payload.Password) > 256 {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		payload.OperationID = command.OperationID
+		verification, err := a.verifyLocalUser(ctx, payload)
+		if err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "local_user_verify_unavailable"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, LocalUserProof: &verification})
 	case "check_node_admin":
 		var payload protocol.CheckNodeAdminRequest
 		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "compute" ||

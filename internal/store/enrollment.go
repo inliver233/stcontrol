@@ -154,8 +154,8 @@ func (s *Store) EnrollAgent(ctx context.Context, p EnrollAgentParams) (AgentEnro
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE nodes
 		SET agent_version=$2, tavern_version=$3,
-		  controller_generation=$4, connectivity_state='connected',
-		  operational_state='managed', status='online', last_seen_at=$5,
+		  controller_generation=$4, connectivity_state='online',
+		  operational_state='active', status='online', last_seen_at=$5,
 		  base_url=CASE WHEN base_url='' THEN $6 ELSE base_url END
 		WHERE id=$1`, nodeID.Int64, p.AgentVersion, p.TavernVersion, generation, p.Now, p.BaseURLGuess); err != nil {
 		return AgentEnrollment{}, err
@@ -176,10 +176,9 @@ func (s *Store) GetActiveAgentCredential(ctx context.Context, nodeID int64) ([]b
 		SELECT credential.secret_ciphertext, credential.credential_version,
 		  credential.controller_generation
 		FROM agent_credentials credential
-		JOIN controller_epochs epoch
-		  ON epoch.generation=credential.controller_generation AND epoch.state='active'
 		WHERE credential.node_id=$1 AND credential.revoked_at IS NULL
-		  AND (credential.expires_at IS NULL OR credential.expires_at>now())`, nodeID).
+		  AND (credential.expires_at IS NULL OR credential.expires_at>now())
+		ORDER BY credential.credential_version DESC LIMIT 1`, nodeID).
 		Scan(&ciphertext, &version, &generation)
 	if err == sql.ErrNoRows {
 		return nil, 0, 0, nil

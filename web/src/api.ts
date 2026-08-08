@@ -94,6 +94,13 @@ export interface PasswordSyncResult {
   pending_nodes: number
 }
 
+export interface AccountImportClaim {
+  node_id: number
+  node_name: string
+  local_handle: string
+  account_kind: 'password' | 'mixed'
+}
+
 export interface RegistrationStatus {
   ok: boolean
   state: 'pending' | 'retrying' | 'succeeded'
@@ -262,6 +269,11 @@ export const api = {
   }),
   beginOAuthBinding: (provider: 'discord' | 'linuxdo') => request<{ authorization_url: string }>(`/api/users/me/identities/${provider}/bind`, { method: 'POST' }),
   unbindIdentity: (provider: string) => request<{ ok: boolean }>(`/api/users/me/identities/${provider}`, { method: 'DELETE' }),
+  importClaims: () => request<{ claims: AccountImportClaim[] }>('/api/users/me/import-claims'),
+  claimImportedAccount: (node_id: number, password: string, operation_id: string) =>
+    request<{ ok: boolean }>('/api/users/me/import-claims', {
+      method: 'POST', body: JSON.stringify({ node_id, password, operation_id }),
+    }),
 }
 
 // Submit the bearer code in a request body. The form is deliberately ephemeral

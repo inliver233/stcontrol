@@ -319,6 +319,10 @@ func (s *Server) trackUserActivity(
 	now time.Time,
 ) error {
 	const leaseTTL = 15 * time.Minute
+	activeGeneration, err := s.Store.GetActiveControllerGeneration(ctx)
+	if err != nil {
+		return err
+	}
 	aggregated := make(map[string]protocol.UserStatus)
 	for _, u := range users {
 		if u.Handle == "" || len(u.Handle) > 128 || u.LastActivity < 0 || u.LastPageHeartbeat < 0 ||
@@ -340,7 +344,7 @@ func (s *Server) trackUserActivity(
 		aggregated[u.Handle] = current
 
 		if u.LoginMode != protocol.NodeModeManaged || !isUUID(u.SessionID) || u.ActivityEpoch <= 0 ||
-			u.ControllerGeneration <= 0 {
+			u.ControllerGeneration != activeGeneration {
 			continue
 		}
 		user, err := s.Store.GetUserByUsername(ctx, u.Handle)

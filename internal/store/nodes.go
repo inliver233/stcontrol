@@ -3,9 +3,100 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
+
+var ErrNodeLifecycleBlocked = errors.New("node lifecycle transition blocked")
+
+type TransitionNodeLifecycleParams struct {
+	OperationID string
+	NodeID      int64
+	ToState     string
+	ReasonCode  string
+	AdminID     int64
+	Now         time.Time
+}
+
+func (s *Store) TransitionNodeLifecycle(ctx context.Context, p TransitionNodeLifecycleParams) (string, error) {
+	if p.OperationID == "" || p.NodeID <= 0 || p.AdminID <= 0 || len(p.ReasonCode) == 0 || len(p.ReasonCode) > 128 {
+		return "", ErrNodeLifecycleBlocked
+	}
+	if p.Now.IsZero() {
+		p.Now = time.Now().UTC()
+	}
+	allowed := map[string]map[string]bool{
+		"pending":     {"active": true, "retired": true},
+		"active":      {"maintenance": true, "draining": true, "degraded": true, "failed": true},
+		"maintenance": {"active": true, "draining": true, "retired": true},
+		"draining":    {"active": true, "maintenance": true, "retired": true},
+		"degraded":    {"active": true, "maintenance": true, "draining": true, "failed": true},
+		"failed":      {"maintenance": true, "retired": true},
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var replayState string
+	err = tx.QueryRowContext(ctx, `SELECT to_state FROM node_lifecycle_events WHERE operation_id=$1`, p.OperationID).Scan(&replayState)
+	if err == nil {
+		if replayState != p.ToState {
+			return "", ErrNodeLifecycleBlocked
+		}
+		return replayState, tx.Commit()
+	}
+	if err != sql.ErrNoRows {
+		return "", err
+	}
+	var fromState string
+	if err := tx.QueryRowContext(ctx, `SELECT operational_state FROM nodes WHERE id=$1 FOR UPDATE`, p.NodeID).Scan(&fromState); err != nil {
+		return "", err
+	}
+	if !allowed[fromState][p.ToState] {
+		return "", ErrNodeLifecycleBlocked
+	}
+	if p.ToState == "retired" {
+		var dependent bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS (
+			  SELECT 1 FROM users WHERE home_node_id=$1 AND status='active'
+			  UNION ALL
+			  SELECT 1 FROM user_replicas WHERE node_id=$1 AND state IN ('ready','receiving','verifying')
+			)`, p.NodeID).Scan(&dependent); err != nil {
+			return "", err
+		}
+		if dependent {
+			return "", ErrNodeLifecycleBlocked
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE nodes SET operational_state=$2,
+		  allow_register=CASE WHEN $2 IN ('active','degraded') THEN allow_register ELSE false END,
+		  is_backup_target=CASE WHEN $2 IN ('active','degraded') THEN is_backup_target ELSE false END,
+		  status=CASE WHEN $2='retired' THEN 'offline' ELSE status END
+		WHERE id=$1`, p.NodeID, p.ToState); err != nil {
+		return "", err
+	}
+	if p.ToState == "retired" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE agent_credentials SET revoked_at=COALESCE(revoked_at,$2) WHERE node_id=$1;
+			DELETE FROM enrollment_tokens WHERE expected_node_id=$1 AND consumed_at IS NULL;
+			UPDATE agent_commands SET state='expired',updated_at=$2
+			WHERE node_id=$1 AND state IN ('queued','leased','acked','running')`, p.NodeID, p.Now); err != nil {
+			return "", err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO node_lifecycle_events (
+		  operation_id,node_id,from_state,to_state,reason_code,actor_admin_id,controller_generation,created_at
+		) SELECT $1,$2,$3,$4,$5,$6,generation,$7 FROM controller_epochs WHERE state='active'`,
+		p.OperationID, p.NodeID, fromState, p.ToState, p.ReasonCode, p.AdminID, p.Now); err != nil {
+		return "", err
+	}
+	return p.ToState, tx.Commit()
+}
 
 const nodeSelectColumns = `
   id,name,role,base_url,transfer_url,region,
@@ -225,9 +316,9 @@ func (s *Store) UpdateNodeStatus(ctx context.Context, id int64, status string) e
 func (s *Store) UpdateNodeSettings(ctx context.Context, n *Node) error {
 	_, err := s.DB.ExecContext(ctx, `
 	  UPDATE nodes SET name=$2,base_url=$3,region=$4,allow_register=$5,
-	    is_backup_target=$6,operational_state=$7 WHERE id=$1`,
+	    is_backup_target=$6 WHERE id=$1`,
 		n.ID, n.Name, n.BaseURL, n.Region, n.AllowRegister,
-		n.IsBackupTarget, n.OperationalState)
+		n.IsBackupTarget)
 	return err
 }
 

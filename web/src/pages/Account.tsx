@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, AuthIdentity } from '../api'
+import { api, AccountImportClaim, AuthIdentity } from '../api'
 
 const providerLabel: Record<string, string> = {
   password: '账号密码', discord: 'Discord', linuxdo: 'LinuxDo',
@@ -15,12 +15,16 @@ export default function AccountPage() {
   const [newPassword, setNewPassword] = useState('')
   const [oldPassword, setOldPassword] = useState('')
   const [changedPassword, setChangedPassword] = useState('')
+  const [claims, setClaims] = useState<AccountImportClaim[]>([])
+  const [claimPasswords, setClaimPasswords] = useState<Record<number, string>>({})
+  const [claimingNode, setClaimingNode] = useState<number | null>(null)
 
   const load = async () => {
     try {
-      const result = await api.identities()
+      const [result, imported] = await Promise.all([api.identities(), api.importClaims()])
       setIdentities(result.identities)
       setCanUnbind(result.can_unbind)
+      setClaims(imported.claims)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '加载登录方式失败')
     } finally {
@@ -80,6 +84,23 @@ export default function AccountPage() {
     }
   }
 
+  const claimImportedAccount = async (claim: AccountImportClaim) => {
+    const password = claimPasswords[claim.node_id] || ''
+    if (!password) return
+    setError('')
+    setClaimingNode(claim.node_id)
+    try {
+      await api.claimImportedAccount(claim.node_id, password, crypto.randomUUID())
+      setClaimPasswords(current => ({ ...current, [claim.node_id]: '' }))
+      setMessage(`已安全认领 ${claim.node_name} 上的原账号；系统不会覆盖该节点的数据`)
+      await load()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '节点账号认领失败')
+    } finally {
+      setClaimingNode(null)
+    }
+  }
+
   return (
     <div className="page">
       <div className="card wide">
@@ -112,6 +133,31 @@ export default function AccountPage() {
                 <div className="field"><label>新密码</label><input type="password" minLength={8} value={changedPassword} onChange={e => setChangedPassword(e.target.value)} required /></div>
                 <button className="btn" type="submit">更新密码</button>
               </form>
+            )}
+            {claims.length > 0 && (
+              <>
+                <div className="section-title">认领旧节点账号</div>
+                <div className="warning-msg">同名账号不会自动合并。请输入该节点原密码证明控制权；验证只在目标节点内完成，密码不会写入总控数据库。</div>
+                {claims.map(claim => (
+                  <div className="my-node" key={claim.node_id}>
+                    <div className="info">
+                      <div className="name">{claim.node_name}</div>
+                      <div className="sub">本地账号：{claim.local_handle}</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <input
+                        aria-label={`${claim.node_name} 原密码`}
+                        type="password"
+                        value={claimPasswords[claim.node_id] || ''}
+                        onChange={event => setClaimPasswords(current => ({ ...current, [claim.node_id]: event.target.value }))}
+                      />
+                      <button className="btn-sm primary" disabled={claimingNode !== null} onClick={() => claimImportedAccount(claim)}>
+                        {claimingNode === claim.node_id ? '验证中…' : '验证并认领'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </>
             )}
           </>
         )}

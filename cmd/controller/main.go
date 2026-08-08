@@ -17,6 +17,8 @@ import (
 
 func main() {
 	cfgPath := flag.String("config", "controller.yaml", "配置文件路径")
+	passive := flag.Bool("passive", false, "作为被动副控等待 PostgreSQL 领导锁，取得后自动提升")
+	promote := flag.Bool("promote", false, "取得领导锁后显式提升 controller generation")
 	flag.Parse()
 
 	cfg := config.DefaultController()
@@ -42,6 +44,43 @@ func main() {
 		log.Fatalf("连接数据库失败: %v", err)
 	}
 	defer st.Close()
+
+	var leadership *store.ControllerLeadership
+	for {
+		candidate, acquired, err := st.TryAcquireControllerLeadership(ctx)
+		if err != nil {
+			log.Fatalf("取得总控领导锁失败: %v", err)
+		}
+		if acquired {
+			leadership = candidate
+			break
+		}
+		if !*passive {
+			log.Fatalf("已有活动总控持有数据库领导锁；请使用 --passive 启动被动副控")
+		}
+		log.Printf("被动副控等待活动总控释放领导锁")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+	}
+	defer leadership.Close()
+	if *passive || *promote {
+		generation, err := st.PromoteControllerEpoch(ctx, "postgres-leadership-promotion", time.Now().UTC())
+		if err != nil {
+			log.Fatalf("提升总控世代失败: %v", err)
+		}
+		log.Printf("总控已原子提升到 generation=%d；旧会话和票据已撤销", generation)
+	}
+	runCtx, cancelLeadership := context.WithCancel(ctx)
+	defer cancelLeadership()
+	go func() {
+		if err := leadership.Watch(runCtx); err != nil && runCtx.Err() == nil {
+			log.Printf("总控领导锁连接失效，立即停止服务: %v", err)
+			cancelLeadership()
+		}
+	}()
 	hasAdmin, err := st.HasActiveAdmin(ctx)
 	if err != nil {
 		log.Fatalf("检查管理员状态失败: %v", err)
@@ -68,7 +107,7 @@ func main() {
 
 	srv := controller.New(cfg, st, secretKey)
 	log.Printf("总控启动, 监听 %s, 对外地址 %s", cfg.Listen, cfg.PublicURL)
-	if err := srv.Run(ctx); err != nil {
+	if err := srv.Run(runCtx); err != nil && runCtx.Err() == nil {
 		log.Fatalf("服务退出: %v", err)
 	}
 }

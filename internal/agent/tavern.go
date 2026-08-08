@@ -40,8 +40,19 @@ type adapterSessionResponse struct {
 }
 
 var requiredAdapterCapabilities = []string{
-	"account_restore", "activity_leases", "login_handoff", "node_admin_handoff", "node_admin_verify", "password_update", "registration_policy",
+	"account_restore", "activity_leases", "local_account_proof", "login_handoff", "node_admin_handoff", "node_admin_verify", "password_update", "registration_policy",
 	"snapshot_boundary", "user_provision", "write_gate", "control_mode",
+}
+
+func (a *Agent) verifyLocalUser(ctx context.Context, req protocol.VerifyLocalUserRequest) (protocol.VerifyLocalUserResponse, error) {
+	var out protocol.VerifyLocalUserResponse
+	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/users/verify", req, &out); err != nil {
+		return protocol.VerifyLocalUserResponse{}, err
+	}
+	if out.Handle != req.Handle || (out.Verified && out.LocalUserID == "") {
+		return protocol.VerifyLocalUserResponse{}, fmt.Errorf("invalid local user verification")
+	}
+	return out, nil
 }
 
 func (a *Agent) verifyNodeAdmin(

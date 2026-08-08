@@ -38,6 +38,10 @@ const adminApi = {
   overview: () => adminReq<any>('/api/admin/overview'),
   nodes: () => adminReq<{ nodes: any[] }>('/api/admin/nodes'),
   updateNode: (id: number, body: any) => adminReq<any>(`/api/admin/nodes/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  transitionNode: (id: number, state: string, reason_code: string, acknowledge_risk = false) =>
+    adminReq<any>(`/api/admin/nodes/${id}/lifecycle`, {
+      method: 'POST', body: JSON.stringify({ operation_id: crypto.randomUUID(), state, reason_code, acknowledge_risk }),
+    }),
   registerToken: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/register-token`, { method: 'POST' }),
   scanExisting: (id: number, operationID: string) => adminReq<any>(`/api/admin/nodes/${id}/scan-existing`, {
     method: 'POST', body: JSON.stringify({ operation_id: operationID }),
@@ -273,12 +277,26 @@ function NodesAdmin() {
   const toggleMaintenance = async (n: any) => {
     setError('')
     try {
-      await adminApi.updateNode(n.id, {
-        ...n, operational_state: n.operational_state === 'maintenance' ? 'active' : 'maintenance',
-      })
+      await adminApi.transitionNode(n.id, n.operational_state === 'maintenance' ? 'active' : 'maintenance', 'administrator_maintenance')
       load()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '运营状态更新失败')
+    }
+  }
+  const transitionLifecycle = async (n: any, state: string) => {
+    const destructive = state === 'failed' || state === 'retired'
+    if (destructive && !window.confirm(
+      state === 'retired'
+        ? '退役会撤销节点凭据且不可直接恢复。只有所有活动用户和可用副本迁出后才会成功，确认继续？'
+        : '确认把该节点隔离为故障状态并停止新任务？',
+    )) return
+    setError('')
+    try {
+      await adminApi.transitionNode(n.id, state, `administrator_${state}`, destructive)
+      setMessage(`节点 ${n.name} 已进入${healthLabel(state)}状态`)
+      await load()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '节点生命周期更新失败')
     }
   }
   const genToken = async (id: number) => {
@@ -441,6 +459,11 @@ function NodesAdmin() {
                 {' '}<button className="btn-sm" onClick={() => toggleMaintenance(n)}>
                   {n.operational_state === 'maintenance' ? '结束维护' : '进入维护'}
                 </button>
+                {n.operational_state !== 'retired' && <>
+                  {' '}<button className="btn-sm" onClick={() => transitionLifecycle(n, 'draining')}>排空迁移</button>
+                  {' '}<button className="btn-sm danger" onClick={() => transitionLifecycle(n, 'failed')}>隔离故障</button>
+                  {' '}<button className="btn-sm danger" onClick={() => transitionLifecycle(n, 'retired')}>退役</button>
+                </>}
                 {n.role === 'compute' && <>
                   <div style={{ marginTop: 6, fontSize: 12 }}>
                     原生后台：{link?.state === 'verified'
