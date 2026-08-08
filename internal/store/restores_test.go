@@ -54,6 +54,8 @@ func TestCreateRestoreWorkflowPersistsAcknowledgedFactsBeforeTransfer(t *testing
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(p.GlobalUserID))
 	mock.ExpectQuery(`FROM restore_operations operation`).WithArgs(p.OperationID).
 		WillReturnRows(sqlmock.NewRows([]string{"request_digest"}))
+	mock.ExpectQuery(`SELECT state FROM user_data_faults`).WithArgs(p.GlobalUserID).
+		WillReturnRows(sqlmock.NewRows([]string{"state"}).AddRow("recovery_available"))
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(4)))
 	mock.ExpectQuery(`SELECT user_id, writer_node_id`).WithArgs(p.GlobalUserID).
@@ -157,6 +159,8 @@ func TestCreateRestoreWorkflowRejectsConcurrentSnapshotMutation(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(p.GlobalUserID))
 	mock.ExpectQuery(`FROM restore_operations operation`).WithArgs(p.OperationID).
 		WillReturnRows(sqlmock.NewRows([]string{"request_digest"}))
+	mock.ExpectQuery(`SELECT state FROM user_data_faults`).WithArgs(p.GlobalUserID).
+		WillReturnRows(sqlmock.NewRows([]string{"state"}))
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(4)))
 	mock.ExpectQuery(`SELECT user_id, writer_node_id`).WithArgs(p.GlobalUserID).
@@ -209,6 +213,7 @@ func TestCompleteRestoreWorkflowAtomicallyPromotesVerifiedTarget(t *testing.T) {
 		ArchiveSHA256: bytes.Repeat([]byte{5}, 32), FileCount: 3, TotalBytes: 120, Now: now,
 	}
 	sourcePublished := now.Add(-2 * time.Hour)
+	operationID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(`(?s)SELECT workflow.state,global_user.status,legacy.status.*FROM workflows workflow`).
@@ -216,8 +221,10 @@ func TestCompleteRestoreWorkflowAtomicallyPromotesVerifiedTarget(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"state", "global_status", "legacy_status", "operation_id", "user_id", "legacy_user_id",
 			"source_node_id", "target_node_id", "home_node_id", "generation", "source_snapshot_id", "published_at",
-		}).AddRow("publishing", "active", "active", "operation", int64(70), int64(7), int64(10), int64(9),
+		}).AddRow("publishing", "active", "active", operationID, int64(70), int64(7), int64(10), int64(9),
 			int64(8), int64(4), "source-snapshot", sourcePublished))
+	mock.ExpectQuery(`SELECT state FROM user_data_faults`).WithArgs(int64(70)).
+		WillReturnRows(sqlmock.NewRows([]string{"state"}).AddRow("recovery_available"))
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(4)))
 	mock.ExpectQuery(`(?s)SELECT copy.snapshot_id::text FROM replica_copies copy.*copy.published_at=\$4`).
@@ -258,8 +265,13 @@ func TestCompleteRestoreWorkflowAtomicallyPromotesVerifiedTarget(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO user_protection_states`).WithArgs(int64(70), int64(9), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE user_data_faults SET state='resolved'`).WithArgs(
+		int64(70), "restore", operationID, now,
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE alerts SET state='resolved'`).WithArgs(int64(70), now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO audit_events`).WithArgs(
-		int64(70), "operation", int64(4), int64(10), int64(9), "source-snapshot",
+		int64(70), operationID, int64(4), int64(10), int64(9), "source-snapshot",
 		sourcePublished, p.RestoreSnapshotID, p.WorkflowID,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

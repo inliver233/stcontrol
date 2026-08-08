@@ -166,6 +166,8 @@ func publicArchiveRestoreStatus(status *store.RestoreOperationStatus) publicRest
 
 func (s *Server) writeArchiveRestoreError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, store.ErrUserDataFaultState):
+		protocol.WriteError(w, http.StatusConflict, "节点冻结尚未确认，暂不能创建恢复任务")
 	case errors.Is(err, store.ErrReplicaTakeoverLeaseActive):
 		protocol.WriteError(w, http.StatusConflict, "旧节点写入租约仍在有效期内，请稍后重试")
 	case errors.Is(err, store.ErrRestoreUnavailable):

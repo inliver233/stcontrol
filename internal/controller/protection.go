@@ -26,6 +26,8 @@ type userProtectionResponse struct {
 	LatestRecoveryAt     *time.Time `json:"latest_recovery_at,omitempty"`
 	TakeoverAvailable    bool       `json:"takeover_available"`
 	StorageRestoreNeeded bool       `json:"storage_restore_needed"`
+	DataFaultState       string     `json:"data_fault_state,omitempty"`
+	DataFaultReasonCode  string     `json:"data_fault_reason_code,omitempty"`
 	Version              int64      `json:"version"`
 }
 
@@ -72,7 +74,32 @@ func (s *Server) handleMyProtection(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	protocol.WriteJSON(w, http.StatusOK, publicProtectionState(state))
+	response := publicProtectionState(state)
+	fault, err := s.Store.GetUserDataFaultByUserUUID(r.Context(), user.UUID)
+	if err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "读取用户数据冻结状态失败")
+		return
+	}
+	applyUserDataFaultGate(&response, fault)
+	protocol.WriteJSON(w, http.StatusOK, response)
+}
+
+func applyUserDataFaultGate(response *userProtectionResponse, fault *store.UserDataFaultStatus) {
+	if response == nil || fault == nil || fault.State == "resolved" {
+		return
+	}
+	response.DataFaultState = fault.State
+	response.DataFaultReasonCode = fault.ReasonCode
+	if fault.State == "recovery_available" {
+		return
+	}
+	response.TakeoverAvailable = false
+	response.StorageRestoreNeeded = false
+	if fault.State == "reported" || fault.State == "freezing" || fault.State == "retry_wait" {
+		response.State = "data_fault_freezing"
+		response.Label = "权威数据故障已关写"
+		response.Risk = "系统正在排空并确认节点冻结；完成前不会开放任何接管或恢复写入。"
+	}
 }
 
 func publicProtectionState(state *store.UserProtectionState) userProtectionResponse {
@@ -151,6 +178,8 @@ func (s *Server) handleConfirmReplicaTakeover(w http.ResponseWriter, r *http.Req
 	})
 	if err != nil {
 		switch {
+		case errors.Is(err, store.ErrUserDataFaultState):
+			protocol.WriteError(w, http.StatusConflict, "节点冻结尚未确认，暂不能执行接管")
 		case errors.Is(err, store.ErrReplicaTakeoverLeaseActive):
 			protocol.WriteError(w, http.StatusConflict, "旧节点写入租约仍在有效期内，请稍后重试")
 		case errors.Is(err, store.ErrReplicaTakeoverUnavailable):

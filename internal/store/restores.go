@@ -171,6 +171,9 @@ func (s *Store) CreateRestoreWorkflow(
 		}
 		return replay, nil
 	}
+	if err := requireUserDataFaultRecoveryReadyLocked(ctx, tx, p.GlobalUserID); err != nil {
+		return nil, err
+	}
 
 	var generation int64
 	if err := tx.QueryRowContext(ctx, `SELECT generation FROM controller_epochs WHERE state='active' FOR SHARE`).Scan(&generation); err != nil {
@@ -829,6 +832,9 @@ func (s *Store) CompleteRestoreWorkflow(
 	if globalUserStatus != "active" || legacyUserStatus != "active" {
 		return ErrRestoreConflict
 	}
+	if err := requireUserDataFaultRecoveryReadyLocked(ctx, tx, userID); err != nil {
+		return err
+	}
 	var activeGeneration int64
 	if err := tx.QueryRowContext(ctx, `SELECT generation FROM controller_epochs WHERE state='active' FOR SHARE`).Scan(&activeGeneration); err != nil {
 		return err
@@ -998,6 +1004,9 @@ func (s *Store) CompleteRestoreWorkflow(
 		  recovery_node_id=NULL,latest_recovery_snapshot_id=NULL,latest_recovery_at=NULL,
 		  version=user_protection_states.version+1,changed_at=$3,evaluated_at=$3`,
 		userID, targetNodeID, p.Now); err != nil {
+		return err
+	}
+	if err := resolveUserDataFaultLocked(ctx, tx, userID, "restore", operationID, p.Now); err != nil {
 		return err
 	}
 	result, err = tx.ExecContext(ctx, `

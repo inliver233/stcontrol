@@ -40,6 +40,8 @@ export interface ProtectionState {
   latest_recovery_at?: string
   takeover_available: boolean
   storage_restore_needed: boolean
+  data_fault_state?: string
+  data_fault_reason_code?: string
   version: number
 }
 

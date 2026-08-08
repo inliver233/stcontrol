@@ -121,7 +121,7 @@ func (s *Store) LeaseAgentCommand(
 		      'complete_independent_sync','capture_conflict_evidence',
 		      'read_conflict_evidence_page','start_conflict_evidence_transfer',
 		      'prepare_conflict_resolution','apply_conflict_resolution_decisions',
-		      'publish_conflict_resolution'
+		      'publish_conflict_resolution','freeze_user_data'
 		    ))
 		  )
 		  AND (command.state='queued'

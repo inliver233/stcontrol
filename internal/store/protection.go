@@ -90,7 +90,7 @@ func (s *Store) ReconcileProtectionStates(
 	}
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
-		return ProtectionReconcileResult{}, err
+		return ProtectionReconcileResult{}, fmt.Errorf("begin user protection reconciliation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -234,9 +234,9 @@ func (s *Store) ReconcileProtectionStates(
 		      OR user_protection_states.latest_recovery_snapshot_id IS DISTINCT FROM EXCLUDED.latest_recovery_snapshot_id
 		      OR user_protection_states.latest_recovery_at IS DISTINCT FROM EXCLUDED.latest_recovery_at
 		    THEN EXCLUDED.changed_at ELSE user_protection_states.changed_at END,
-		  evaluated_at=EXCLUDED.evaluated_at`, now)
+		evaluated_at=EXCLUDED.evaluated_at`, now)
 	if err != nil {
-		return ProtectionReconcileResult{}, err
+		return ProtectionReconcileResult{}, fmt.Errorf("project user protection states: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO replica_conflicts (
@@ -248,7 +248,7 @@ func (s *Store) ReconcileProtectionStates(
 		FROM user_protection_states protection
 		WHERE protection.state='conflict'
 		ON CONFLICT DO NOTHING`, now); err != nil {
-		return ProtectionReconcileResult{}, err
+		return ProtectionReconcileResult{}, fmt.Errorf("open replica conflicts: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		WITH open_conflicts AS (
@@ -263,7 +263,7 @@ func (s *Store) ReconcileProtectionStates(
 		    snapshot.id AS snapshot_id,copy.replica_kind AS source_kind,copy.state AS replica_state,
 		    copy.is_authoritative,snapshot.manifest_sha256,snapshot.file_count,snapshot.total_bytes,
 		    copy.published_at,legacy.data_version AS legacy_data_version,
-		    legacy.checksum AS legacy_checksum,$1 AS captured_at,0 AS source_priority
+		    legacy.checksum AS legacy_checksum,$1::timestamptz AS captured_at,0 AS source_priority
 		  FROM open_conflicts conflict
 		  JOIN replica_copies copy ON copy.user_id=conflict.user_id
 		  JOIN nodes node ON node.id=copy.node_id
@@ -284,7 +284,7 @@ func (s *Store) ReconcileProtectionStates(
 		      WHEN 'archive' THEN 'archive' WHEN 'hot_standby' THEN 'hot_standby'
 		      ELSE 'unknown' END,
 		    legacy.state,legacy.node_id=conflict.home_node_id,NULL::bytea,NULL::bigint,NULL::bigint,
-		    legacy.last_sync_at,legacy.data_version,legacy.checksum,$1,1
+		    legacy.last_sync_at,legacy.data_version,legacy.checksum,$1::timestamptz,1
 		  FROM open_conflicts conflict
 		  JOIN user_replicas legacy ON legacy.user_id=conflict.legacy_user_id
 		  JOIN nodes node ON node.id=legacy.node_id
@@ -306,12 +306,12 @@ func (s *Store) ReconcileProtectionStates(
 		  legacy_data_version,legacy_checksum,captured_at
 		FROM ranked WHERE source_rank=1
 		ON CONFLICT (conflict_id,node_id) DO NOTHING`, now); err != nil {
-		return ProtectionReconcileResult{}, err
+		return ProtectionReconcileResult{}, fmt.Errorf("capture replica conflict sources: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE replica_conflicts SET sources_captured_at=$1,updated_at=$1
 		WHERE state NOT IN ('resolved','failed') AND sources_captured_at IS NULL`, now); err != nil {
-		return ProtectionReconcileResult{}, err
+		return ProtectionReconcileResult{}, fmt.Errorf("finish replica conflict source capture: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		WITH conflicted AS (
@@ -336,7 +336,7 @@ func (s *Store) ReconcileProtectionStates(
 		UPDATE user_activity_leases lease
 		SET state='conflict',lease_expires_at=$1,updated_at=$1
 		FROM conflicted WHERE lease.user_id=conflicted.user_id AND lease.state<>'conflict'`, now); err != nil {
-		return ProtectionReconcileResult{}, err
+		return ProtectionReconcileResult{}, fmt.Errorf("freeze replica conflicts: %w", err)
 	}
 	alerted, err := tx.ExecContext(ctx, `
 		INSERT INTO alerts (
@@ -353,7 +353,9 @@ func (s *Store) ReconcileProtectionStates(
 		    WHEN 'restore_required' THEN '家节点不可用，需要从存储副本恢复'
 		    WHEN 'conflict' THEN '用户副本存在冲突，必须冻结并人工处理'
 		    ELSE '用户家节点不可用且没有合格恢复副本' END,
-		  $1,$1,CASE WHEN protection.state IN ('temporary','unprotected') THEN $2 ELSE $1 END,1
+		  $1::timestamptz,$1::timestamptz,
+		  CASE WHEN protection.state IN ('temporary','unprotected')
+		    THEN $2::timestamptz ELSE $1::timestamptz END,1
 		FROM user_protection_states protection WHERE protection.state<>'protected'
 		ON CONFLICT (deduplication_key) DO UPDATE SET
 		  severity=EXCLUDED.severity,
@@ -366,7 +368,7 @@ func (s *Store) ReconcileProtectionStates(
 		  occurrence_count=alerts.occurrence_count+CASE WHEN alerts.state='resolved' THEN 1 ELSE 0 END`,
 		now, now.Add(unprotectedGrace))
 	if err != nil {
-		return ProtectionReconcileResult{}, err
+		return ProtectionReconcileResult{}, fmt.Errorf("open protection alerts: %w", err)
 	}
 	resolved, err := tx.ExecContext(ctx, `
 		UPDATE alerts alert SET state='resolved',resolved_at=$1,last_seen_at=$1
@@ -374,7 +376,7 @@ func (s *Store) ReconcileProtectionStates(
 		WHERE alert.category='user_protection' AND alert.user_id=protection.user_id
 		  AND alert.state<>'resolved' AND protection.state='protected'`, now)
 	if err != nil {
-		return ProtectionReconcileResult{}, err
+		return ProtectionReconcileResult{}, fmt.Errorf("resolve protection alerts: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return ProtectionReconcileResult{}, err
@@ -598,6 +600,9 @@ func (s *Store) ConfirmReplicaTakeover(
 	if sourceNodeID == p.TargetNodeID {
 		return ReplicaTakeoverResult{}, ErrReplicaTakeoverUnavailable
 	}
+	if err := requireUserDataFaultRecoveryReadyLocked(ctx, tx, p.GlobalUserID); err != nil {
+		return ReplicaTakeoverResult{}, err
+	}
 	var generation int64
 	if err := tx.QueryRowContext(ctx, `SELECT generation FROM controller_epochs WHERE state='active' FOR SHARE`).Scan(&generation); err != nil {
 		if err == sql.ErrNoRows {
@@ -743,12 +748,19 @@ func (s *Store) ConfirmReplicaTakeover(
 		p.GlobalUserID, p.TargetNodeID, p.Now); err != nil {
 		return ReplicaTakeoverResult{}, err
 	}
+	if err := resolveUserDataFaultLocked(
+		ctx, tx, p.GlobalUserID, "takeover", p.OperationID, p.Now,
+	); err != nil {
+		return ReplicaTakeoverResult{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO audit_events (
 		  actor_type,actor_id,action,target_type,target_id,operation_id,
 		  controller_generation,input_digest,outcome,detail
 		) VALUES ('user',$1::text,'replica-takeover','global_user',$1::text,$2,$3,$4,'succeeded',
-		  jsonb_build_object('source_node_id',$5,'target_node_id',$6,'snapshot_published_at',$7))`,
+		  jsonb_build_object(
+		    'source_node_id',$5::bigint,'target_node_id',$6::bigint,
+		    'snapshot_published_at',$7::timestamptz))`,
 		p.GlobalUserID, p.OperationID, generation, p.RequestDigest,
 		sourceNodeID, p.TargetNodeID, result.SnapshotPublishedAt); err != nil {
 		return ReplicaTakeoverResult{}, err

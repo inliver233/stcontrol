@@ -70,9 +70,372 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 		assertPostgresNodeCompatibilityIncident(t, stores[0])
 	})
 
+	t.Run("authoritative user data faults freeze one user and resume across generation change", func(t *testing.T) {
+		assertPostgresUserDataFaultLifecycle(t, stores[0], generation)
+	})
+
 	t.Run("ten-thousand account inventory is durable and page bounded", func(t *testing.T) {
 		assertPostgresAccountInventoryScale(t, stores[0], nodeA)
 	})
+}
+
+func assertPostgresUserDataFaultLifecycle(t *testing.T, st *Store, generation int64) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	activeGeneration, err := st.GetActiveControllerGeneration(ctx)
+	if err != nil {
+		t.Fatalf("load active generation for data fault: %v", err)
+	}
+	generation = activeGeneration
+	homeNodeID := insertIntegrationNode(t, st, "data-fault-home")
+	otherNodeID := insertIntegrationNode(t, st, "data-fault-other")
+	var adminID int64
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO admins (uuid,username,password_hash,status)
+		VALUES ('74000000-0000-4000-8000-000000000001','data-fault-admin','test-hash','active')
+		RETURNING id`).Scan(&adminID); err != nil {
+		t.Fatalf("insert data-fault admin: %v", err)
+	}
+	var legacyUserID, globalUserID int64
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO users (uuid,username,display_name,auth_provider,home_node_id,status)
+		VALUES ('74000000-0000-4000-8000-000000000002','data-fault-user',
+		  'Data Fault User','password',$1,'active') RETURNING id`, homeNodeID).
+		Scan(&legacyUserID); err != nil {
+		t.Fatalf("insert data-fault legacy user: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO global_users (uuid,legacy_user_id,display_name,status)
+		VALUES ('74000000-0000-4000-8000-000000000002',$1,'Data Fault User','active')
+		RETURNING id`, legacyUserID).Scan(&globalUserID); err != nil {
+		t.Fatalf("insert data-fault global user: %v", err)
+	}
+	var isolatedLegacyUserID, isolatedGlobalUserID int64
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO users (uuid,username,display_name,auth_provider,home_node_id,status)
+		VALUES ('74000000-0000-4000-8000-000000000003','data-fault-isolated',
+		  'Data Fault Isolated','password',$1,'active') RETURNING id`, homeNodeID).
+		Scan(&isolatedLegacyUserID); err != nil {
+		t.Fatalf("insert isolated legacy user: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO global_users (uuid,legacy_user_id,display_name,status)
+		VALUES ('74000000-0000-4000-8000-000000000003',$1,'Data Fault Isolated','active')
+		RETURNING id`, isolatedLegacyUserID).Scan(&isolatedGlobalUserID); err != nil {
+		t.Fatalf("insert isolated global user: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO node_accounts (user_id,node_id,local_handle,status)
+		VALUES ($1,$3,'data-fault-user','active'),($2,$3,'data-fault-isolated','active')`,
+		globalUserID, isolatedGlobalUserID, homeNodeID); err != nil {
+		t.Fatalf("insert data-fault node accounts: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO user_replicas (user_id,node_id,kind,state,last_sync_at)
+		VALUES ($1,$3,'home','ready',$4),($2,$3,'home','ready',$4)`,
+		legacyUserID, isolatedLegacyUserID, homeNodeID, now); err != nil {
+		t.Fatalf("insert data-fault legacy replicas: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO replica_copies (
+		  id,user_id,node_id,replica_kind,state,origin,is_authoritative,
+		  compatibility_state,created_at,updated_at
+		) VALUES
+		  ('74000000-0000-4000-8000-000000000004',$1,$3,'active','ready','primary',true,'compatible',$4,$4),
+		  ('74000000-0000-4000-8000-000000000005',$2,$3,'active','ready','primary',true,'compatible',$4,$4)`,
+		globalUserID, isolatedGlobalUserID, homeNodeID, now); err != nil {
+		t.Fatalf("insert data-fault replica facts: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO user_activity_leases (
+		  user_id,writer_node_id,session_id,activity_epoch,state,lease_expires_at,
+		  last_page_heartbeat_at,last_request_at,in_flight_reads,in_flight_writes,
+		  controller_generation,updated_at
+		) VALUES ($1,$2,'74000000-0000-4000-8000-000000000006',6,'active',$3,$4,$4,2,1,$5,$4)`,
+		globalUserID, homeNodeID, now.Add(time.Hour), now, generation); err != nil {
+		t.Fatalf("insert data-fault writer lease: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO control_tickets (
+		  jti,ticket_type,issuer,audience,subject,user_id,target_node_id,session_id,
+		  activity_epoch,key_id,controller_generation,issued_at,not_before,expires_at,
+		  operation_id,secret_hash
+		) VALUES (
+		  '74000000-0000-4000-8000-000000000007','user_login','https://controller.example',
+		  'https://data-fault-home.example','data-fault-user',$1,$2,
+		  '74000000-0000-4000-8000-000000000006',6,'controller-v1',$5,$4,$4,$3,
+		  '74000000-0000-4000-8000-000000000008',decode(repeat('11',32),'hex'))`,
+		globalUserID, homeNodeID, now.Add(time.Hour), now, generation); err != nil {
+		t.Fatalf("insert data-fault control ticket: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO tickets (jti,user_id,node_id,expires_at)
+		VALUES ('data-fault-legacy-ticket',$1,$2,$3)`,
+		legacyUserID, homeNodeID, now.Add(time.Hour)); err != nil {
+		t.Fatalf("insert data-fault legacy ticket: %v", err)
+	}
+
+	digest := sha256.Sum256([]byte("data-fault-request"))
+	params := ReportUserDataFaultParams{
+		OperationID:   "74000000-0000-4000-8000-000000000009",
+		RequestDigest: digest[:], UserUUID: "74000000-0000-4000-8000-000000000002",
+		ExpectedHomeNodeID: homeNodeID, ReasonCode: "user_database_corrupt",
+		AdminID: adminID, Now: now.Add(time.Second),
+	}
+	status, err := st.ReportUserDataFault(ctx, params)
+	if err != nil || status == nil || status.State != "reported" || status.ActivityEpoch != 6 || status.Replayed {
+		t.Fatalf("report data fault: status=%+v err=%v", status, err)
+	}
+	replay, err := st.ReportUserDataFault(ctx, params)
+	if err != nil || replay == nil || !replay.Replayed || replay.ID != status.ID {
+		t.Fatalf("replay data fault: status=%+v err=%v", replay, err)
+	}
+	changedDigest := params
+	otherDigest := sha256.Sum256([]byte("changed-data-fault-request"))
+	changedDigest.RequestDigest = otherDigest[:]
+	if _, err := st.ReportUserDataFault(ctx, changedDigest); !errors.Is(err, ErrUserDataFaultOperationConflict) {
+		t.Fatalf("changed digest error=%v", err)
+	}
+	wrongHome := params
+	wrongHome.OperationID = "74000000-0000-4000-8000-000000000010"
+	wrongHome.ExpectedHomeNodeID = otherNodeID
+	if _, err := st.ReportUserDataFault(ctx, wrongHome); !errors.Is(err, ErrUserDataFaultHomeConflict) {
+		t.Fatalf("wrong home error=%v", err)
+	}
+	secondOpen := params
+	secondOpen.OperationID = "74000000-0000-4000-8000-000000000011"
+	if _, err := st.ReportUserDataFault(ctx, secondOpen); !errors.Is(err, ErrUserDataFaultAlreadyOpen) {
+		t.Fatalf("second open fault error=%v", err)
+	}
+
+	var replicaState, copyState, isolatedState, leaseState string
+	var controlRevokedAt, legacyUsedAt sql.NullTime
+	var reads, writes int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT state FROM user_replicas WHERE user_id=$1 AND node_id=$2`,
+		legacyUserID, homeNodeID).Scan(&replicaState); err != nil {
+		t.Fatalf("read corrupt legacy home: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT state FROM replica_copies WHERE user_id=$1 AND node_id=$2`,
+		globalUserID, homeNodeID).Scan(&copyState); err != nil {
+		t.Fatalf("read corrupt normalized home: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT state FROM user_replicas WHERE user_id=$1 AND node_id=$2`,
+		isolatedLegacyUserID, homeNodeID).Scan(&isolatedState); err != nil {
+		t.Fatalf("read isolated user home: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT state,in_flight_reads,in_flight_writes FROM user_activity_leases WHERE user_id=$1`,
+		globalUserID).Scan(&leaseState, &reads, &writes); err != nil {
+		t.Fatalf("read ended writer lease: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT revoked_at FROM control_tickets WHERE user_id=$1`, globalUserID).
+		Scan(&controlRevokedAt); err != nil {
+		t.Fatalf("read revoked control ticket: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT used_at FROM tickets WHERE user_id=$1`, legacyUserID).
+		Scan(&legacyUsedAt); err != nil {
+		t.Fatalf("read invalidated legacy ticket: %v", err)
+	}
+	if replicaState != "corrupt" || copyState != "corrupt" || isolatedState != "ready" ||
+		leaseState != "ended" || reads != 0 || writes != 0 || !controlRevokedAt.Valid || !legacyUsedAt.Valid {
+		t.Fatalf("fault facts replica=%s copy=%s isolated=%s lease=%s reads=%d writes=%d control=%v legacy=%v",
+			replicaState, copyState, isolatedState, leaseState, reads, writes,
+			controlRevokedAt.Valid, legacyUsedAt.Valid)
+	}
+
+	workerID := "74000000-0000-4000-8000-000000000012"
+	firstFreezeOperation := "74000000-0000-4000-8000-000000000013"
+	claimAt := now.Add(2 * time.Second)
+	task, err := st.ClaimUserDataFault(ctx, status.ID, firstFreezeOperation, workerID, claimAt, 2*time.Minute)
+	if err != nil || task == nil || task.OperationID != firstFreezeOperation || task.ActivityEpoch != 6 {
+		t.Fatalf("first fault claim: task=%+v err=%v", task, err)
+	}
+	promotionAt := now.Add(3 * time.Second)
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE controller_epochs SET state='revoked',revoked_at=$1 WHERE state='active'`,
+		promotionAt); err != nil {
+		t.Fatalf("revoke controller generation during freeze: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO controller_epochs (
+		  generation,operation_id,controller_id,source,state,signing_key_version,activated_at
+		) VALUES ($2,'74000000-0000-4000-8000-000000000014',
+		  '74000000-0000-4000-8000-000000000015','data-fault-generation-test','active',2,$1)`,
+		promotionAt, generation+1); err != nil {
+		t.Fatalf("promote controller generation during freeze: %v", err)
+	}
+	if _, err := st.CompleteUserDataFaultFreeze(
+		ctx, status.ID, firstFreezeOperation, workerID, promotionAt.Add(time.Second),
+	); !errors.Is(err, ErrUserDataFaultState) {
+		t.Fatalf("stale generation completion error=%v", err)
+	}
+	secondFreezeOperation := "74000000-0000-4000-8000-000000000016"
+	reclaimAt := claimAt.Add(2*time.Minute + time.Second)
+	task, err = st.ClaimUserDataFault(ctx, status.ID, secondFreezeOperation, workerID, reclaimAt, 2*time.Minute)
+	if err != nil || task == nil || task.OperationID != secondFreezeOperation ||
+		task.ControllerGeneration != generation+1 {
+		t.Fatalf("generation-resumed fault claim: task=%+v err=%v", task, err)
+	}
+	if _, err := st.ReconcileProtectionStates(ctx, reclaimAt, time.Hour); err != nil {
+		t.Fatalf("reconcile fault protection: %v", err)
+	}
+	completed, err := st.CompleteUserDataFaultFreeze(
+		ctx, status.ID, secondFreezeOperation, workerID, reclaimAt.Add(time.Second),
+	)
+	if err != nil || completed == nil || completed.State != "recovery_unavailable" ||
+		completed.ProtectionState != "unavailable" || completed.FrozenAt == nil {
+		t.Fatalf("complete resumed data fault: status=%+v err=%v", completed, err)
+	}
+	if err := st.RetryUserDataFault(
+		ctx, status.ID, secondFreezeOperation, workerID, "agent_unavailable",
+		reclaimAt.Add(2*time.Second), time.Minute,
+	); !errors.Is(err, ErrUserDataFaultState) {
+		t.Fatalf("terminal frozen fault was made retryable: %v", err)
+	}
+
+	// A separate user with an immutable hot standby may recover only after the
+	// node-local freeze is confirmed. The takeover and incident resolution are
+	// committed in one serializable transaction.
+	hotNodeID := insertIntegrationNode(t, st, "data-fault-hot-standby")
+	var takeoverLegacyUserID, takeoverGlobalUserID int64
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO users (uuid,username,display_name,auth_provider,home_node_id,status)
+		VALUES ('74100000-0000-4000-8000-000000000001','data-fault-takeover',
+		  'Data Fault Takeover','password',$1,'active') RETURNING id`, homeNodeID).
+		Scan(&takeoverLegacyUserID); err != nil {
+		t.Fatalf("insert takeover legacy user: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO global_users (uuid,legacy_user_id,display_name,status)
+		VALUES ('74100000-0000-4000-8000-000000000001',$1,'Data Fault Takeover','active')
+		RETURNING id`, takeoverLegacyUserID).Scan(&takeoverGlobalUserID); err != nil {
+		t.Fatalf("insert takeover global user: %v", err)
+	}
+	recoveryAt := reclaimAt.Add(10 * time.Second).Truncate(time.Microsecond)
+	manifestHash := sha256.Sum256([]byte("data-fault-hot-standby-manifest"))
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO workflows (
+		  id,operation_id,workflow_type,state,user_id,source_node_id,target_node_id,
+		  activity_epoch,controller_generation,created_at,updated_at,finished_at
+		) VALUES (
+		  '74100000-0000-4000-8000-000000000002','74100000-0000-4000-8000-000000000003',
+		  'snapshot','succeeded',$1,$2,$3,4,$4,$5,$5,$5)`,
+		takeoverGlobalUserID, homeNodeID, hotNodeID, generation+1, recoveryAt); err != nil {
+		t.Fatalf("insert takeover snapshot workflow: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO snapshot_manifests (
+		  id,workflow_id,user_id,source_node_id,activity_epoch,format_version,
+		  manifest_sha256,file_count,total_bytes,state,created_at
+		) VALUES (
+		  '74100000-0000-4000-8000-000000000004','74100000-0000-4000-8000-000000000002',
+		  $1,$2,4,1,$3,2,128,'immutable',$4)`,
+		takeoverGlobalUserID, homeNodeID, manifestHash[:], recoveryAt); err != nil {
+		t.Fatalf("insert takeover snapshot manifest: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO node_accounts (user_id,node_id,local_handle,status)
+		VALUES ($1,$2,'data-fault-takeover','active'),
+		  ($1,$3,'data-fault-takeover','active')`,
+		takeoverGlobalUserID, homeNodeID, hotNodeID); err != nil {
+		t.Fatalf("insert takeover node accounts: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO user_replicas (user_id,node_id,kind,state,last_sync_at)
+		VALUES ($1,$2,'home','ready',$4),($1,$3,'hot_standby','ready',$4)`,
+		takeoverLegacyUserID, homeNodeID, hotNodeID, recoveryAt); err != nil {
+		t.Fatalf("insert takeover legacy replicas: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO replica_copies (
+		  id,user_id,node_id,snapshot_id,replica_kind,state,origin,is_authoritative,
+		  compatibility_state,published_at,verified_at,created_at,updated_at
+		) VALUES
+		  ('74100000-0000-4000-8000-000000000005',$1,$2,NULL,'active','ready',
+		    'primary',true,'compatible',NULL,$4,$4,$4),
+		  ('74100000-0000-4000-8000-000000000006',$1,$3,
+		    '74100000-0000-4000-8000-000000000004','hot_standby','ready',
+		    'temporary_failure_protection',false,'compatible',$4,$4,$4,$4)`,
+		takeoverGlobalUserID, homeNodeID, hotNodeID, recoveryAt); err != nil {
+		t.Fatalf("insert takeover normalized replicas: %v", err)
+	}
+	takeoverDigest := sha256.Sum256([]byte("data-fault-takeover-request"))
+	takeoverFault, err := st.ReportUserDataFault(ctx, ReportUserDataFaultParams{
+		OperationID:   "74100000-0000-4000-8000-000000000007",
+		RequestDigest: takeoverDigest[:], UserUUID: "74100000-0000-4000-8000-000000000001",
+		ExpectedHomeNodeID: homeNodeID, ReasonCode: "authoritative_integrity_mismatch",
+		AdminID: adminID, Now: recoveryAt.Add(time.Second),
+	})
+	if err != nil || takeoverFault == nil {
+		t.Fatalf("report takeover data fault: status=%+v err=%v", takeoverFault, err)
+	}
+	takeoverWorkerID := "74100000-0000-4000-8000-000000000008"
+	takeoverFreezeOperation := "74100000-0000-4000-8000-000000000009"
+	takeoverClaimAt := recoveryAt.Add(2 * time.Second)
+	if task, err := st.ClaimUserDataFault(
+		ctx, takeoverFault.ID, takeoverFreezeOperation, takeoverWorkerID,
+		takeoverClaimAt, 2*time.Minute,
+	); err != nil || task == nil || task.OperationID != takeoverFreezeOperation {
+		t.Fatalf("claim takeover data fault: task=%+v err=%v", task, err)
+	}
+	if _, err := st.ReconcileProtectionStates(ctx, takeoverClaimAt, time.Hour); err != nil {
+		t.Fatalf("project takeover recovery: %v", err)
+	}
+	takeoverFault, err = st.CompleteUserDataFaultFreeze(
+		ctx, takeoverFault.ID, takeoverFreezeOperation, takeoverWorkerID,
+		takeoverClaimAt.Add(time.Second),
+	)
+	if err != nil || takeoverFault.State != "recovery_available" ||
+		takeoverFault.ProtectionState != "takeover_available" {
+		t.Fatalf("publish takeover recovery: status=%+v err=%v", takeoverFault, err)
+	}
+	takeoverOperation := "74100000-0000-4000-8000-000000000010"
+	takeoverRequestDigest := sha256.Sum256([]byte("confirmed-data-fault-takeover"))
+	takeoverResult, err := st.ConfirmReplicaTakeover(ctx, ConfirmReplicaTakeoverParams{
+		OperationID: takeoverOperation, RequestDigest: takeoverRequestDigest[:],
+		GlobalUserID: takeoverGlobalUserID, TargetNodeID: hotNodeID,
+		ExpectedRecoveryAt: recoveryAt, Now: takeoverClaimAt.Add(2 * time.Second),
+	})
+	if err != nil || takeoverResult.TargetNodeID != hotNodeID || takeoverResult.Replayed {
+		t.Fatalf("confirm data-fault takeover: result=%+v err=%v", takeoverResult, err)
+	}
+	resolvedFault, err := st.GetUserDataFaultByID(ctx, takeoverFault.ID)
+	if err != nil || resolvedFault.State != "resolved" ||
+		resolvedFault.ResolutionKind != "takeover" ||
+		resolvedFault.ResolutionOperationID != takeoverOperation || resolvedFault.ResolvedAt == nil {
+		t.Fatalf("resolved takeover fault: status=%+v err=%v", resolvedFault, err)
+	}
+	var newHomeNodeID int64
+	var oldHomeState, newHomeState, faultAlertState string
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT legacy.home_node_id,old_home.state,new_home.state,alert.state
+		FROM users legacy
+		JOIN user_replicas old_home ON old_home.user_id=legacy.id AND old_home.node_id=$2
+		JOIN user_replicas new_home ON new_home.user_id=legacy.id AND new_home.node_id=$3
+		JOIN alerts alert ON alert.deduplication_key='user-data-fault:'||$1::text
+		WHERE legacy.id=$4`, takeoverGlobalUserID, homeNodeID, hotNodeID, takeoverLegacyUserID).
+		Scan(&newHomeNodeID, &oldHomeState, &newHomeState, &faultAlertState); err != nil {
+		t.Fatalf("read completed takeover facts: %v", err)
+	}
+	if newHomeNodeID != hotNodeID || oldHomeState != "stale" || newHomeState != "ready" ||
+		faultAlertState != "resolved" {
+		t.Fatalf("takeover facts home=%d old=%s new=%s alert=%s",
+			newHomeNodeID, oldHomeState, newHomeState, faultAlertState)
+	}
+	replayedTakeover, err := st.ConfirmReplicaTakeover(ctx, ConfirmReplicaTakeoverParams{
+		OperationID: takeoverOperation, RequestDigest: takeoverRequestDigest[:],
+		GlobalUserID: takeoverGlobalUserID, TargetNodeID: hotNodeID,
+		ExpectedRecoveryAt: recoveryAt, Now: takeoverClaimAt.Add(3 * time.Second),
+	})
+	if err != nil || !replayedTakeover.Replayed {
+		t.Fatalf("replay completed takeover: result=%+v err=%v", replayedTakeover, err)
+	}
 }
 
 func newPostgresIntegrationSchema(t *testing.T) (string, func()) {

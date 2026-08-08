@@ -71,6 +71,16 @@ const adminApi = {
   recoverUserIdentity: (uuid: string, operationID: string, password: string) => adminReq<any>(`/api/admin/users/${uuid}/identity-recovery`, {
     method: 'POST', body: JSON.stringify({ operation_id: operationID, password }),
   }),
+  reportUserDataFault: (uuid: string, operationID: string, expectedHomeNodeID: number, reasonCode: string) =>
+    adminReq<any>(`/api/admin/users/${uuid}/data-faults`, {
+      method: 'POST', body: JSON.stringify({
+        operation_id: operationID,
+        expected_home_node_id: expectedHomeNodeID,
+        reason_code: reasonCode,
+        acknowledge_risk: true,
+      }),
+    }),
+  userDataFault: (uuid: string) => adminReq<any>(`/api/admin/users/${uuid}/data-fault`),
   triggerBackup: (id: number) => adminReq<any>(`/api/admin/users/${id}/backup`, { method: 'POST' }),
   disableUser: (id: number) => adminReq<any>(`/api/admin/users/${id}/disable`, { method: 'POST' }),
   backups: (before = 0, status = '', userID = '') => {
@@ -598,6 +608,12 @@ function UsersAdmin() {
   const [recoveryPassword, setRecoveryPassword] = useState('')
   const [recovering, setRecovering] = useState(false)
   const recoveryOperations = useRef<Record<string, string>>({})
+  const [faultUser, setFaultUser] = useState<any>(null)
+  const [faultReason, setFaultReason] = useState('authoritative_integrity_mismatch')
+  const [faultAcknowledged, setFaultAcknowledged] = useState(false)
+  const [faultStatus, setFaultStatus] = useState<any>(null)
+  const [reportingFault, setReportingFault] = useState(false)
+  const faultOperations = useRef<Record<string, string>>({})
   const load = (pageCursor = cursor, pageQuery = query, pageStatus = status) => {
     setLoading(true)
     return adminApi.users(pageCursor, pageQuery, pageStatus)
@@ -665,6 +681,73 @@ function UsersAdmin() {
     }
   }
 
+  const homeNodeID = (user: any) => Number(
+    user?.HomeNodeID?.Int64 ?? user?.home_node_id?.Int64 ?? user?.home_node_id ?? 0,
+  )
+  const beginDataFault = (user: any) => {
+    if (homeNodeID(user) <= 0) {
+      setError('该用户没有可核对的权威家节点，不能提交数据故障。')
+      return
+    }
+    setError('')
+    setMessage('')
+    setFaultUser(user)
+    setFaultReason('authoritative_integrity_mismatch')
+    setFaultAcknowledged(false)
+    setFaultStatus(null)
+  }
+  const changeFaultReason = (value: string) => {
+    if (faultUser) delete faultOperations.current[userUUID(faultUser)]
+    setFaultReason(value)
+    setFaultAcknowledged(false)
+  }
+  const refreshDataFault = async () => {
+    if (!faultUser) return
+    try {
+      setFaultStatus(await adminApi.userDataFault(userUUID(faultUser)))
+      setError('')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '读取数据故障状态失败')
+    }
+  }
+  const reportDataFault = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!faultUser || !faultAcknowledged) return
+    const uuid = userUUID(faultUser)
+    const operationID = faultOperations.current[uuid] || crypto.randomUUID()
+    faultOperations.current[uuid] = operationID
+    setError('')
+    setMessage('')
+    setReportingFault(true)
+    try {
+      const result = await adminApi.reportUserDataFault(
+        uuid, operationID, homeNodeID(faultUser), faultReason,
+      )
+      setFaultStatus(result)
+      if (result.state === 'resolved') delete faultOperations.current[uuid]
+      setMessage('故障事实已持久化；该用户的票据与写租约已关闭，节点冻结任务会持久续跑。')
+      await load()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '用户数据故障提交失败')
+    } finally {
+      setReportingFault(false)
+    }
+  }
+  const faultStateLabel = (value: string) => ({
+    reported: '已关写，等待节点冻结',
+    freezing: '正在排空并建立节点冻结门',
+    retry_wait: '节点冻结等待持久重试',
+    recovery_available: '已冻结，可由用户确认恢复',
+    recovery_unavailable: '已冻结，暂无合格恢复点',
+    resolved: '恢复已原子完成',
+  } as Record<string, string>)[value] || value
+  const faultReasonLabel = (value: string) => ({
+    authoritative_integrity_mismatch: '权威数据完整性不一致',
+    user_directory_missing: '用户数据目录缺失',
+    user_directory_unreadable: '用户数据目录不可读',
+    user_database_corrupt: '用户数据库损坏',
+  } as Record<string, string>)[value] || value
+
   return (
     <>
       <h2>用户管理</h2>
@@ -691,6 +774,53 @@ function UsersAdmin() {
           <button className="btn-sm" type="button" disabled={recovering} onClick={() => { setRecoveryUser(null); setRecoveryPassword('') }}>取消</button>
         </form>
       )}
+      {faultUser && (
+        <form onSubmit={reportDataFault} className="card" style={{ margin: '0 0 20px', maxWidth: 620 }}>
+          <h3>报告权威用户数据故障</h3>
+          <p>
+            用户：<strong>{faultUser.Username ?? faultUser.username}</strong>；全局 UUID：
+            <span className="mono">{userUUID(faultUser)}</span>；当前权威家节点：
+            <strong>{homeNodeID(faultUser)}</strong>。
+          </p>
+          <p style={{ color: 'var(--red)' }}>
+            提交会立即结束该用户写租约、撤销未使用票据并把权威副本标记为损坏；只有节点排空确认后才会向用户开放恢复入口。
+          </p>
+          <div className="field">
+            <label>已由节点或存储检查确认的机器原因</label>
+            <select value={faultReason} onChange={event => changeFaultReason(event.target.value)} disabled={reportingFault}>
+              <option value="authoritative_integrity_mismatch">权威数据完整性不一致</option>
+              <option value="user_directory_missing">用户数据目录缺失</option>
+              <option value="user_directory_unreadable">用户数据目录不可读</option>
+              <option value="user_database_corrupt">用户数据库损坏</option>
+            </select>
+          </div>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 14 }}>
+            <input
+              type="checkbox"
+              checked={faultAcknowledged}
+              onChange={event => setFaultAcknowledged(event.target.checked)}
+              disabled={reportingFault}
+            />
+            <span>我已核对用户 UUID、权威节点和故障证据，并确认必须立即关闭该用户写入。</span>
+          </label>
+          {faultStatus && (
+            <div className="card" style={{ margin: '0 0 14px', background: 'var(--bg-input)' }}>
+              <strong>{faultStateLabel(faultStatus.state)}</strong>
+              <div>原因：{faultReasonLabel(faultStatus.reason_code)}；尝试次数：{faultStatus.attempt}</div>
+              {faultStatus.protection_state && <div>确定性恢复判定：{faultStatus.protection_state}</div>}
+              {faultStatus.error_code && <div>最近机器错误：<span className="mono">{faultStatus.error_code}</span></div>}
+              {faultStatus.state === 'recovery_available' && <div>请让用户登录总控，核对恢复点后自行确认接管或归档恢复。</div>}
+            </div>
+          )}
+          <button className="btn" type="submit" disabled={!faultAcknowledged || reportingFault}>
+            {reportingFault ? '关写并冻结中…' : '确认报告并立即关写'}
+          </button>{' '}
+          {faultStatus && <button className="btn-sm" type="button" onClick={refreshDataFault} disabled={reportingFault}>刷新状态</button>}{' '}
+          <button className="btn-sm" type="button" disabled={reportingFault} onClick={() => {
+            setFaultUser(null); setFaultStatus(null); setFaultAcknowledged(false)
+          }}>关闭</button>
+        </form>
+      )}
       <table className="table">
         <thead>
           <tr><th>全局 UUID</th><th>用户名</th><th>昵称</th><th>注册方式</th><th>家节点</th><th>状态</th><th>操作</th></tr>
@@ -707,7 +837,12 @@ function UsersAdmin() {
               <td style={{ whiteSpace: 'nowrap' }}>
                 <button className="btn-sm primary" onClick={() => adminApi.triggerBackup(u.ID ?? u.id).then(() => load())}>备份</button>{' '}
                 <button className="btn-sm danger" onClick={() => adminApi.disableUser(u.ID ?? u.id).then(() => load())}>禁用</button>{' '}
-                <button className="btn-sm" onClick={() => beginRecovery(u)}>人工恢复身份</button>
+                <button className="btn-sm" onClick={() => beginRecovery(u)}>人工恢复身份</button>{' '}
+                <button
+                  className="btn-sm danger"
+                  disabled={(u.Status ?? u.status) !== 'active'}
+                  onClick={() => beginDataFault(u)}
+                >权威数据故障</button>
               </td>
             </tr>
           ))}
