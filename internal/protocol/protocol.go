@@ -218,6 +218,23 @@ type RestoreUserAccountRequest struct {
 	OAuthSubject   string `json:"oauth_subject,omitempty"`
 }
 
+type VerifyNodeAdminRequest struct {
+	OperationID string `json:"operation_id"`
+	Handle      string `json:"handle"`
+	Password    string `json:"password"`
+}
+
+type CheckNodeAdminRequest struct {
+	Handle string `json:"handle"`
+}
+
+type NodeAdminVerification struct {
+	Handle            string `json:"handle"`
+	LocalUserID       string `json:"local_user_id,omitempty"`
+	IsAdmin           bool   `json:"is_admin"`
+	PermissionVersion int64  `json:"permission_version,omitempty"`
+}
+
 type SetPasswordRequest struct {
 	OperationID  string `json:"operation_id"`
 	Handle       string `json:"handle"`

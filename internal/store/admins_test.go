@@ -132,6 +132,8 @@ func TestAdminDisableAndPasswordResetRevokeSessions(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
 	mock.ExpectExec(`UPDATE admins SET status`).WithArgs(int64(2), "disabled", now).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE controller_sessions`).WithArgs(int64(2), now).WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectExec(`UPDATE admin_node_links`).WithArgs(int64(2), now).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(`UPDATE control_tickets`).WithArgs(int64(2), now).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	if err := st.SetAdminStatus(context.Background(), 2, "disabled", now); err != nil {
 		t.Fatal(err)

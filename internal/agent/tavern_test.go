@@ -64,6 +64,75 @@ func TestTavernAdapterRejectsNonLoopbackTarget(t *testing.T) {
 	}
 }
 
+func TestTavernAdapterVerifiesAndRechecksNodeAdministrator(t *testing.T) {
+	t.Parallel()
+	const psk = "node-local-agent-secret"
+	var verifyRequest protocol.VerifyNodeAdminRequest
+	var checkRequest protocol.CheckNodeAdminRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		if err := protocol.VerifyRequest(r, psk, body); err != nil {
+			t.Errorf("signature: %v", err)
+		}
+		switch r.URL.Path {
+		case "/api/stcontrol/internal/admin/verify":
+			if err := json.Unmarshal(body, &verifyRequest); err != nil {
+				t.Errorf("decode verify request: %v", err)
+			}
+		case "/api/stcontrol/internal/admin/check":
+			if err := json.Unmarshal(body, &checkRequest); err != nil {
+				t.Errorf("decode check request: %v", err)
+			}
+		default:
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(protocol.NodeAdminVerification{
+			Handle: "node-admin", LocalUserID: "local-user-7", IsAdmin: true, PermissionVersion: 9,
+		})
+	}))
+	defer server.Close()
+	a, err := New(&config.AgentConfig{
+		TavernURL: server.URL, AgentPSK: psk, NodeID: 12, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verification, err := a.verifyNodeAdmin(context.Background(), protocol.VerifyNodeAdminRequest{
+		OperationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Handle: "node-admin", Password: "not-persisted",
+	})
+	if err != nil || !verification.IsAdmin || verification.PermissionVersion != 9 {
+		t.Fatalf("verification=%+v err=%v", verification, err)
+	}
+	if verifyRequest.Password != "not-persisted" || verifyRequest.Handle != "node-admin" {
+		t.Fatalf("verify request=%+v", verifyRequest)
+	}
+	verification, err = a.checkNodeAdmin(context.Background(), protocol.CheckNodeAdminRequest{Handle: "node-admin"})
+	if err != nil || !verification.IsAdmin || checkRequest.Handle != "node-admin" {
+		t.Fatalf("verification=%+v request=%+v err=%v", verification, checkRequest, err)
+	}
+}
+
+func TestTavernAdapterRejectsIncompleteAdministratorFact(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(protocol.NodeAdminVerification{Handle: "node-admin", IsAdmin: true})
+	}))
+	defer server.Close()
+	a, err := New(&config.AgentConfig{
+		TavernURL: server.URL, AgentPSK: "secret", NodeID: 12, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.checkNodeAdmin(context.Background(), protocol.CheckNodeAdminRequest{Handle: "node-admin"}); err == nil {
+		t.Fatal("incomplete administrator fact was accepted")
+	}
+}
+
 func TestRegistrationPolicyRequiresFreshVersionedAdapterFact(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

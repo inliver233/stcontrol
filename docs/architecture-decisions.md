@@ -76,3 +76,10 @@
 - 决定：文件清单不以明文进入 `agent_commands.result_summary`。Controller 通过加密命令下发用途隔离、可从主密钥恢复的一次性响应密钥；Agent 按序分页并仅返回 AES-GCM ciphertext，且这类只读命令不写入 Agent 的通用完成结果缓存。Controller 解密后重新校验严格路径、全局排序、摘要、大小、总数和 entries digest，再以 evidence ID 派生的独立 at-rest key 重新加密每页写入 PostgreSQL；同一事务把已摄取命令结果替换为无路径摘要，避免命令表长期保留重复 ciphertext。文件名只会在 conflict 专用、`no-store` 的响应正文中返回认证用户，不进入 URL、审计或错误信息。
 - 决定：差异分类只承诺文件级事实。同一路径且大小/摘要相同视为相同；只在部分来源出现的路径可进入后续“不同路径自动并入”；同路径摘要或大小不同必须由用户选源或保留双份。聊天/JSON/文本/二进制分类只帮助解释风险，不承诺任何通用语义合并。
 - 影响：重启后可从持久命令结果和 encrypted manifest pages 继续，全部来源 ready 后案件进入 `awaiting_decision`。当前已提供分页差异 UI；来源选择、合并结果发布、原件保留策略和最终原子解冻仍是下一阶段，证据捕获成功不能冒充冲突已解决。
+
+## ADR-012：节点管理员关联属于每个总控管理员，跳转前必须复核
+
+- 决定：多个总控管理员彼此平级，但每人必须在每个计算节点上用自己的既有原生管理员账号完成一次验证；总控不得替其创建节点账号或提升权限。节点明文密码只进入本次浏览器请求、Controller 内存和发往 Agent 的加密固定命令，持久幂等事实只保存用途隔离的 keyed HMAC 摘要。
+- 决定：关联保存节点 local user identity 和单调权限版本。每次进入原生后台前，Agent 都通过签名 loopback adapter 重新读取当前节点权限；local identity 不同、权限已降级或账号消失时，关联进入 `stale`，并在同一事务撤销全部未消费管理员票据。手工撤销或禁用总控管理员也原子撤销相应关联和未消费票据。
+- 决定：管理员短码使用与普通用户登录不同的 HMAC 用途域，数据库行强制 `ticket_type=node_admin`、`admin_id` 非空且 `user_id` 为空。票据绑定目标节点、local handle、active controller generation、有效管理员和当前 verified 关联，只有目标节点以 Agent 身份核销时才原子消费；浏览器仍只使用 `no-store/no-referrer` 的 POST body。
+- 影响：首次验证后可直接跳转而无需重复输入密码，但每次跳转仍会复核节点权威权限。当前 Controller、Agent、数据库和管理 UI 已实现该协议；SillyTavern 端的验证/复核/核销与本地管理员 session adapter 尚未落地，因此不能宣称端到端完成。

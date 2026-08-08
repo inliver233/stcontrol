@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
-import { api } from '../api'
+import { api, submitLoginHandoff, type BrowserHandoff } from '../api'
 import { useAuth } from '../App'
 
 function readCookie(name: string): string {
@@ -43,6 +43,15 @@ const adminApi = {
     method: 'POST', body: JSON.stringify({ operation_id: operationID }),
   }),
   latestImport: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/imports/latest`),
+  nodeLinks: () => adminReq<{ links: AdminNodeLink[] }>('/api/admin/node-links'),
+  verifyNodeLink: (id: number, operationID: string, handle: string, password: string) =>
+    adminReq<AdminNodeLink>(`/api/admin/nodes/${id}/admin-link`, {
+      method: 'POST', body: JSON.stringify({ operation_id: operationID, handle, password }),
+    }),
+  revokeNodeLink: (id: number) => adminReq<{ ok: boolean }>(`/api/admin/nodes/${id}/admin-link`, { method: 'DELETE' }),
+  adminHandoff: (id: number, operationID: string) => adminReq<BrowserHandoff>(`/api/admin/nodes/${id}/admin-handoff`, {
+    method: 'POST', body: JSON.stringify({ operation_id: operationID }),
+  }),
   users: () => adminReq<{ users: any[] }>('/api/admin/users'),
   recoverUserIdentity: (uuid: string, operationID: string, password: string) => adminReq<any>(`/api/admin/users/${uuid}/identity-recovery`, {
     method: 'POST', body: JSON.stringify({ operation_id: operationID, password }),
@@ -56,6 +65,17 @@ const adminApi = {
   createAdmin: (username: string, password: string) => adminReq<any>('/api/admin/admins', { method: 'POST', body: JSON.stringify({ username, password }) }),
   setAdminStatus: (id: number, status: string) => adminReq<any>(`/api/admin/admins/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
   resetAdminPassword: (id: number, password: string) => adminReq<any>(`/api/admin/admins/${id}/password`, { method: 'PUT', body: JSON.stringify({ password }) }),
+}
+
+interface AdminNodeLink {
+  node_id: number
+  node_name: string
+  node_state: string
+  local_handle?: string
+  state: 'unlinked' | 'verified' | 'stale' | 'revoked'
+  permission_version?: number
+  last_verified_at?: string
+  last_error_code?: string
 }
 
 // ---------- 布局 ----------
@@ -146,14 +166,100 @@ function Overview() {
 // ---------- 节点管理 ----------
 function NodesAdmin() {
   const [nodes, setNodes] = useState<any[]>([])
+  const [nodeLinks, setNodeLinks] = useState<AdminNodeLink[]>([])
   const [tokenInfo, setTokenInfo] = useState<any>(null)
   const [scanResult, setScanResult] = useState<any>(null)
   const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
   const [scanningNode, setScanningNode] = useState<number>(0)
+  const [linkNode, setLinkNode] = useState<any>(null)
+  const [linkHandle, setLinkHandle] = useState('')
+  const [linkPassword, setLinkPassword] = useState('')
+  const [linkingNode, setLinkingNode] = useState<number>(0)
+  const [handoffNode, setHandoffNode] = useState<number>(0)
   const scanOperations = useRef<Record<number, string>>({})
+  const linkOperation = useRef('')
+  const handoffOperations = useRef<Record<number, string>>({})
 
-  const load = () => adminApi.nodes().then(d => setNodes(d.nodes)).catch(e => setError(e.message))
+  const load = () => Promise.all([adminApi.nodes(), adminApi.nodeLinks()])
+    .then(([nodeData, linkData]) => {
+      setNodes(nodeData.nodes)
+      setNodeLinks(linkData.links || [])
+    })
+    .catch(e => setError(e.message))
   useEffect(() => { load() }, [])
+
+  const nodeLink = (nodeID: number) => nodeLinks.find(link => link.node_id === nodeID)
+  const beginNodeLink = (node: any) => {
+    const current = nodeLink(node.id)
+    setError('')
+    setMessage('')
+    setLinkNode(node)
+    setLinkHandle(current?.local_handle || '')
+    setLinkPassword('')
+    linkOperation.current = ''
+  }
+  const changeLinkHandle = (value: string) => {
+    setLinkHandle(value)
+    linkOperation.current = ''
+  }
+  const changeLinkPassword = (value: string) => {
+    setLinkPassword(value)
+    linkOperation.current = ''
+  }
+  const verifyNodeLink = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!linkNode) return
+    const operationID = linkOperation.current || crypto.randomUUID()
+    linkOperation.current = operationID
+    setError('')
+    setMessage('')
+    setLinkingNode(linkNode.id)
+    try {
+      await adminApi.verifyNodeLink(linkNode.id, operationID, linkHandle, linkPassword)
+      linkOperation.current = ''
+      setLinkNode(null)
+      setLinkHandle('')
+      setLinkPassword('')
+      setMessage('节点管理员账号已验证；后续进入该节点后台无需重复输入密码。')
+      await load()
+    } catch (err: unknown) {
+      setLinkPassword('')
+      setError(err instanceof Error ? err.message : '节点管理员验证失败')
+    } finally {
+      setLinkingNode(0)
+    }
+  }
+  const revokeNodeLink = async (node: any) => {
+    if (!window.confirm(`撤销 ${node.name} 的管理员账号关联及未使用跳转票据？`)) return
+    setError('')
+    setMessage('')
+    try {
+      await adminApi.revokeNodeLink(node.id)
+      delete handoffOperations.current[node.id]
+      setMessage('节点管理员关联已撤销。')
+      await load()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '撤销节点管理员关联失败')
+    }
+  }
+  const enterNodeAdmin = async (node: any) => {
+    const operationID = handoffOperations.current[node.id] || crypto.randomUUID()
+    handoffOperations.current[node.id] = operationID
+    setError('')
+    setMessage('')
+    setHandoffNode(node.id)
+    try {
+      const handoff = await adminApi.adminHandoff(node.id, operationID)
+      delete handoffOperations.current[node.id]
+      submitLoginHandoff(handoff)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '节点后台跳转失败')
+      await load()
+    } finally {
+      setHandoffNode(0)
+    }
+  }
 
   const toggle = async (n: any, field: 'allow_register' | 'is_backup_target') => {
     setError('')
@@ -240,6 +346,29 @@ function NodesAdmin() {
     <>
       <h2>节点管理</h2>
       {error && <div className="error-msg">{error}</div>}
+      {message && <div className="success-msg">{message}</div>}
+      {linkNode && (
+        <form onSubmit={verifyNodeLink} className="card" style={{ margin: '0 0 20px', maxWidth: 560 }}>
+          <h3>验证 {linkNode.name} 的原生管理员账号</h3>
+          <p>
+            密码只用于本次节点验证，不会保存。验证成功后，每次跳转前都会重新确认该账号当前仍有管理员权限。
+          </p>
+          <div className="field">
+            <label>节点账号</label>
+            <input value={linkHandle} onChange={e => changeLinkHandle(e.target.value)} maxLength={128} autoComplete="username" required />
+          </div>
+          <div className="field">
+            <label>节点密码</label>
+            <input type="password" value={linkPassword} onChange={e => changeLinkPassword(e.target.value)} maxLength={256} autoComplete="current-password" required />
+          </div>
+          <button className="btn" type="submit" disabled={linkingNode === linkNode.id}>
+            {linkingNode === linkNode.id ? '验证中…' : '验证并关联'}
+          </button>{' '}
+          <button className="btn-sm" type="button" disabled={linkingNode === linkNode.id} onClick={() => {
+            setLinkNode(null); setLinkHandle(''); setLinkPassword(''); linkOperation.current = ''
+          }}>取消</button>
+        </form>
+      )}
       {tokenInfo && (
         <div className="success-msg">
           一次性注册令牌（15 分钟内有效）：<br />
@@ -274,8 +403,9 @@ function NodesAdmin() {
           <tr><th>ID</th><th>名称</th><th>角色</th><th>健康维度</th><th>窗口负载</th><th>磁盘/配额</th><th>用户/队列</th><th>版本</th><th>操作</th></tr>
         </thead>
         <tbody>
-          {nodes.map(n => (
-            <tr key={n.id}>
+          {nodes.map(n => {
+            const link = nodeLink(n.id)
+            return <tr key={n.id}>
               <td>{n.id}</td>
               <td>{n.name}<div className="mono" style={{ fontSize: 11 }}>{n.base_url || '未配置地址'}</div></td>
               <td>{n.role === 'compute' ? '计算' : '存储'}</td>
@@ -311,9 +441,26 @@ function NodesAdmin() {
                 {' '}<button className="btn-sm" onClick={() => toggleMaintenance(n)}>
                   {n.operational_state === 'maintenance' ? '结束维护' : '进入维护'}
                 </button>
+                {n.role === 'compute' && <>
+                  <div style={{ marginTop: 6, fontSize: 12 }}>
+                    原生后台：{link?.state === 'verified'
+                      ? `${link.local_handle}（已验证）`
+                      : link?.state === 'stale' ? '权限已失效，需重新验证'
+                        : link?.state === 'revoked' ? '已撤销' : '未关联'}
+                  </div>
+                  {link?.state === 'verified' ? <>
+                    <button className="btn-sm primary" disabled={handoffNode === n.id} onClick={() => enterNodeAdmin(n)}>
+                      {handoffNode === n.id ? '确认权限中…' : '进入原生后台'}
+                    </button>{' '}
+                    <button className="btn-sm" onClick={() => beginNodeLink(n)}>重新验证</button>{' '}
+                    <button className="btn-sm danger" onClick={() => revokeNodeLink(n)}>撤销关联</button>
+                  </> : (
+                    <button className="btn-sm primary" onClick={() => beginNodeLink(n)}>验证后台账号</button>
+                  )}
+                </>}
               </td>
             </tr>
-          ))}
+          })}
         </tbody>
       </table>
     </>

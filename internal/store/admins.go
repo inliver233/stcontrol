@@ -202,6 +202,17 @@ func (s *Store) SetAdminStatus(ctx context.Context, adminID int64, status string
 			WHERE admin_id=$1 AND revoked_at IS NULL`, adminID, now); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE admin_node_links SET state='revoked',revoked_at=COALESCE(revoked_at,$2),
+			  updated_at=$2 WHERE admin_id=$1 AND state<>'revoked'`, adminID, now); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE control_tickets SET revoked_at=COALESCE(revoked_at,$2)
+			WHERE admin_id=$1 AND ticket_type='node_admin'
+			  AND consumed_at IS NULL AND revoked_at IS NULL`, adminID, now); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

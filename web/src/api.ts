@@ -67,13 +67,16 @@ export interface Me {
   is_admin: boolean
 }
 
-export interface LoginHandoff {
+export interface BrowserHandoff {
   ok: boolean
   post_url: string
   field_name: string
   code: string
   expires_at: string
   target_node_id: number
+}
+
+export interface LoginHandoff extends BrowserHandoff {
   existing_writer: boolean
 }
 
@@ -263,7 +266,7 @@ export const api = {
 
 // Submit the bearer code in a request body. The form is deliberately ephemeral
 // and never puts the code into history, referrers, access logs, or query strings.
-export function submitLoginHandoff(handoff: LoginHandoff): void {
+export function submitLoginHandoff(handoff: BrowserHandoff): void {
   const destination = new URL(handoff.post_url, window.location.origin)
   if (destination.protocol !== 'https:' && destination.hostname !== 'localhost' && destination.hostname !== '127.0.0.1') {
     throw new Error('节点登录地址必须使用 HTTPS')

@@ -34,8 +34,36 @@ type adapterHealth struct {
 }
 
 var requiredAdapterCapabilities = []string{
-	"account_restore", "activity_leases", "login_handoff", "password_update", "registration_policy",
+	"account_restore", "activity_leases", "login_handoff", "node_admin_handoff", "node_admin_verify", "password_update", "registration_policy",
 	"snapshot_boundary", "user_provision", "write_gate",
+}
+
+func (a *Agent) verifyNodeAdmin(
+	ctx context.Context,
+	req protocol.VerifyNodeAdminRequest,
+) (protocol.NodeAdminVerification, error) {
+	var out protocol.NodeAdminVerification
+	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/admin/verify", req, &out); err != nil {
+		return protocol.NodeAdminVerification{}, err
+	}
+	if out.Handle != req.Handle || (out.IsAdmin && (out.LocalUserID == "" || out.PermissionVersion <= 0)) {
+		return protocol.NodeAdminVerification{}, fmt.Errorf("invalid node administrator verification")
+	}
+	return out, nil
+}
+
+func (a *Agent) checkNodeAdmin(
+	ctx context.Context,
+	req protocol.CheckNodeAdminRequest,
+) (protocol.NodeAdminVerification, error) {
+	var out protocol.NodeAdminVerification
+	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/admin/check", req, &out); err != nil {
+		return protocol.NodeAdminVerification{}, err
+	}
+	if out.Handle != req.Handle || (out.IsAdmin && (out.LocalUserID == "" || out.PermissionVersion <= 0)) {
+		return protocol.NodeAdminVerification{}, fmt.Errorf("invalid node administrator status")
+	}
+	return out, nil
 }
 
 // collectUserStatuses is replaced by the authenticated adapter's session

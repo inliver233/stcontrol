@@ -47,6 +47,7 @@ func (s *Server) routes(r *chi.Mux) {
 	r.Route("/api/tickets", func(r chi.Router) {
 		r.Use(s.agentAuthMiddleware)
 		r.Post("/redeem", s.handleTicketRedeem)
+		r.Post("/redeem-admin", s.handleAdminTicketRedeem)
 	})
 
 	// 子控注册（一次性令牌, 无需 PSK）
@@ -98,10 +99,14 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Use(s.adminOnly)
 		r.Get("/overview", s.handleAdminOverview)
 		r.Get("/nodes", s.handleAdminListNodes)
+		r.Get("/node-links", s.handleAdminNodeLinks)
 		r.Post("/nodes", s.handleAdminCreateNode)
 		r.Put("/nodes/{id}", s.handleAdminUpdateNode)
 		r.Post("/nodes/{id}/register-token", s.handleAdminNodeRegisterToken)
 		r.Post("/nodes/{id}/scan-existing", s.handleAdminScanExisting)
+		r.Post("/nodes/{id}/admin-link", s.handleVerifyAdminNodeLink)
+		r.Delete("/nodes/{id}/admin-link", s.handleRevokeAdminNodeLink)
+		r.Post("/nodes/{id}/admin-handoff", s.handleCreateAdminHandoff)
 		r.Get("/nodes/{id}/imports/latest", s.handleAdminLatestAccountImport)
 		r.Get("/users", s.handleAdminListUsers)
 		r.Post("/users/{uuid}/identity-recovery", s.handleAdminRecoverUserIdentity)

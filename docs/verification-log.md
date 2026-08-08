@@ -261,3 +261,15 @@
 - `go test ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`、`web/npm run build`、嵌入迁移顺序测试与 `git diff --check`：通过。
 - `go test -coverprofile=coverage/conflict_resolution.coverprofile ./...`：通过；总覆盖率 `41.3%`（Agent `48.8%`、Controller `24.7%`、Store `54.6%`）。新状态机增加的 SQL/Controller 路径尚未达到 80% 门禁。
 - 本机 Docker daemon 与 PostgreSQL 均不可用，因此 `0020` 的真实迁移、serializable 并发、双 Agent 直传、进程崩溃恢复和大清单/磁盘满仍缺运行证据；SillyTavern 写门 adapter 尚未挂载，节点退役/升级/损坏也未实现，R19/R20 仍严格保持 `部分`。
+
+## 2026-08-08：逐管理员节点关联与原生后台短码批次
+
+- 新增 `0021_admin_node_links.sql`：关联保存节点 local identity、权限版本、失效原因和最近复核时间；验证 operation 保存 32-byte keyed HMAC 请求摘要、结果、active controller generation 和安全审计。节点 local identity 在同一节点只能绑定一个有效总控管理员，避免多人共享同一原生管理员身份冒充独立关联。
+- 首次关联要求当前总控管理员输入自己的既有节点账号密码。Controller 不保存明文，只把它放入绑定 operation 的 Agent 加密固定命令；Agent 通过签名 loopback adapter 验证。成功/拒绝都成为 durable operation，相同请求可重放，不同管理员、节点、handle 或密码复用 operation ID 会冲突关闭。
+- 后续进入后台不再要求密码，但每次都用独立 `check_node_admin` 命令读取节点当前权威权限。local identity 不同或权限降级时，关联会在 serializable 事务进入 stale 并撤销全部未消费 `node_admin` 票据；手工撤销和禁用总控管理员同样原子撤销关联/票据。
+- 管理员短码与用户登录短码使用不同 HMAC 用途域，只保存 secret hash；票据强制 admin principal、目标节点、local handle、active controller generation、有效管理员和 verified 关联，目标 Agent 核销时以 data-modifying CTE 原子单次消费。浏览器使用临时 `no-referrer` POST form，短码不进入 URL。
+- 管理台节点页读取真实逐管理员关联事实，支持验证/重新验证、进入原生后台和撤销；密码提交后立即清空，失败不显示内部 ID。失效关联明确要求重新验证，不伪造跳转成功。
+- 单元测试覆盖签名 adapter 验证/复核及不完整权限事实拒绝、成功/拒绝 operation 持久化、权限失效/手工撤销/管理员禁用的级联撤票、签发与单次核销、管理员/用户短码用途隔离、验证摘要绑定和所有新增公共入口非法输入。
+- `go test -coverprofile=coverage/admin_node_handoff.coverprofile ./...`：通过；总覆盖率 `41.1%`（Agent `48.6%`、Controller `24.0%`、Store `54.7%`），仍低于最终 80% 门禁。
+- `go test ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`、`web/npm run build` 和 `git diff --check`：通过。
+- 尚未完成且未冒充完成：SillyTavern 尚未提供 `/api/stcontrol/internal/admin/verify`、`/check` 和 `/federated-admin-login` 的真实 adapter，也未把核销结果转换为本地管理员 session；本机没有可用 PostgreSQL，迁移、约束和并发核销仍缺真实运行证据。因此 R17 保持 `部分`。
