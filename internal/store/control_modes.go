@@ -3,11 +3,13 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -37,6 +39,7 @@ type NodeControlModeFact struct {
 	ActiveIndependentSessions   int
 	PendingUserSyncs            int
 	PendingUsers                []IndependentSyncFact
+	ConfirmedTakeovers          []IndependentTakeoverFact
 	ObservedAt                  time.Time
 }
 
@@ -45,6 +48,17 @@ type IndependentSyncFact struct {
 	Marker    string
 	ChangedAt time.Time
 	Reason    string
+}
+
+type IndependentTakeoverFact struct {
+	OperationID          string
+	Handle               string
+	ParentClaimID        string
+	ClaimID              string
+	ControllerGeneration int64
+	ActivityEpoch        int64
+	TakeoverSequence     int64
+	ConfirmedAt          time.Time
 }
 
 type NodeControlModeDecision struct {
@@ -73,6 +87,29 @@ func validNodeControlModeFact(fact NodeControlModeFact) bool {
 	if len(fact.PendingUsers) != fact.PendingUserSyncs || len(fact.PendingUsers) > 500 {
 		return false
 	}
+	if len(fact.ConfirmedTakeovers) > 1000 {
+		return false
+	}
+	seenTakeoverOperations := make(map[string]struct{}, len(fact.ConfirmedTakeovers))
+	seenTakeoverClaims := make(map[string]struct{}, len(fact.ConfirmedTakeovers))
+	for _, takeover := range fact.ConfirmedTakeovers {
+		if !validUUIDText(takeover.OperationID) || !validControlModeHandle(takeover.Handle) ||
+			!validSHA256Text(takeover.ParentClaimID) || !validSHA256Text(takeover.ClaimID) ||
+			takeover.ParentClaimID == takeover.ClaimID || takeover.ControllerGeneration <= 0 ||
+			takeover.ControllerGeneration > fact.ControllerGeneration || takeover.ActivityEpoch <= 0 ||
+			takeover.TakeoverSequence <= 0 || takeover.ConfirmedAt.IsZero() ||
+			takeover.ConfirmedAt.After(fact.ObservedAt.Add(time.Minute)) {
+			return false
+		}
+		if _, exists := seenTakeoverOperations[takeover.OperationID]; exists {
+			return false
+		}
+		if _, exists := seenTakeoverClaims[takeover.ClaimID]; exists {
+			return false
+		}
+		seenTakeoverOperations[takeover.OperationID] = struct{}{}
+		seenTakeoverClaims[takeover.ClaimID] = struct{}{}
+	}
 	for _, timestamp := range []time.Time{
 		fact.OutageStartedAt, fact.ConfirmedOutageStartedAt,
 		fact.LastControllerSuccessAt, fact.IndependentSince,
@@ -87,6 +124,19 @@ func validNodeControlModeFact(fact NodeControlModeFact) bool {
 		return false
 	}
 	return true
+}
+
+func validSHA256Text(value string) bool {
+	if len(value) != 64 || strings.ToLower(value) != value {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 32
+}
+
+func validControlModeHandle(value string) bool {
+	return value != "" && len(value) <= 128 && strings.ToLower(value) == value &&
+		strings.TrimSpace(value) == value && strings.IndexFunc(value, unicode.IsControl) < 0
 }
 
 // ReconcileNodeControlMode records what the Agent has actually applied and
@@ -254,6 +304,11 @@ func (s *Store) reconcileNodeControlModeAuthenticated(
 	}
 	if err := recordIndependentSyncFactsTx(
 		ctx, tx, nodeID, activeGeneration, fact.PendingUsers, fact.ObservedAt,
+	); err != nil {
+		return NodeControlModeDecision{}, err
+	}
+	if err := recordIndependentTakeoverFactsTx(
+		ctx, tx, nodeID, fact.ConfirmedTakeovers, fact.ObservedAt,
 	); err != nil {
 		return NodeControlModeDecision{}, err
 	}

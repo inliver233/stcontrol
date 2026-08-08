@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -18,6 +19,12 @@ const (
 
 type adapterTicketRedeemRequest struct {
 	Code string `json:"code"`
+}
+
+type adapterTicketRedeemResponse struct {
+	Handle               string `json:"handle"`
+	ActivityEpoch        int64  `json:"activity_epoch"`
+	ControllerGeneration int64  `json:"controller_generation"`
 }
 
 // handleAdapterTicketRedeem is the only browser-adapter bridge exposed by the
@@ -62,6 +69,22 @@ func (a *Agent) handleAdapterTicketRedeem(admin bool) http.HandlerFunc {
 		if err != nil || len(response) > maxAdapterTicketResponseBytes {
 			protocol.WriteError(w, http.StatusServiceUnavailable, "ticket redemption unavailable")
 			return
+		}
+		if !admin && status >= 200 && status < 300 {
+			var redemption adapterTicketRedeemResponse
+			if json.Unmarshal(response, &redemption) != nil ||
+				!validOwnershipHandle(redemption.Handle) || redemption.ActivityEpoch <= 0 ||
+				redemption.ControllerGeneration <= 0 {
+				protocol.WriteError(w, http.StatusBadGateway, "ticket redemption response invalid")
+				return
+			}
+			if err := a.recordControllerOwnershipGrant(
+				r.Context(), redemption.Handle, redemption.ControllerGeneration, redemption.ActivityEpoch,
+			); err != nil {
+				// Managed login remains available. Disaster-native login will later
+				// fail closed unless a peer quorum retained this exact grant.
+				log.Printf("持久化活动归属见证失败: %v", err)
+			}
 		}
 		if contentType := headers.Get("Content-Type"); contentType != "" {
 			w.Header().Set("Content-Type", contentType)

@@ -32,7 +32,7 @@ func TestAdapterTicketProxySeparatesLocalAndRotatedControllerCredentials(t *test
 		}
 		controllerCalls++
 		protocol.WriteJSON(w, http.StatusOK, map[string]any{
-			"ok": true, "handle": "alice", "controller_generation": 9,
+			"ok": true, "handle": "alice", "controller_generation": 9, "activity_epoch": 11,
 		})
 	}))
 	defer controller.Close()
@@ -65,6 +65,10 @@ func TestAdapterTicketProxySeparatesLocalAndRotatedControllerCredentials(t *test
 	}
 	if controllerCalls != 1 {
 		t.Fatalf("controller calls=%d", controllerCalls)
+	}
+	if claim, found := agent.currentActivityOwnership("alice"); !found ||
+		claim.OwnerNodeID != 7 || claim.ActivityEpoch != 11 || claim.ControllerGeneration != 9 {
+		t.Fatalf("activity ownership claim=%+v found=%v", claim, found)
 	}
 	if response := doRequest(adapterPSK); response.Code != http.StatusUnauthorized {
 		t.Fatalf("replayed adapter nonce status=%d", response.Code)

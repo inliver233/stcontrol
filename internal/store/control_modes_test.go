@@ -23,6 +23,21 @@ func independentModeFact(now time.Time) NodeControlModeFact {
 	}
 }
 
+func TestValidNodeControlModeFactRejectsTakeoverBeyondReportedGeneration(t *testing.T) {
+	t.Parallel()
+	fact := independentModeFact(time.Now().UTC())
+	fact.ConfirmedTakeovers = []IndependentTakeoverFact{{
+		OperationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Handle: "alice",
+		ParentClaimID:        "1111111111111111111111111111111111111111111111111111111111111111",
+		ClaimID:              "2222222222222222222222222222222222222222222222222222222222222222",
+		ControllerGeneration: fact.ControllerGeneration + 1,
+		ActivityEpoch:        9, TakeoverSequence: 1, ConfirmedAt: fact.ObservedAt,
+	}}
+	if validNodeControlModeFact(fact) {
+		t.Fatal("future-generation takeover was accepted")
+	}
+}
+
 func TestReconcileIndependentModeAlwaysReturnsDrainingBoundary(t *testing.T) {
 	t.Parallel()
 	st, mock, closeDB := newMockStore(t)

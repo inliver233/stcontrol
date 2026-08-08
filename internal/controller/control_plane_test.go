@@ -71,3 +71,28 @@ func TestNormalizeNodeControlModeRejectsUnaccountedPendingMarkers(t *testing.T) 
 		t.Fatal("pending count without an immutable marker was accepted")
 	}
 }
+
+func TestNormalizeNodeControlModePreservesConfirmedTakeoverAndRejectsForgery(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 9, 6, 0, 0, 0, time.UTC)
+	report := protocol.NodeControlModeReport{
+		Mode: protocol.NodeModeIndependentDraining, ModeGeneration: 4, ControllerGeneration: 5,
+		ReasonCode: "controller_recovered",
+		ConfirmedTakeovers: []protocol.IndependentTakeover{{
+			OperationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Handle: "alice",
+			ParentClaimID:        "1111111111111111111111111111111111111111111111111111111111111111",
+			ClaimID:              "2222222222222222222222222222222222222222222222222222222222222222",
+			ControllerGeneration: 5, ActivityEpoch: 9, TakeoverSequence: 1,
+			ConfirmedAt: now.Add(-time.Minute).UnixMilli(),
+		}},
+	}
+	fact, err := normalizeNodeControlMode(report, now)
+	if err != nil || len(fact.ConfirmedTakeovers) != 1 ||
+		fact.ConfirmedTakeovers[0].OperationID != report.ConfirmedTakeovers[0].OperationID {
+		t.Fatalf("fact=%+v err=%v", fact, err)
+	}
+	report.ConfirmedTakeovers[0].ClaimID = report.ConfirmedTakeovers[0].ParentClaimID
+	if _, err := normalizeNodeControlMode(report, now); err == nil {
+		t.Fatal("takeover with a self-parent claim was accepted")
+	}
+}

@@ -20,19 +20,20 @@ type Agent struct {
 	mu         sync.Mutex
 	backupJobs map[int64]context.CancelFunc
 
-	httpClient        *http.Client
-	commandSlots      chan struct{}
-	transferSlots     chan struct{}
-	witnessSlots      chan struct{}
-	stateMu           sync.Mutex
-	auditMu           sync.Mutex
-	adapterNonceMu    sync.Mutex
-	adapterNonces     map[string]time.Time
-	witnessNonceMu    sync.Mutex
-	witnessNonces     map[string]time.Time
-	peerWitnessSecret []byte
-	peerWitnessProbe  func(context.Context) bool
-	state             agentRuntimeState
+	httpClient          *http.Client
+	commandSlots        chan struct{}
+	transferSlots       chan struct{}
+	witnessSlots        chan struct{}
+	stateMu             sync.Mutex
+	auditMu             sync.Mutex
+	ownershipTakeoverMu sync.Mutex
+	adapterNonceMu      sync.Mutex
+	adapterNonces       map[string]time.Time
+	witnessNonceMu      sync.Mutex
+	witnessNonces       map[string]time.Time
+	peerWitnessSecret   []byte
+	peerWitnessProbe    func(context.Context) bool
+	state               agentRuntimeState
 }
 
 // New 创建子控。

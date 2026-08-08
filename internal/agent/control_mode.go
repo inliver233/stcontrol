@@ -66,6 +66,20 @@ func (a *Agent) controlModeReport() protocol.NodeControlModeReport {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	state := a.state.ControlMode
+	confirmedTakeovers := make([]protocol.IndependentTakeover, 0, len(a.state.OwnershipTakeovers))
+	for _, operation := range a.state.OwnershipTakeovers {
+		if !operation.Succeeded || !operation.Audited {
+			continue
+		}
+		confirmedTakeovers = append(confirmedTakeovers, protocol.IndependentTakeover{
+			OperationID: operation.OperationID, Handle: operation.Claim.Handle,
+			ParentClaimID: operation.ParentClaimID, ClaimID: operation.Claim.ClaimID,
+			ControllerGeneration: operation.Claim.ControllerGeneration,
+			ActivityEpoch:        operation.Claim.ActivityEpoch,
+			TakeoverSequence:     operation.Claim.TakeoverSequence,
+			ConfirmedAt:          operation.UpdatedAt,
+		})
+	}
 	return protocol.NodeControlModeReport{
 		Mode: state.Mode, ModeGeneration: state.ModeGeneration,
 		ControllerGeneration: a.state.HighestGeneration, ReasonCode: state.ReasonCode,
@@ -79,6 +93,7 @@ func (a *Agent) controlModeReport() protocol.NodeControlModeReport {
 		ActiveIndependentSessions:   state.ActiveIndependentSessions,
 		PendingUserSyncs:            state.PendingUserSyncs,
 		PendingUsers:                append([]protocol.IndependentSyncUser(nil), a.state.PendingIndependentUsers...),
+		ConfirmedTakeovers:          confirmedTakeovers,
 	}
 }
 
@@ -196,6 +211,19 @@ func (a *Agent) recordControllerSuccess(now time.Time, response protocol.Heartbe
 	if !validNodeControlMode(response.DesiredMode) || response.ModeGeneration <= 0 {
 		return fmt.Errorf("invalid controller mode response")
 	}
+	if len(response.AcknowledgedTakeoverOperations) > maxOwnershipTakeovers {
+		return fmt.Errorf("invalid takeover acknowledgements")
+	}
+	seenAcknowledgements := make(map[string]struct{}, len(response.AcknowledgedTakeoverOperations))
+	for _, operationID := range response.AcknowledgedTakeoverOperations {
+		if !validUUID(operationID) {
+			return fmt.Errorf("invalid takeover acknowledgements")
+		}
+		if _, exists := seenAcknowledgements[operationID]; exists {
+			return fmt.Errorf("duplicate takeover acknowledgement")
+		}
+		seenAcknowledgements[operationID] = struct{}{}
+	}
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	state := &a.state.ControlMode
@@ -214,6 +242,12 @@ func (a *Agent) recordControllerSuccess(now time.Time, response protocol.Heartbe
 	}
 	if response.ModeGeneration == state.ModeGeneration && desired != state.Mode {
 		return fmt.Errorf("node mode generation reuse rejected")
+	}
+	for operationID := range seenAcknowledgements {
+		operation, exists := a.state.OwnershipTakeovers[operationID]
+		if exists && operation.Succeeded && operation.Audited {
+			delete(a.state.OwnershipTakeovers, operationID)
+		}
 	}
 	state.LastControllerSuccessAt = now
 	state.OutageStartedAt = time.Time{}

@@ -155,10 +155,15 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	acknowledgedTakeovers := make([]string, 0, len(req.ControlMode.ConfirmedTakeovers))
+	for _, takeover := range req.ControlMode.ConfirmedTakeovers {
+		acknowledgedTakeovers = append(acknowledgedTakeovers, takeover.OperationID)
+	}
 	protocol.WriteJSON(w, http.StatusOK, protocol.HeartbeatResponse{
 		OK: true, ControllerGeneration: decision.ControllerGeneration,
 		DesiredMode: decision.DesiredMode, ModeGeneration: decision.ModeGeneration,
-		CredentialRotation: rotation,
+		AcknowledgedTakeoverOperations: acknowledgedTakeovers,
+		CredentialRotation:             rotation,
 	})
 }
 
@@ -292,6 +297,42 @@ func normalizeNodeControlMode(report protocol.NodeControlModeReport, now time.Ti
 		seenMarkers[pending.Marker] = struct{}{}
 		fact.PendingUsers = append(fact.PendingUsers, store.IndependentSyncFact{
 			Handle: pending.Handle, Marker: pending.Marker, ChangedAt: changedAt, Reason: pending.Reason,
+		})
+	}
+	if len(report.ConfirmedTakeovers) > 1000 {
+		return store.NodeControlModeFact{}, fmt.Errorf("too many confirmed independent takeovers")
+	}
+	seenTakeoverOperations := make(map[string]struct{}, len(report.ConfirmedTakeovers))
+	seenTakeoverClaims := make(map[string]struct{}, len(report.ConfirmedTakeovers))
+	for _, takeover := range report.ConfirmedTakeovers {
+		confirmedAt := time.UnixMilli(takeover.ConfirmedAt).UTC()
+		parentDigest, parentErr := hex.DecodeString(takeover.ParentClaimID)
+		claimDigest, claimErr := hex.DecodeString(takeover.ClaimID)
+		if !isUUID(takeover.OperationID) || !isValidHandle(takeover.Handle) ||
+			NormalizeHandle(takeover.Handle) != takeover.Handle || parentErr != nil || claimErr != nil ||
+			len(parentDigest) != stdsha256.Size || len(claimDigest) != stdsha256.Size ||
+			strings.ToLower(takeover.ParentClaimID) != takeover.ParentClaimID ||
+			strings.ToLower(takeover.ClaimID) != takeover.ClaimID ||
+			takeover.ParentClaimID == takeover.ClaimID || takeover.ControllerGeneration <= 0 ||
+			takeover.ControllerGeneration > report.ControllerGeneration || takeover.ActivityEpoch <= 0 ||
+			takeover.TakeoverSequence <= 0 || takeover.ConfirmedAt <= 0 ||
+			confirmedAt.After(now.Add(time.Minute)) {
+			return store.NodeControlModeFact{}, fmt.Errorf("invalid confirmed independent takeover")
+		}
+		if _, exists := seenTakeoverOperations[takeover.OperationID]; exists {
+			return store.NodeControlModeFact{}, fmt.Errorf("duplicate confirmed independent takeover operation")
+		}
+		if _, exists := seenTakeoverClaims[takeover.ClaimID]; exists {
+			return store.NodeControlModeFact{}, fmt.Errorf("duplicate confirmed independent takeover claim")
+		}
+		seenTakeoverOperations[takeover.OperationID] = struct{}{}
+		seenTakeoverClaims[takeover.ClaimID] = struct{}{}
+		fact.ConfirmedTakeovers = append(fact.ConfirmedTakeovers, store.IndependentTakeoverFact{
+			OperationID: takeover.OperationID, Handle: takeover.Handle,
+			ParentClaimID: takeover.ParentClaimID, ClaimID: takeover.ClaimID,
+			ControllerGeneration: takeover.ControllerGeneration,
+			ActivityEpoch:        takeover.ActivityEpoch, TakeoverSequence: takeover.TakeoverSequence,
+			ConfirmedAt: confirmedAt,
 		})
 	}
 	return fact, nil

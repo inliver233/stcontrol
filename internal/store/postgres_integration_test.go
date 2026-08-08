@@ -60,6 +60,10 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 		assertConcurrentHandoffRedemption(t, stores[0], userID, nodeA)
 	})
 
+	t.Run("confirmed disaster takeover is immutable and idempotent", func(t *testing.T) {
+		assertPostgresIndependentTakeoverAudit(t, stores[0], generation)
+	})
+
 	t.Run("node lifecycle binds replay and retires only after durable drain", func(t *testing.T) {
 		assertPostgresNodeLifecycleHardening(t, stores[0], nodeA)
 	})
@@ -83,6 +87,47 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 	t.Run("ten-thousand account inventory is durable and page bounded", func(t *testing.T) {
 		assertPostgresAccountInventoryScale(t, stores[0], nodeA)
 	})
+}
+
+func assertPostgresIndependentTakeoverAudit(t *testing.T, st *Store, generation int64) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	nodeID := insertIntegrationNode(t, st, "independent-takeover")
+	fact := NodeControlModeFact{
+		Mode: NodeModeManaged, ModeGeneration: 1, ControllerGeneration: generation,
+		ObservedAt: now,
+		ConfirmedTakeovers: []IndependentTakeoverFact{{
+			OperationID: "76000000-0000-4000-8000-000000000001", Handle: "takeover-user",
+			ParentClaimID: strings.Repeat("a", 64), ClaimID: strings.Repeat("b", 64),
+			ControllerGeneration: generation, ActivityEpoch: 8, TakeoverSequence: 1,
+			ConfirmedAt: now.Add(-time.Minute),
+		}},
+	}
+	if _, err := st.ReconcileNodeControlMode(ctx, nodeID, fact); err != nil {
+		t.Fatalf("record independent takeover: %v", err)
+	}
+	fact.ObservedAt = now.Add(time.Second)
+	if _, err := st.ReconcileNodeControlMode(ctx, nodeID, fact); err != nil {
+		t.Fatalf("replay independent takeover: %v", err)
+	}
+	var count int
+	var firstObserved, lastObserved time.Time
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT count(*),min(first_observed_at),max(last_observed_at)
+		FROM independent_activity_takeovers WHERE operation_id=$1::uuid`,
+		fact.ConfirmedTakeovers[0].OperationID).Scan(&count, &firstObserved, &lastObserved); err != nil {
+		t.Fatalf("read independent takeover: %v", err)
+	}
+	if count != 1 || !firstObserved.Equal(now) || !lastObserved.Equal(fact.ObservedAt) {
+		t.Fatalf("takeover count=%d first=%s last=%s", count, firstObserved, lastObserved)
+	}
+	fact.ConfirmedTakeovers[0].ClaimID = strings.Repeat("c", 64)
+	fact.ObservedAt = now.Add(2 * time.Second)
+	if _, err := st.ReconcileNodeControlMode(ctx, nodeID, fact); err == nil ||
+		!strings.Contains(err.Error(), "operation conflict") {
+		t.Fatalf("mutated takeover replay error=%v", err)
+	}
 }
 
 func assertPostgresControllerRebuild(

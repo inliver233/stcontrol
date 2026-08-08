@@ -113,6 +113,7 @@ type NodeControlModeReport struct {
 	ActiveIndependentSessions   int                   `json:"active_independent_sessions"`
 	PendingUserSyncs            int                   `json:"pending_user_syncs"`
 	PendingUsers                []IndependentSyncUser `json:"pending_users,omitempty"`
+	ConfirmedTakeovers          []IndependentTakeover `json:"confirmed_takeovers,omitempty"`
 }
 
 type IndependentSyncUser struct {
@@ -122,6 +123,20 @@ type IndependentSyncUser struct {
 	Reason    string `json:"reason"`
 }
 
+// IndependentTakeover is an immutable user-confirmed last-owner takeover
+// fact. The Agent retains it durably and reports it on every heartbeat so a
+// recovered Controller can idempotently preserve the disaster decision.
+type IndependentTakeover struct {
+	OperationID          string `json:"operation_id"`
+	Handle               string `json:"handle"`
+	ParentClaimID        string `json:"parent_claim_id"`
+	ClaimID              string `json:"claim_id"`
+	ControllerGeneration int64  `json:"controller_generation"`
+	ActivityEpoch        int64  `json:"activity_epoch"`
+	TakeoverSequence     int64  `json:"takeover_sequence"`
+	ConfirmedAt          int64  `json:"confirmed_at"`
+}
+
 type CompleteIndependentSyncRequest struct {
 	OperationID string `json:"operation_id"`
 	Handle      string `json:"handle"`
@@ -129,11 +144,12 @@ type CompleteIndependentSyncRequest struct {
 }
 
 type HeartbeatResponse struct {
-	OK                   bool                          `json:"ok"`
-	ControllerGeneration int64                         `json:"controller_generation"`
-	DesiredMode          string                        `json:"desired_mode"`
-	ModeGeneration       int64                         `json:"mode_generation"`
-	CredentialRotation   *AgentCredentialRotationOffer `json:"credential_rotation,omitempty"`
+	OK                             bool                          `json:"ok"`
+	ControllerGeneration           int64                         `json:"controller_generation"`
+	DesiredMode                    string                        `json:"desired_mode"`
+	ModeGeneration                 int64                         `json:"mode_generation"`
+	AcknowledgedTakeoverOperations []string                      `json:"acknowledged_takeover_operations,omitempty"`
+	CredentialRotation             *AgentCredentialRotationOffer `json:"credential_rotation,omitempty"`
 }
 
 type AgentCredentialRotationOffer struct {

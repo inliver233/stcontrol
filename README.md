@@ -116,9 +116,11 @@ workflow 明确切换到受控的端到端加密 relay，而不会把 capability
 
 ### 4. 酒馆侧改造（一次性）
 
-酒馆侧已挂载默认关闭的 federation control adapter，提供登录短码落地、受控/独立模式守卫、账号 hash/salt 供应、恢复账号供应、真实会话活动、分页账号库存和用户级写门/排空。内部能力仅允许 Agent 从 loopback 调用，并使用独立 adapter 凭据签名。健康端点使用协议版本 1，并至少报告 `account_inventory_paging`、`account_restore`、`activity_leases`、`control_mode`、`independent_reconciliation`、`local_account_proof`、`login_handoff`、`node_admin_handoff`、`node_admin_verify`、`password_update`、`registration_policy`、`snapshot_boundary`、`user_provision`、`write_gate`；缺版本、能力或适配器时计算节点兼容性失败关闭。未挂载该 adapter 的计算节点不会降级调用公开注册/改密接口。
+酒馆侧已挂载默认关闭的 federation control adapter，提供登录短码落地、受控/独立模式守卫、账号 hash/salt 供应、恢复账号供应、真实会话活动、分页账号库存和用户级写门/排空。内部能力仅允许 Agent 从 loopback 调用，并使用独立 adapter 凭据签名。健康端点使用协议版本 1，并至少报告 `account_inventory_paging`、`account_restore`、`activity_leases`、`activity_ownership`、`control_mode`、`independent_reconciliation`、`local_account_proof`、`login_handoff`、`node_admin_handoff`、`node_admin_verify`、`password_update`、`registration_policy`、`snapshot_boundary`、`user_provision`、`write_gate`；缺版本、能力或适配器时计算节点兼容性失败关闭。未挂载该 adapter 的计算节点不会降级调用公开注册/改密接口。
 
 Agent 将控制模式和模式世代写入 `data_dir/runtime-state.json`。默认在连续失联 45 秒后暂停节点的新登录与受管命令；只有签名心跳、本机独立健康探针和配置名单中 Agent 的外部同伴见证法定数都持续确认同一个 Controller 失联 15 分钟且达到最少失败次数，计算节点才进入 `independent`。缺少同伴、同伴不可达、任一合法同伴仍能访问 Controller 或见证身份重复都会失败关闭，绝不只凭本机网络视角开启原生登录。总控恢复后必须先进入 `independent-draining`；酒馆 adapter 报告灾难会话和待同步用户都归零后才恢复 `managed`。
+
+受管登录短码成功核销后，Agent 以 Controller 世代、活动 epoch 和 owner 节点生成不可变最后活动 claim，并复制到同伴法定数。独立登录只接受同一个最大 claim 的多数：owner 仍可用时必须返回原节点；owner 的酒馆 adapter 失效时，用户必须先通过本地密码验证，再确认固定的数据丢失/冲突风险。确认只授权对精确 parent claim 的一次多数 CAS；challenge 仅以 hash 落盘，operation/claim 在 Agent 重启后可安全重试，无同伴多数时始终拒绝登录。成功接管会进入 Agent 脱敏本地审计，并在 Controller 恢复后幂等固化到 PostgreSQL。
 
 见证名单通过 `agent.yaml` 的 `disaster.peer_witness_urls` 配置，最多 8 个，只允许 HTTPS（同机 loopback 测试允许 HTTP），且每个 URL 必须指向同伴 Agent 根地址。所有见证节点使用同一个至少 32 字节的随机密钥，密钥仅放在 `disaster.peer_witness_secret_env` 指定的环境变量（默认 `STCONTROL_PEER_WITNESS_PSK`），不得写入 YAML；安装脚本生成的 systemd unit 会读取可选的 `/opt/stcontrol/agent.env`（若自定义安装目录则读取该目录）。该文件必须保持 root-only，例如 `STCONTROL_PEER_WITNESS_PSK=<随机值>` 并设为 `0600`。未配置名单是安全默认值：节点能进入 `controller-unreachable`，但不能自动进入 `independent`。其余阈值可通过 `disaster.unreachable_after_sec`、`disaster.independent_after_sec` 和 `disaster.min_failed_heartbeats` 保守调大。
 

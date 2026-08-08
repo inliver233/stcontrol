@@ -26,13 +26,15 @@ type cachedCommandResult struct {
 }
 
 type agentRuntimeState struct {
-	WorkerID                string                         `json:"worker_id"`
-	HighestGeneration       int64                          `json:"highest_generation"`
-	Completed               map[string]cachedCommandResult `json:"completed"`
-	Transfers               map[string]pendingTransfer     `json:"transfers"`
-	ControlMode             agentControlModeState          `json:"control_mode"`
-	Credential              agentCredentialState           `json:"controller_credential"`
-	PendingIndependentUsers []protocol.IndependentSyncUser `json:"pending_independent_users,omitempty"`
+	WorkerID                string                                `json:"worker_id"`
+	HighestGeneration       int64                                 `json:"highest_generation"`
+	Completed               map[string]cachedCommandResult        `json:"completed"`
+	Transfers               map[string]pendingTransfer            `json:"transfers"`
+	ControlMode             agentControlModeState                 `json:"control_mode"`
+	Credential              agentCredentialState                  `json:"controller_credential"`
+	PendingIndependentUsers []protocol.IndependentSyncUser        `json:"pending_independent_users,omitempty"`
+	ActivityOwnership       map[string]activityOwnershipClaim     `json:"activity_ownership,omitempty"`
+	OwnershipTakeovers      map[string]ownershipTakeoverOperation `json:"ownership_takeovers,omitempty"`
 }
 
 type agentCredentialState struct {
@@ -89,6 +91,27 @@ func (a *Agent) loadRuntimeState() error {
 	}
 	if a.state.Transfers == nil {
 		a.state.Transfers = make(map[string]pendingTransfer)
+	}
+	if a.state.ActivityOwnership == nil {
+		a.state.ActivityOwnership = make(map[string]activityOwnershipClaim)
+	}
+	if a.state.OwnershipTakeovers == nil {
+		a.state.OwnershipTakeovers = make(map[string]ownershipTakeoverOperation)
+	}
+	for handle, claim := range a.state.ActivityOwnership {
+		if handle != claim.Handle || validateActivityOwnershipClaim(claim) != nil {
+			return fmt.Errorf("invalid persisted activity ownership claim")
+		}
+	}
+	for operationID, operation := range a.state.OwnershipTakeovers {
+		if operationID != operation.OperationID || !validUUID(operationID) ||
+			validateActivityOwnershipClaim(operation.Claim) != nil ||
+			operation.Claim.Kind != "user_confirmed_takeover" ||
+			operation.Claim.OperationID != operationID || operation.UpdatedAt <= 0 ||
+			(operation.Audited && !operation.Succeeded) ||
+			operation.ParentClaimID == "" || operation.ParentClaimID != operation.Claim.ParentClaimID {
+			return fmt.Errorf("invalid persisted activity ownership takeover")
+		}
 	}
 	if a.state.WorkerID == "" {
 		workerID, err := newWorkerID()
