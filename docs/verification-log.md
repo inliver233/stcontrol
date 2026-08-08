@@ -293,3 +293,15 @@
 - SillyTavern 定向套件：`node --test` 覆盖 adapter、真实路由、heartbeat、邀请注册、聊天分页、Free Gemini 和账户重置，共 93 项、86 通过、7 项因测试配置明确跳过、0 失败；`npm run test:optimizations` 128/128 通过；`npm run test:registration` 15/15 通过。相关新增源文件 ESLint 与 `git diff --check` 通过。
 - stcontrol `go test ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...` 通过。新增跨仓库测试由 Go Agent 调用真实 adapter fixture，并启动完整 SillyTavern server 验证实际 router 挂载与 CSRF；缺少 sibling/Node 时只在非验收环境显式 skip。
 - 尚未完成且未冒充完成：当前账号 inventory 硬限 500 且没有分页，不能满足 10k 规模；本批次仍没有真实 PostgreSQL，所以 Controller→数据库→Agent→酒馆的注册、并发写租约和 snapshot durable workflow 尚未闭环；多标签页/休眠、扩展绕过、跨机 TLS/NAT、全故障矩阵与 80% 覆盖率门禁仍待后续阶段。因此相关 R01–R06、R13–R19、R22 均保持 `部分`。
+
+## 2026-08-08：真实 PostgreSQL 迁移、领导锁与原子核销批次
+
+- 在项目内隔离的 `.test-postgres` 运行 EDB Windows PostgreSQL 17.10（官方 PostgreSQL Windows 下载页提供的 advanced-user binary archive，下载 SHA-256 `EF9B1E5E23D2E8A83914BA13D9DC536A72210FBA53FD1808FF1F7E06BB22B106`）；cluster 只监听 `127.0.0.1:55432`，runtime/data/log 均由 `.gitignore` 排除，没有写入两个项目之外。
+- 首次真实并发启动暴露迁移锁缺陷：8 个 `Store.Open` 会因逐 migration 的 SERIALIZABLE 快照在等待 advisory xact lock 前已建立而出现 `40001`，且 migration lock 与长生命周期 Controller leadership 复用了同一 ID，使被动副控在活动主控期间无法完成启动迁移核对。
+- 修复后迁移使用独立 `STMIGRAT` lock domain，并在专用 `sql.Conn` 上以 session lock 覆盖完整 migration 序列；各 migration 仍独立事务提交，失败不会伪造 `schema_migrations`。8 个同时启动的 Store 全部成功，28 个版本/name/checksum 与 embedded 文件逐项一致。
+- 真实 session-level 领导锁验证第一个主控独占、第二个失败关闭、释放后第二个可取得；活动领导锁存在时另一 Store 在 5 秒门禁内完成迁移核对，证明被动副控启动不再被迁移锁错误阻塞。
+- 真实 PostgreSQL 上 32 个并发 A/B 选点得到恰好 1 个 acquired、31 个 existing、数据库仅一行 writer 且所有调用无错误。发现 activity operation replay 原先只按 operation ID 读取结果，现同时绑定原 user/node/session；精确重试重放原结果，改 payload 明确返回 `ErrLeaseOperationConflict`。
+- 真实登录 handoff 的 data-modifying CTE 以 32 个并发消费者验证，只有一次成功；错 secret 不消费，成功后的重复核销失败。创建 handoff 与 writer lease 同事务、精确创建重试返回同一 JTI/activity epoch。
+- 新增 `TestPostgresCriticalConcurrency`：没有 `STCONTROL_TEST_POSTGRES_DSN` 时快速单元套件明确 skip；验收/CI 提供 DSN 后每次创建隔离 schema，覆盖并发迁移、领导锁、单写租约、operation 绑定和一次性核销，并在结束时 `DROP SCHEMA CASCADE`。
+- `STCONTROL_TEST_POSTGRES_DSN=... go test -coverprofile=coverage/real_postgres.coverprofile ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...` 通过；总覆盖率 `43.7%`（Agent `52.5%`、Controller `24.6%`、Store `56.8%`），仍远低于最终 80% 门禁。
+- 尚未完成且未冒充完成：snapshot/restore/registration/conflict/relay durable workflow 尚需真实 PostgreSQL 故障、重启、重复请求和双 Agent 注入；Controller 完整 HTTP→Agent→酒馆进程闭环、migration upgrade/restore 演练、目标容量与覆盖率门禁继续后续阶段。

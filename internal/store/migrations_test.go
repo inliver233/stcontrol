@@ -62,3 +62,11 @@ func TestEmbeddedMigrationsAreOrderedAndImmutable(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrationAndLeadershipLocksAreDomainSeparated(t *testing.T) {
+	t.Parallel()
+
+	if migrationLockID == controllerAdvisoryLockID {
+		t.Fatal("migration lock must not block a passive Controller behind active leadership")
+	}
+}

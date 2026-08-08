@@ -9,8 +9,9 @@ import (
 )
 
 var (
-	ErrGlobalUserNotFound = errors.New("global user not found")
-	ErrInvalidLeaseInput  = errors.New("invalid activity lease input")
+	ErrGlobalUserNotFound     = errors.New("global user not found")
+	ErrInvalidLeaseInput      = errors.New("invalid activity lease input")
+	ErrLeaseOperationConflict = errors.New("activity lease operation conflicts with the original request")
 )
 
 // ActivityLease is the durable single-writer lease for one global user.
@@ -126,7 +127,7 @@ func acquireActivityLeaseLocked(
 	tx *sql.Tx,
 	p AcquireActivityLeaseParams,
 ) (AcquireActivityLeaseResult, bool, error) {
-	if result, ok, err := getLeaseOperation(ctx, tx, p.OperationID); err != nil {
+	if result, ok, err := getLeaseOperation(ctx, tx, p); err != nil {
 		return AcquireActivityLeaseResult{}, false, err
 	} else if ok {
 		return result, true, nil
@@ -312,22 +313,29 @@ func getActivityLeaseForUpdate(ctx context.Context, tx *sql.Tx, userID int64) (A
 	return lease, true, nil
 }
 
-func getLeaseOperation(ctx context.Context, tx *sql.Tx, operationID string) (AcquireActivityLeaseResult, bool, error) {
+func getLeaseOperation(ctx context.Context, tx *sql.Tx, p AcquireActivityLeaseParams) (AcquireActivityLeaseResult, bool, error) {
 	var (
-		outcome   string
-		nodeID    sql.NullInt64
-		sessionID sql.NullString
-		epoch     sql.NullInt64
+		userID             int64
+		requestedNodeID    int64
+		requestedSessionID string
+		outcome            string
+		nodeID             sql.NullInt64
+		sessionID          sql.NullString
+		epoch              sql.NullInt64
 	)
 	err := tx.QueryRowContext(ctx, `
-		SELECT outcome, result_writer_node_id, result_session_id, result_activity_epoch
-		FROM activity_lease_operations WHERE operation_id=$1`, operationID).
-		Scan(&outcome, &nodeID, &sessionID, &epoch)
+		SELECT user_id, requested_node_id, requested_session_id, outcome,
+		  result_writer_node_id, result_session_id, result_activity_epoch
+		FROM activity_lease_operations WHERE operation_id=$1`, p.OperationID).
+		Scan(&userID, &requestedNodeID, &requestedSessionID, &outcome, &nodeID, &sessionID, &epoch)
 	if err == sql.ErrNoRows {
 		return AcquireActivityLeaseResult{}, false, nil
 	}
 	if err != nil {
 		return AcquireActivityLeaseResult{}, false, fmt.Errorf("get lease operation: %w", err)
+	}
+	if userID != p.UserID || requestedNodeID != p.WriterNodeID || requestedSessionID != p.SessionID {
+		return AcquireActivityLeaseResult{}, false, ErrLeaseOperationConflict
 	}
 	result := AcquireActivityLeaseResult{
 		Lease: ActivityLease{

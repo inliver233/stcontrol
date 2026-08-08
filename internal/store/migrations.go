@@ -14,7 +14,11 @@ import (
 	"strings"
 )
 
-const migrationLockID int64 = 0x5354434f4e54524c // "STCONTRL"
+// Keep migration serialization in a different advisory-lock namespace from
+// the long-lived Controller leadership lock. A passive Controller must be
+// able to verify already-applied migrations while the active Controller owns
+// leadership.
+const migrationLockID int64 = 0x53544d4947524154 // "STMIGRAT"
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
@@ -82,7 +86,23 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.DB.ExecContext(ctx, `
+	// Pin a session lock for the entire sequence while retaining one transaction
+	// per migration. Locking each migration only after BeginTx is insufficient:
+	// a waiter can retain a pre-wait SERIALIZABLE snapshot and then fail while
+	// recording a migration that the previous process just committed.
+	conn, err := s.DB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("reserve migration connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, migrationLockID); err != nil {
+		return fmt.Errorf("lock migrations: %w", err)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationLockID)
+	}()
+
+	if _, err := conn.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version BIGINT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -93,23 +113,19 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 
 	for _, m := range migrations {
-		if err := s.applyMigration(ctx, m); err != nil {
+		if err := s.applyMigration(ctx, conn, m); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Store) applyMigration(ctx context.Context, m migration) error {
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+func (s *Store) applyMigration(ctx context.Context, conn *sql.Conn, m migration) error {
+	tx, err := conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return fmt.Errorf("begin migration %s: %w", m.Name, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationLockID); err != nil {
-		return fmt.Errorf("lock migration %s: %w", m.Name, err)
-	}
 
 	var checksum string
 	err = tx.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE version=$1`, m.Version).Scan(&checksum)

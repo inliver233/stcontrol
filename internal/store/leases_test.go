@@ -11,7 +11,7 @@ import (
 
 const (
 	leaseColumns = "user_id,writer_node_id,session_id,activity_epoch,state,lease_expires_at,last_page_heartbeat_at,last_request_at,in_flight_reads,in_flight_writes,controller_generation,updated_at"
-	opColumns    = "outcome,result_writer_node_id,result_session_id,result_activity_epoch"
+	opColumns    = "user_id,requested_node_id,requested_session_id,outcome,result_writer_node_id,result_session_id,result_activity_epoch"
 )
 
 func TestAcquireActivityLeaseRejectsInvalidInput(t *testing.T) {
@@ -68,7 +68,7 @@ func TestAcquireActivityLeaseCreatesFirstWriter(t *testing.T) {
 	mock.ExpectQuery(`SELECT id FROM global_users WHERE id=\$1 FOR UPDATE`).
 		WithArgs(p.UserID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(p.UserID))
-	mock.ExpectQuery(`SELECT outcome, result_writer_node_id, result_session_id, result_activity_epoch FROM activity_lease_operations`).
+	mock.ExpectQuery(`SELECT user_id, requested_node_id, requested_session_id, outcome, result_writer_node_id, result_session_id, result_activity_epoch FROM activity_lease_operations`).
 		WithArgs(p.OperationID).
 		WillReturnRows(sqlmock.NewRows(splitColumns(opColumns)))
 	mock.ExpectQuery(`SELECT user_id, writer_node_id, session_id, activity_epoch, state, lease_expires_at`).
@@ -118,7 +118,7 @@ func TestAcquireActivityLeasePreservesExistingWriter(t *testing.T) {
 	mock.ExpectQuery(`SELECT id FROM global_users WHERE id=\$1 FOR UPDATE`).
 		WithArgs(p.UserID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(p.UserID))
-	mock.ExpectQuery(`SELECT outcome, result_writer_node_id, result_session_id, result_activity_epoch FROM activity_lease_operations`).
+	mock.ExpectQuery(`SELECT user_id, requested_node_id, requested_session_id, outcome, result_writer_node_id, result_session_id, result_activity_epoch FROM activity_lease_operations`).
 		WithArgs(p.OperationID).
 		WillReturnRows(sqlmock.NewRows(splitColumns(opColumns)))
 	mock.ExpectQuery(`SELECT user_id, writer_node_id, session_id, activity_epoch, state, lease_expires_at`).
@@ -165,9 +165,11 @@ func TestAcquireActivityLeaseReplaysOperationResult(t *testing.T) {
 	mock.ExpectQuery(`SELECT id FROM global_users WHERE id=\$1 FOR UPDATE`).
 		WithArgs(p.UserID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(p.UserID))
-	mock.ExpectQuery(`SELECT outcome, result_writer_node_id, result_session_id, result_activity_epoch FROM activity_lease_operations`).
+	mock.ExpectQuery(`SELECT user_id, requested_node_id, requested_session_id, outcome, result_writer_node_id, result_session_id, result_activity_epoch FROM activity_lease_operations`).
 		WithArgs(p.OperationID).
-		WillReturnRows(sqlmock.NewRows(splitColumns(opColumns)).AddRow("acquired", p.WriterNodeID, p.SessionID, int64(9)))
+		WillReturnRows(sqlmock.NewRows(splitColumns(opColumns)).AddRow(
+			p.UserID, p.WriterNodeID, p.SessionID, "acquired", p.WriterNodeID, p.SessionID, int64(9),
+		))
 	mock.ExpectCommit()
 
 	result, err := store.AcquireActivityLease(context.Background(), p)
@@ -176,6 +178,39 @@ func TestAcquireActivityLeaseReplaysOperationResult(t *testing.T) {
 	}
 	if !result.Acquired || result.Lease.ActivityEpoch != 9 {
 		t.Fatalf("unexpected replay result: %+v", result)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestAcquireActivityLeaseRejectsOperationPayloadConflict(t *testing.T) {
+	t.Parallel()
+
+	store, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	p := AcquireActivityLeaseParams{
+		OperationID:          "88888888-8888-4888-8888-888888888888",
+		UserID:               10,
+		WriterNodeID:         20,
+		SessionID:            "99999999-9999-4999-8999-999999999999",
+		ControllerGeneration: 3,
+		TTL:                  15 * time.Minute,
+		Now:                  time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC),
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT id FROM global_users WHERE id=\$1 FOR UPDATE`).
+		WithArgs(p.UserID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(p.UserID))
+	mock.ExpectQuery(`SELECT user_id, requested_node_id, requested_session_id, outcome`).
+		WithArgs(p.OperationID).
+		WillReturnRows(sqlmock.NewRows(splitColumns(opColumns)).AddRow(
+			p.UserID, int64(30), p.SessionID, "existing", int64(30), p.SessionID, int64(4),
+		))
+	mock.ExpectRollback()
+
+	_, err := store.AcquireActivityLease(context.Background(), p)
+	if !errors.Is(err, ErrLeaseOperationConflict) {
+		t.Fatalf("AcquireActivityLease error=%v, want ErrLeaseOperationConflict", err)
 	}
 	assertMockExpectations(t, mock)
 }

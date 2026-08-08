@@ -48,7 +48,7 @@ func TestCreateLoginHandoffCommitsLeaseAndTicketTogether(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(p.UserID))
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(3)))
-	mock.ExpectQuery(`SELECT outcome, result_writer_node_id, result_session_id, result_activity_epoch`).
+	mock.ExpectQuery(`SELECT user_id, requested_node_id, requested_session_id, outcome`).
 		WithArgs(p.OperationID).
 		WillReturnRows(sqlmock.NewRows(splitColumns(opColumns)))
 	mock.ExpectQuery(`SELECT user_id, writer_node_id, session_id, activity_epoch, state, lease_expires_at`).
@@ -93,7 +93,8 @@ func TestCreateLoginHandoffRollsBackLeaseWhenTicketInsertFails(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery(`SELECT id FROM global_users`).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(p.UserID))
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(3)))
-	mock.ExpectQuery(`SELECT outcome`).WillReturnRows(sqlmock.NewRows(splitColumns(opColumns)))
+	mock.ExpectQuery(`SELECT user_id, requested_node_id, requested_session_id, outcome`).
+		WillReturnRows(sqlmock.NewRows(splitColumns(opColumns)))
 	mock.ExpectQuery(`SELECT user_id, writer_node_id`).WillReturnRows(sqlmock.NewRows(splitColumns(leaseColumns)))
 	mock.ExpectExec(`INSERT INTO user_activity_leases`).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(`INSERT INTO activity_lease_operations`).WillReturnResult(sqlmock.NewResult(1, 1))
@@ -120,8 +121,10 @@ func TestCreateLoginHandoffReplaysOriginalResult(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(p.UserID))
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(3)))
-	mock.ExpectQuery(`SELECT outcome`).WithArgs(p.OperationID).
-		WillReturnRows(sqlmock.NewRows(splitColumns(opColumns)).AddRow("existing", int64(30), p.SessionID, int64(8)))
+	mock.ExpectQuery(`SELECT user_id, requested_node_id, requested_session_id, outcome`).WithArgs(p.OperationID).
+		WillReturnRows(sqlmock.NewRows(splitColumns(opColumns)).AddRow(
+			p.UserID, p.RequestedNodeID, p.SessionID, "existing", int64(30), p.SessionID, int64(8),
+		))
 	mock.ExpectQuery(`SELECT t.operation_id, t.jti`).
 		WithArgs(p.OperationID, p.UserID, p.RequestedNodeID, now).
 		WillReturnRows(sqlmock.NewRows([]string{
