@@ -1212,7 +1212,12 @@ func removeTaskDirectory(path string) {
 }
 
 func safeArchivePath(path string) bool {
-	return path != "" && path != archiveMetadataPath && path != conflictEvidenceMetadataPath && filepath.IsLocal(filepath.FromSlash(path)) && path == filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))) &&
+	// Archive names are a platform-neutral, forward-slash-only namespace. A
+	// Windows drive/UNC/ADS spelling must remain invalid when the receiving
+	// Agent runs on Linux; filepath.IsLocal alone follows only the receiver OS.
+	return path != "" && path != archiveMetadataPath && path != conflictEvidenceMetadataPath &&
+		!strings.ContainsAny(path, "\\:\x00") && filepath.IsLocal(filepath.FromSlash(path)) &&
+		path == filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))) &&
 		!strings.HasPrefix(path, ".stcontrol/")
 }
 

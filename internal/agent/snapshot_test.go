@@ -490,7 +490,11 @@ func TestManifestMismatchNeverReplacesPreviousReplica(t *testing.T) {
 
 func TestSnapshotRejectsTraversalAndUnsupportedEntries(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{"../escape", "/absolute", `C:\\escape`, ".stcontrol/hidden", archiveMetadataPath, conflictEvidenceMetadataPath, "a/../../b"} {
+	for _, path := range []string{
+		"../escape", "/absolute", `C:\\escape`, `C:\escape`, "C:/escape", "C:relative",
+		`\\server\share`, `nested\..\escape`, "nested/file:stream", "nested/\x00file",
+		".stcontrol/hidden", archiveMetadataPath, conflictEvidenceMetadataPath, "a/../../b",
+	} {
 		if safeArchivePath(path) {
 			t.Fatalf("unsafe path accepted: %q", path)
 		}
