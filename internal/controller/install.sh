@@ -76,6 +76,8 @@ role: $ROLE
 tavern_dir: $TAVERN_DIR
 tavern_url: http://127.0.0.1:8000
 transfer_public_url: $TRANSFER_URL
+tls_cert_file: ""
+tls_key_file: ""
 backup_dir: $INSTALL_DIR/backups
 disk_quota_bytes: 0
 heartbeat_sec: 15

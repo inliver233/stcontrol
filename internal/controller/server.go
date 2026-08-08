@@ -6,7 +6,10 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,6 +106,12 @@ func (s *Server) Handler() http.Handler {
 
 // Run 启动后台任务（节点离线检测、备份调度）+ HTTP 服务。
 func (s *Server) Run(ctx context.Context) error {
+	if err := ValidateRuntimeConfig(s.Cfg); err != nil {
+		return err
+	}
+	if err := ValidateRuntimeTLSFiles(s.Cfg); err != nil {
+		return err
+	}
 	if err := s.refreshControlPlaneGate(ctx); err != nil {
 		return fmt.Errorf("initialize control-plane operation gate: %w", err)
 	}
@@ -139,19 +148,19 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.registrationWorkflowReconciler(ctx)
 	go s.independentReconciliationReconciler(ctx)
 
-	controlServer := &http.Server{
-		Addr:              s.Cfg.Listen,
-		Handler:           s.Handler(),
-		ReadHeaderTimeout: 15 * time.Second,
-		IdleTimeout:       90 * time.Second,
-		MaxHeaderBytes:    1 << 20,
-	}
+	controlServer := newControlHTTPServer(s.Cfg, s.Handler())
 	servers := []*http.Server{controlServer}
 	if relayServer != nil {
 		servers = append(servers, relayServer)
 	}
 	errCh := make(chan error, 2)
-	go func() { errCh <- controlServer.ListenAndServe() }()
+	go func() {
+		if s.Cfg.TLSCertFile != "" {
+			errCh <- controlServer.ListenAndServeTLS(s.Cfg.TLSCertFile, s.Cfg.TLSKeyFile)
+			return
+		}
+		errCh <- controlServer.ListenAndServe()
+	}()
 
 	if relayServer != nil {
 		go relayCleanupLoop(ctx, relay)
@@ -178,4 +187,97 @@ func (s *Server) Run(ctx context.Context) error {
 		return nil
 	}
 	return runErr
+}
+
+// ValidateRuntimeConfig rejects insecure listeners before the process opens a
+// database connection or logs any configured endpoint.
+func ValidateRuntimeConfig(cfg *config.ControllerConfig) error {
+	if err := validateControlListenerConfig(cfg); err != nil {
+		return err
+	}
+	if cfg.Relay.Listen != "" {
+		return validateRelayListenerConfig(cfg.Relay)
+	}
+	return nil
+}
+
+// ValidateRuntimeTLSFiles loads all configured server pairs before database
+// initialization or background reconciliation begins.
+func ValidateRuntimeTLSFiles(cfg *config.ControllerConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("controller configuration is required")
+	}
+	pairs := []struct {
+		name string
+		cert string
+		key  string
+	}{
+		{name: "control", cert: cfg.TLSCertFile, key: cfg.TLSKeyFile},
+		{name: "relay", cert: cfg.Relay.TLSCertFile, key: cfg.Relay.TLSKeyFile},
+	}
+	for _, pair := range pairs {
+		if pair.cert == "" {
+			continue
+		}
+		if _, err := tls.LoadX509KeyPair(pair.cert, pair.key); err != nil {
+			return fmt.Errorf("%s TLS certificate/key cannot be loaded", pair.name)
+		}
+	}
+	return nil
+}
+
+func newControlHTTPServer(cfg *config.ControllerConfig, handler http.Handler) *http.Server {
+	server := &http.Server{
+		Addr: cfg.Listen, Handler: handler,
+		ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 90 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+	if cfg.TLSCertFile != "" {
+		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS13}
+	}
+	return server
+}
+
+// validateControlListenerConfig makes plaintext an explicit loopback-only
+// development/reverse-proxy mode. A directly exposed listener must terminate
+// TLS itself; the advertised URL may only be plaintext on loopback.
+func validateControlListenerConfig(cfg *config.ControllerConfig) error {
+	if cfg == nil || cfg.Listen == "" || cfg.PublicURL == "" {
+		return fmt.Errorf("control listener and public URL are required")
+	}
+	publicURL, err := url.Parse(cfg.PublicURL)
+	if err != nil || publicURL.Host == "" || publicURL.User != nil || publicURL.RawQuery != "" ||
+		publicURL.Fragment != "" || (publicURL.Scheme != "http" && publicURL.Scheme != "https") {
+		return fmt.Errorf("invalid control public URL")
+	}
+	publicLoopback := loopbackHost(publicURL.Hostname())
+	if publicURL.Scheme != "https" && !publicLoopback {
+		return fmt.Errorf("control public URL must use HTTPS")
+	}
+	host, _, err := net.SplitHostPort(cfg.Listen)
+	if err != nil {
+		return fmt.Errorf("invalid control listener: %w", err)
+	}
+	listenerLoopback := loopbackHost(host)
+	hasCert := strings.TrimSpace(cfg.TLSCertFile) != ""
+	hasKey := strings.TrimSpace(cfg.TLSKeyFile) != ""
+	if hasCert != hasKey {
+		return fmt.Errorf("control TLS certificate and key must be configured together")
+	}
+	if !listenerLoopback && !hasCert {
+		return fmt.Errorf("non-loopback control listener requires TLS")
+	}
+	if hasCert && publicURL.Scheme != "https" {
+		return fmt.Errorf("TLS control listener requires an HTTPS public URL")
+	}
+	return nil
+}
+
+func loopbackHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

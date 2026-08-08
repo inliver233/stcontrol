@@ -1008,7 +1008,10 @@ func extractVerifyAndPublish(
 	if declaredTotal > 1<<30 && declaredTotal/archiveInfo.Size() > 200 {
 		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("snapshot expansion ratio limit exceeded")
 	}
-	if err := ensureSnapshotDiskCapacity(filepath.Dir(finalPath), declaredTotal); err != nil {
+	// taskRoot already exists and is deliberately placed under the same data
+	// root as finalPath. Probe that existing directory so a first publication
+	// does not fail merely because replicas/<handle> has not been created yet.
+	if err := ensureSnapshotDiskCapacity(taskRoot, declaredTotal); err != nil {
 		return protocol.SnapshotTransferReceipt{}, err
 	}
 	staging := filepath.Join(taskRoot, "staging")

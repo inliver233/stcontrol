@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -307,6 +308,88 @@ func TestSnapshotArchiveVerificationAndPublish(t *testing.T) {
 	verifiedBytes, err := verifyArchiveReplica(context.Background(), finalPath, metadata.Manifest.Files)
 	if err != nil || verifiedBytes != int64(len(content)) {
 		t.Fatalf("verified=%d err=%v", verifiedBytes, err)
+	}
+}
+
+func TestAgentDataPlaneHandlerPublishesCapabilityOnceEndToEnd(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("atomic snapshot publication is Linux-only")
+	}
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/agent/snapshots/progress" {
+			t.Errorf("unexpected progress path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}))
+	defer controller.Close()
+
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "source")
+	if err := os.MkdirAll(sourceDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("private-user-settings")
+	if err := os.WriteFile(filepath.Join(sourceDir, "settings.json"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fileDigest := sha256.Sum256(content)
+	manifest := protocol.SnapshotManifest{
+		FormatVersion: 1, WorkflowID: testWorkflowID, SnapshotID: testSnapshotID,
+		GlobalUserID: 70, Handle: "alice", SourceNodeID: 8, TargetNodeID: 9,
+		ActivityEpoch: 4, CreatedAt: time.Now().UTC(),
+		Files: []protocol.ManifestEntry{{
+			Path: "settings.json", Size: int64(len(content)), SHA256: hex.EncodeToString(fileDigest[:]),
+		}},
+	}
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(root, "snapshot.tar.zst")
+	if err := createSnapshotArchive(context.Background(), archivePath, sourceDir, manifestJSON, manifest.Files); err != nil {
+		t.Fatal(err)
+	}
+	archiveDigest, err := hashFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := "one-use-http-transfer-capability"
+	tokenDigest := sha256.Sum256([]byte(token))
+	target, err := New(&config.AgentConfig{
+		Role: "storage", NodeID: 9, AgentPSK: "target-agent-psk",
+		ControllerURL: controller.URL, BackupDir: filepath.Join(root, "backups"), DataDir: filepath.Join(root, "runtime"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := target.prepareTransfer(pendingTransfer{
+		WorkflowID: testWorkflowID, SnapshotID: testSnapshotID, GlobalUserID: 70,
+		TargetNodeID: 9, Handle: "alice", DestinationKind: "archive", SourceNodeID: 8,
+		ActivityEpoch: 4, CapabilityHash: hex.EncodeToString(tokenDigest[:]), ExpiresAt: time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	targetServer := httptest.NewServer(target.Handler())
+	defer targetServer.Close()
+	source := &Agent{}
+	receipt, err := source.streamSnapshot(context.Background(), protocol.StartSnapshotRequest{
+		WorkflowID: testWorkflowID, SnapshotID: testSnapshotID,
+		TargetTransferURL: targetServer.URL, TransferCapability: token,
+	}, archivePath, archiveDigest)
+	if err != nil || !receipt.OK || receipt.FileCount != 1 {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+	published, err := os.ReadFile(filepath.Join(root, "backups", "replicas", "alice", "settings.json"))
+	if err != nil || !bytes.Equal(published, content) {
+		t.Fatalf("published=%q err=%v", published, err)
+	}
+	if _, err := source.streamSnapshot(context.Background(), protocol.StartSnapshotRequest{
+		WorkflowID: testWorkflowID, SnapshotID: testSnapshotID,
+		TargetTransferURL: targetServer.URL, TransferCapability: token,
+	}, archivePath, archiveDigest); err == nil {
+		t.Fatal("published transfer capability replay was accepted")
 	}
 }
 

@@ -225,6 +225,22 @@ func TestValidateRelayListenerConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "tls listener requires https advertisement",
+			cfg: config.RelayConfig{
+				Listen: "127.0.0.1:9444", PublicURL: "http://localhost:9444",
+				TLSCertFile: "relay.crt", TLSKeyFile: "relay.key",
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid listener with tls",
+			cfg: config.RelayConfig{
+				Listen: "not-an-address", PublicURL: "https://relay.example:9444",
+				TLSCertFile: "relay.crt", TLSKeyFile: "relay.key",
+			},
+			wantErr: true,
+		},
+		{
 			name:    "partial tls pair",
 			cfg:     config.RelayConfig{Listen: "127.0.0.1:9444", PublicURL: "https://relay.example", TLSCertFile: "relay.crt"},
 			wantErr: true,

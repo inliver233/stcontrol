@@ -325,6 +325,10 @@ func syncRelayDirectory(path string) error {
 }
 
 func validateRelayListenerConfig(cfg config.RelayConfig) error {
+	listenHost, _, listenErr := net.SplitHostPort(cfg.Listen)
+	if listenErr != nil {
+		return fmt.Errorf("encrypted relay listener is invalid: %w", listenErr)
+	}
 	parsed, err := url.Parse(cfg.PublicURL)
 	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
 		parsed.Fragment != "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
@@ -339,10 +343,12 @@ func validateRelayListenerConfig(cfg config.RelayConfig) error {
 	if (cfg.TLSCertFile == "") != (cfg.TLSKeyFile == "") {
 		return fmt.Errorf("encrypted relay TLS certificate and key must be configured together")
 	}
+	if cfg.TLSCertFile != "" && parsed.Scheme != "https" {
+		return fmt.Errorf("TLS relay listener requires an HTTPS public_url")
+	}
 	if cfg.TLSCertFile == "" {
-		listenHost, _, err := net.SplitHostPort(cfg.Listen)
 		listenIP := net.ParseIP(listenHost)
-		if err != nil || !(strings.EqualFold(listenHost, "localhost") || (listenIP != nil && listenIP.IsLoopback())) {
+		if !(strings.EqualFold(listenHost, "localhost") || (listenIP != nil && listenIP.IsLoopback())) {
 			return fmt.Errorf("unencrypted relay listener must bind loopback")
 		}
 	}

@@ -18,5 +18,5 @@ RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 COPY --from=gobuild /out/controller /app/controller
 COPY --from=webbuild /web/dist /app/web/dist
-EXPOSE 8080
+EXPOSE 8443
 ENTRYPOINT ["/app/controller", "--config", "/app/controller.yaml"]

@@ -1,10 +1,9 @@
-version: "3.8"
-
-# 总控一键部署(含 PostgreSQL)
-# 使用: docker compose up -d
+# 总控 TLS 部署(含 PostgreSQL)
+# 使用前复制 controller.docker.yaml.example 为 controller.docker.yaml，
+# 并在 certs/ 放置 tls.crt/tls.key。
 services:
   db:
-    image: postgres:15-alpine
+    image: postgres:17-alpine
     environment:
       POSTGRES_USER: stcontrol
       POSTGRES_PASSWORD: ${DB_PASSWORD:-stcontrol}
@@ -26,9 +25,10 @@ services:
       CONTROLLER_SECRET_KEY: ${CONTROLLER_SECRET_KEY:?请设置 CONTROLLER_SECRET_KEY(32字节base64)}
       CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD: ${CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD:-}
     volumes:
-      - ./controller.yaml:/app/controller.yaml:ro
+      - ./controller.docker.yaml:/app/controller.yaml:ro
+      - ./certs:/run/stcontrol-tls:ro
     ports:
-      - "8080:8080"
+      - "8443:8443"
     depends_on:
       db:
         condition: service_healthy

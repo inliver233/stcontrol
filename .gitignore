@@ -1,6 +1,8 @@
 # Local configuration and secrets
 agent.yaml
 controller.yaml
+controller.docker.yaml
+certs/
 .env
 *.local
 
@@ -15,6 +17,7 @@ controller.yaml
 /coverage/
 *.coverprofile
 /.test-postgres/
+/.test-go/
 
 # Agent runtime data
 /agent-data/

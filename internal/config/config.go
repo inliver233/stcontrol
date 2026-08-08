@@ -14,6 +14,8 @@ import (
 type ControllerConfig struct {
 	PublicURL    string       `yaml:"public_url"` // 总控对外地址
 	Listen       string       `yaml:"listen"`     // 监听地址 :8080
+	TLSCertFile  string       `yaml:"tls_cert_file"`
+	TLSKeyFile   string       `yaml:"tls_key_file"`
 	DatabaseURL  string       `yaml:"database_url"`
 	SecretKeyEnv string       `yaml:"secret_key_env"` // 控制面凭证加密主密钥的环境变量名
 	StaticDir    string       `yaml:"static_dir"`     // React 构建产物目录
@@ -112,10 +114,12 @@ type AgentConfig struct {
 	TavernDir            string              `yaml:"tavern_dir"`          // 酒馆安装目录(含 config.yaml/data)
 	TavernURL            string              `yaml:"tavern_url"`          // 酒馆本地地址 http://127.0.0.1:8000
 	TransferPublicURL    string              `yaml:"transfer_public_url"` // 可选 HTTPS 直连数据面地址
-	BackupDir            string              `yaml:"backup_dir"`          // 存储节点备份存放目录
-	DiskQuotaBytes       int64               `yaml:"disk_quota_bytes"`    // 0 表示使用数据分区总容量
-	HeartbeatSec         int                 `yaml:"heartbeat_sec"`       // 默认15
-	DataDir              string              `yaml:"data_dir"`            // 子控自身数据目录(状态/临时)
+	TLSCertFile          string              `yaml:"tls_cert_file"`       // 非 loopback 监听必须配置
+	TLSKeyFile           string              `yaml:"tls_key_file"`
+	BackupDir            string              `yaml:"backup_dir"`       // 存储节点备份存放目录
+	DiskQuotaBytes       int64               `yaml:"disk_quota_bytes"` // 0 表示使用数据分区总容量
+	HeartbeatSec         int                 `yaml:"heartbeat_sec"`    // 默认15
+	DataDir              string              `yaml:"data_dir"`         // 子控自身数据目录(状态/临时)
 	Disaster             AgentDisasterPolicy `yaml:"disaster"`
 	ConfigPath           string              `yaml:"-"`
 }
@@ -133,8 +137,8 @@ type AgentDisasterPolicy struct {
 // Default 总控默认配置。
 func DefaultController() *ControllerConfig {
 	return &ControllerConfig{
-		PublicURL:    "http://localhost:8080",
-		Listen:       ":8080",
+		PublicURL:    "http://127.0.0.1:8080",
+		Listen:       "127.0.0.1:8080",
 		DatabaseURL:  "postgres://postgres:postgres@127.0.0.1:5432/stcontrol?sslmode=disable",
 		SecretKeyEnv: "CONTROLLER_SECRET_KEY",
 		StaticDir:    "./web/dist",

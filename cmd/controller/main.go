@@ -25,6 +25,12 @@ func main() {
 	if err := config.Load(*cfgPath, cfg); err != nil {
 		log.Fatalf("加载配置失败: %v", err)
 	}
+	if err := controller.ValidateRuntimeConfig(cfg); err != nil {
+		log.Fatalf("总控监听配置无效: %v", err)
+	}
+	if err := controller.ValidateRuntimeTLSFiles(cfg); err != nil {
+		log.Fatalf("总控 TLS 配置无效: %v", err)
+	}
 
 	// 控制面主密钥必须稳定配置；禁止生成并打印临时密钥。
 	keyB64 := os.Getenv(cfg.SecretKeyEnv)
@@ -106,7 +112,7 @@ func main() {
 	}
 
 	srv := controller.New(cfg, st, secretKey)
-	log.Printf("总控启动, 监听 %s, 对外地址 %s", cfg.Listen, cfg.PublicURL)
+	log.Printf("总控启动, 监听 %s, 对外 HTTPS 端点已配置", cfg.Listen)
 	if err := srv.Run(runCtx); err != nil && runCtx.Err() == nil {
 		log.Fatalf("服务退出: %v", err)
 	}

@@ -305,3 +305,20 @@
 - 新增 `TestPostgresCriticalConcurrency`：没有 `STCONTROL_TEST_POSTGRES_DSN` 时快速单元套件明确 skip；验收/CI 提供 DSN 后每次创建隔离 schema，覆盖并发迁移、领导锁、单写租约、operation 绑定和一次性核销，并在结束时 `DROP SCHEMA CASCADE`。
 - `STCONTROL_TEST_POSTGRES_DSN=... go test -coverprofile=coverage/real_postgres.coverprofile ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...` 通过；总覆盖率 `43.7%`（Agent `52.5%`、Controller `24.6%`、Store `56.8%`），仍远低于最终 80% 门禁。
 - 尚未完成且未冒充完成：snapshot/restore/registration/conflict/relay durable workflow 尚需真实 PostgreSQL 故障、重启、重复请求和双 Agent 注入；Controller 完整 HTTP→Agent→酒馆进程闭环、migration upgrade/restore 演练、目标容量与覆盖率门禁继续后续阶段。
+
+## 2026-08-08：万级账号库存分页批次
+
+- 真实酒馆 adapter 以 node-keyed revision 固定账号事实，按 `local_user_id` 严格稳定排序，每页最多 250、总量最多 10,000；续页必须绑定首请求 revision，账号变化、无 revision 续页、重复 ID 和越界游标失败关闭。
+- Agent 固定命令、Controller durable page operation 和导入分类器逐页复核 revision/cursor/total/source/严格顺序，最多 40 页；管理 API/UI 再按最多 100 条分页，不会一次渲染万级 DOM。
+- 620 个真实 Express 账号跨三页无重复遗漏，10,000 条状态机完整接收；真实 PostgreSQL 17.10 在约 9.2 秒内分类持久化并读取首末页。
+- stcontrol 全量真实 PostgreSQL 测试、`go vet`、Linux CGO0 build、web build，以及 SillyTavern 15 项定向 Node 测试和受影响源文件 ESLint 均通过；当时总覆盖率 43.8%，仍未达到 80%。
+
+## 2026-08-08：TLS 失败关闭与真实 Linux Agent 数据面批次
+
+- 恢复此前入口引用但实现缺失的 Agent HTTP 数据面，并把暴露面缩到无节点拓扑的 `/agent/health` 和 capability-scoped snapshot 接收；供应、改密、备份和扫描等全部控制动作只允许 Agent 主动拉取的加密固定命令，旧入站控制路径测试为 404。
+- Agent 数据面先校验无 query、精确 content type/长度、UUID、SHA-256 和有限 Authorization header，再以 4 路 semaphore 限并发；错误为固定 reason code，不反射 capability，响应带 `no-store/nosniff`。一次性 capability 仍由本地持久状态做 hash-only 原子消费。
+- Controller 主监听与 Agent 监听新增直接 TLS 配置；Controller、relay、Agent 的非 loopback 明文监听全部拒绝，直接 TLS 模式固定最低 TLS 1.3。证书/私钥必须成对，进程在数据库或后台 worker 启动前先预加载检查；Controller/Agent 启动日志不再回显外部 endpoint。
+- Docker 部署改为 PostgreSQL 17、`:8443` 直接 TLS、只读证书挂载和独立容器配置；通用示例保留 loopback 反向代理模式。安装脚本的源文件与 embedded 副本重新同步，并明确生成 TLS 字段与灾难阈值。`docker-compose config --quiet` 静态校验通过；本机 daemon 未运行，所以未把镜像启动冒充运行验收。
+- 在项目内下载官方 `go1.26.5.linux-amd64.tar.gz`，SHA-256 为 `5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053`，并由 WSL Ubuntu-E 执行 Linux-only HTTP 数据面测试。首轮真实运行发现首次副本的最终父目录尚不存在时错误地对该不存在路径查询磁盘空间；修复为对与最终路径同文件系统且已存在的 task root 查询。修复后完整 tar.zst 经 HTTP 接收、manifest/逐文件校验、元数据写入和原子发布成功，同 capability 重放被拒绝。
+- `STCONTROL_TEST_POSTGRES_DSN=... go test -count=1 -coverprofile=coverage/tls_data_plane.coverprofile ./...`、`go vet ./...`、Linux amd64 CGO0 build、Linux WSL 定向 E2E、`git diff --check` 和 Docker Compose 静态解析通过；总覆盖率 44.2%（Agent 54.1%、Controller 25.2%、Store 56.8%）。
+- 尚未完成且未冒充完成：真实受信 CA 的跨机 TLS/NAT、断网/磁盘满/掉电和双 Agent 进程故障矩阵、全仓日志敏感样本扫描及 80% 覆盖率门禁仍是主流程验收缺口。

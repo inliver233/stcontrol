@@ -1,20 +1,18 @@
-# 总控配置
-public_url: https://account.example.com
-# 反向代理终止 TLS 时只监听 loopback；若直接公网监听，则改为 :8443
-# 并配置下面的证书和私钥。
-listen: 127.0.0.1:8080
-tls_cert_file: ""
-tls_key_file: ""
-database_url: postgres://stcontrol:stcontrol@127.0.0.1:5432/stcontrol?sslmode=disable
+# Docker 直连 TLS 示例。复制为 controller.docker.yaml 后替换域名，并把
+# tls.crt/tls.key 放到仓库根目录 certs/（该目录不会被提交）。
+public_url: https://account.example.com:8443
+listen: :8443
+tls_cert_file: /run/stcontrol-tls/tls.crt
+tls_key_file: /run/stcontrol-tls/tls.key
+# 将下面第二个 stcontrol 替换为与 DB_PASSWORD 相同且已 URL 转义的密码。
+database_url: postgres://stcontrol:stcontrol@db:5432/stcontrol?sslmode=disable
 secret_key_env: CONTROLLER_SECRET_KEY
-static_dir: ./web/dist
+static_dir: /app/web/dist
 
-# 默认关闭。只有 Agent 直连数据面失败后才会使用这个独立监听器；生产环境
-# 必须配置 HTTPS 证书，或在可信反向代理后仅绑定 loopback。
 relay:
   listen: ""
   public_url: ""
-  data_dir: ./controller-relay-data
+  data_dir: /app/controller-relay-data
   tls_cert_file: ""
   tls_key_file: ""
   max_bytes: 118111600640
@@ -51,13 +49,13 @@ oauth:
     enabled: false
     client_id: ""
     client_secret: ""
-    callback_url: https://account.example.com/api/auth/oauth/discord/callback
+    callback_url: https://account.example.com:8443/api/auth/oauth/discord/callback
     guild_id: ""
   linuxdo:
     enabled: false
     client_id: ""
     client_secret: ""
-    callback_url: https://account.example.com/api/auth/oauth/linuxdo/callback
+    callback_url: https://account.example.com:8443/api/auth/oauth/linuxdo/callback
     auth_url: https://connect.linux.do/oauth2/authorize
     token_url: https://connect.linux.do/oauth2/token
     user_info_url: https://connect.linux.do/api/user

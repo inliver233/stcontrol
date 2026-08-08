@@ -84,17 +84,26 @@ func main() {
 	if cfg.NodeID == 0 || cfg.AgentPSK == "" {
 		log.Fatalf("子控尚未注册。请先运行: agent --register --token <令牌> --controller <总控地址> --tavern-dir <酒馆目录>")
 	}
+	if err := agent.ValidateRuntimeConfig(cfg); err != nil {
+		log.Fatalf("Agent 监听配置无效: %v", err)
+	}
+	if err := agent.ValidateRuntimeTLSFiles(cfg); err != nil {
+		log.Fatalf("Agent TLS 配置无效: %v", err)
+	}
+
+	// 在后台 worker 启动前先构造并验证监听器，避免无效 TLS/地址配置
+	// 短暂执行任何受管任务。
+	srv, err := agent.NewHTTPServer(cfg, a.Handler())
+	if err != nil {
+		log.Fatalf("Agent 监听配置无效: %v", err)
+	}
 
 	// 启动心跳
 	go a.StartHeartbeat(ctx)
 	go a.StartCommandLoop(ctx)
 
-	// 启动 HTTP 服务
-	srv := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           a.Handler(),
-		ReadHeaderTimeout: 15 * time.Second,
-	}
+	// 启动 HTTP/TLS 服务。明文监听仅允许 loopback；直接暴露的数据面
+	// 必须使用配置的证书，防止 capability 在传输途中泄露。
 	go func() {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -102,8 +111,13 @@ func main() {
 		_ = srv.Shutdown(shutCtx)
 	}()
 
-	log.Printf("子控启动, node_id=%d 角色=%s 监听 %s, 总控 %s", cfg.NodeID, cfg.Role, cfg.Listen, cfg.ControllerURL)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	log.Printf("子控启动, node_id=%d 角色=%s 监听 %s, 总控端点已配置", cfg.NodeID, cfg.Role, cfg.Listen)
+	if cfg.TLSCertFile != "" {
+		err = srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+	} else {
+		err = srv.ListenAndServe()
+	}
+	if err != nil && err != http.ErrServerClosed {
 		log.Fatalf("服务退出: %v", err)
 	}
 }

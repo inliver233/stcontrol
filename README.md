@@ -55,14 +55,19 @@ stcontrol/
 
 ```bash
 cd stcontrol
-cp controller.yaml.example controller.yaml   # 按需修改 public_url / database_url / oauth
+cp controller.docker.yaml.example controller.docker.yaml
+# 修改域名和 database_url（密码需与 DB_PASSWORD 相同且 URL 转义），
+# 并把域名对应的 certs/tls.crt、certs/tls.key 只读挂载进容器。
 export CONTROLLER_SECRET_KEY=$(openssl rand -base64 32)
 export DB_PASSWORD=<数据库密码>
 export CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD=<首次管理员密码，至少12位>
 docker compose up -d --build
 ```
 
-总控监听 `:8080`，前端 + API 同源。访问 `http://<总控>:8080` 即 React 界面。
+前端与 API 必须同源通过 `https://` 访问。明文 HTTP 只允许
+`127.0.0.1/::1` 本机开发或本机反向代理回源；非 loopback 监听没有成对证书时
+Controller 会拒绝启动。Docker 示例直接在 `:8443` 终止 TLS；通用
+`controller.yaml.example` 默认是 loopback 回源模式，不能直接发布到公网。
 
 ### 2. 本地开发总控（不用 Docker）
 
@@ -73,6 +78,9 @@ export CONTROLLER_SECRET_KEY=$(openssl rand -base64 32)
 export CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD=<首次管理员密码，至少12位>
 go run ./cmd/controller --config controller.yaml
 ```
+
+本机开发可使用默认的 `http://127.0.0.1:8080`；任何远端 Agent 和浏览器入口仍必须
+使用 HTTPS。
 
 引导密码只在数据库尚无管理员时从环境变量读取；创建首位管理员后只保留 bcrypt hash。后续同级管理员的创建、禁用和密码重置均在管理后台完成，禁用或改密会撤销该管理员的现有会话，系统拒绝禁用最后一名有效管理员。
 
@@ -91,6 +99,10 @@ curl -sSL https://<总控>/install.sh | bash -s -- \
   --transfer-url https://a.example.com/agent-data
 ```
 
+`--transfer-url` 只能填写已经由该 Agent 的 TLS 证书或同机可信反向代理实际提供的
+HTTPS 地址；否则应省略，不能发布一个不可达或明文数据面地址。直连不可达时由持久
+workflow 明确切换到受控的端到端加密 relay，而不会把 capability 放入 URL。
+
 或手动（已在节点编译好 agent）：
 
 ```bash
@@ -104,7 +116,7 @@ curl -sSL https://<总控>/install.sh | bash -s -- \
 
 ### 4. 酒馆侧改造（一次性）
 
-酒馆侧需要默认关闭的 federation control adapter，提供登录短码落地、受控/独立模式守卫、账号 hash/salt 供应、恢复账号供应、真实会话活动和用户级写门/排空。内部能力仅允许 Agent 从 loopback 调用，并使用节点 Agent 凭据签名。健康端点使用协议版本 1，并至少报告 `account_restore`、`activity_leases`、`control_mode`、`login_handoff`、`password_update`、`registration_policy`、`snapshot_boundary`、`user_provision`、`write_gate`；缺版本、能力或适配器时计算节点兼容性失败关闭。未挂载该 adapter 的计算节点不会降级调用公开注册/改密接口。
+酒馆侧已挂载默认关闭的 federation control adapter，提供登录短码落地、受控/独立模式守卫、账号 hash/salt 供应、恢复账号供应、真实会话活动、分页账号库存和用户级写门/排空。内部能力仅允许 Agent 从 loopback 调用，并使用独立 adapter 凭据签名。健康端点使用协议版本 1，并至少报告 `account_inventory_paging`、`account_restore`、`activity_leases`、`control_mode`、`independent_reconciliation`、`local_account_proof`、`login_handoff`、`node_admin_handoff`、`node_admin_verify`、`password_update`、`registration_policy`、`snapshot_boundary`、`user_provision`、`write_gate`；缺版本、能力或适配器时计算节点兼容性失败关闭。未挂载该 adapter 的计算节点不会降级调用公开注册/改密接口。
 
 Agent 将控制模式和模式世代写入 `data_dir/runtime-state.json`。默认在连续失联 45 秒后暂停节点的新登录与受管命令；只有签名心跳与独立健康探针同时持续失败 15 分钟且达到最少失败次数，计算节点才进入 `independent`。总控恢复后必须先进入 `independent-draining`；酒馆 adapter 报告灾难会话和待同步用户都归零后才恢复 `managed`。这些阈值可通过 `agent.yaml` 的 `disaster.unreachable_after_sec`、`disaster.independent_after_sec` 和 `disaster.min_failed_heartbeats` 保守调大。
 
@@ -116,11 +128,12 @@ Agent 将控制模式和模式世代写入 `data_dir/runtime-state.json`。默�
 - **备份**：持久 workflow → 单用户关写门并排空 → 同任务目录复制不可变快照 → manifest 先行的 tar.zst → 短期 capability 的 HTTPS 直传 → 目标限制窗口/文件数/大小/展开比并逐文件重算摘要 → 同文件系统换代发布。失败或用户回归只清理未发布临时目录，旧成功副本保持不变。
 - **热备接管**：家节点不可用 → 展示最近不可变快照时间和可能丢失的数据 → 用户显式确认 → Controller 在单事务校验旧租约、撤票、把旧 home 标为陈旧并晋升唯一新 home。热备不能绕过该流程直接登录；真实冲突会冻结而不是自动覆盖。
 - **纯存储恢复**：只有 archive 可用时展示精确恢复点 → 用户选择通过健康/容量/账号门禁的计算节点并显式确认 → 持久 workflow 先幂等供应账号 → storage Agent 复核原 manifest 和每个文件后直传 → compute Agent 限额验证并原子发布 → Controller 单事务晋升唯一 home。成功前不会签发目标登录交接。
-- **冲突恢复边界**：检测到真实分叉后冻结用户写入、短码和租约，并一次性固化当时来源；普通业务 session 失败关闭，但仍有效或重新认证的用户令牌只能进入专用冲突恢复区。Agent 为每个来源生成不可变逐文件证据，清单只以密文进入命令结果和 PostgreSQL；页面分页区分不同路径与同路径内容差异，且不承诺聊天/JSON/二进制语义合并。选源、有限合并和最终解冻仍未完成。
+- **冲突恢复边界**：检测到真实分叉后冻结用户写入、短码和租约，并一次性固化当时来源；普通业务 session 失败关闭，但仍有效或重新认证的用户令牌只能进入专用冲突恢复区。Agent 为每个来源生成不可变逐文件证据，清单只以密文进入命令结果和 PostgreSQL；页面分页区分不同路径与同路径内容差异，不同路径自动并入，同路径只执行用户明确的选边/双份保留决策，且不承诺聊天、JSON 或二进制语义合并。结果经准备、应用和原子发布后才解冻。
 
 ## 安全
 
 - 总控↔子控：Agent 主动 HTTPS 长轮询；HMAC-SHA256 覆盖方法、路径、时间戳、nonce 和正文摘要，nonce 在 PostgreSQL 单次消费，每节点凭据加密存储并版本化。
+- Controller 和直接暴露的 Agent 监听均固定 TLS 1.3；明文监听被限制在 loopback，适用于同机可信 TLS 反向代理。证书和私钥必须成对配置。
 - 登录短码：短命(60s) + 一次性原子核销 + 绑定节点/会话/活动世代/主控世代 + `no-store`/`no-referrer` + 仅通过 POST body 传递。
 - 用户密码：总控只保存不可逆登录 hash；节点密码同步使用酒馆兼容的 scrypt hash/salt，不保存可逆明文。`CONTROLLER_SECRET_KEY` 只用于控制面凭证等必须可恢复的机器密钥材料。
 - 备份数据可能含 API key：只允许 HTTPS 数据面、任务 capability 放在 Authorization 头而非 URL，临时/副本目录权限 0700/0600，不记录文件名或归档正文。首期原子发布只在 Linux 启用。
@@ -135,11 +148,8 @@ build-bin.bat   # 产出 bin/controller.exe, bin/agent.exe, bin/agent-linux-amd6
 cd web && npm install && npm run build   # 产出 web/dist
 ```
 
-## 待完善（后续迭代）
+## 验收状态
 
-- SillyTavern federation control adapter 的完整挂载、受控模式绕过测试和真实活动/写门遥测
-- 无法直连时的受控加密中转、纯存储恢复的真实 adapter/双 Agent 故障注入，以及临时副本安全清理
-- 副本冲突差异展示、来源选择/有限合并，以及节点退役/升级/损坏状态机
-- mTLS、凭据轮换自动化和控制面灾难接管
-- 既有老节点账号的控制权证明/合并，以及无全局用户的导入候选恢复绑定（现有全局用户的管理员人工恢复已完成；真实 adapter 与导入证明闭环待补）
-- OAuth 注册新用户的选节点流程端到端联调
+本仓库按 `docs/requirements-traceability.md` 逐条记录实现、测试证据和剩余缺口。
+README 的正常流程说明不等于上线完成；只有该矩阵中的异常、重启、重复请求、
+安全边界、真实 PostgreSQL、故障矩阵和容量/覆盖率门禁全部收敛后才可发布。

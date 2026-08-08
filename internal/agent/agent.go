@@ -20,11 +20,12 @@ type Agent struct {
 	mu         sync.Mutex
 	backupJobs map[int64]context.CancelFunc
 
-	httpClient   *http.Client
-	commandSlots chan struct{}
-	stateMu      sync.Mutex
-	auditMu      sync.Mutex
-	state        agentRuntimeState
+	httpClient    *http.Client
+	commandSlots  chan struct{}
+	transferSlots chan struct{}
+	stateMu       sync.Mutex
+	auditMu       sync.Mutex
+	state         agentRuntimeState
 }
 
 // New 创建子控。
@@ -52,7 +53,8 @@ func New(cfg *config.AgentConfig) (*Agent, error) {
 				return http.ErrUseLastResponse
 			},
 		},
-		commandSlots: make(chan struct{}, 8),
+		commandSlots:  make(chan struct{}, 8),
+		transferSlots: make(chan struct{}, 4),
 	}
 	if err := agent.loadRuntimeState(); err != nil {
 		return nil, fmt.Errorf("load agent runtime state: %w", err)
