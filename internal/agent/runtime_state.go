@@ -25,12 +25,13 @@ type cachedCommandResult struct {
 }
 
 type agentRuntimeState struct {
-	WorkerID          string                         `json:"worker_id"`
-	HighestGeneration int64                          `json:"highest_generation"`
-	Completed         map[string]cachedCommandResult `json:"completed"`
-	Transfers         map[string]pendingTransfer     `json:"transfers"`
-	ControlMode       agentControlModeState          `json:"control_mode"`
-	Credential        agentCredentialState           `json:"controller_credential"`
+	WorkerID                string                         `json:"worker_id"`
+	HighestGeneration       int64                          `json:"highest_generation"`
+	Completed               map[string]cachedCommandResult `json:"completed"`
+	Transfers               map[string]pendingTransfer     `json:"transfers"`
+	ControlMode             agentControlModeState          `json:"control_mode"`
+	Credential              agentCredentialState           `json:"controller_credential"`
+	PendingIndependentUsers []protocol.IndependentSyncUser `json:"pending_independent_users,omitempty"`
 }
 
 type agentCredentialState struct {

@@ -236,3 +236,30 @@ func TestCollectUserStatusesUsesExactAdapterSessions(t *testing.T) {
 		t.Fatalf("users=%+v err=%v", users, err)
 	}
 }
+
+func TestCollectUserStatusesPersistsIndependentSynchronizationMarkers(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Add(-time.Minute)
+	pending := protocol.IndependentSyncUser{
+		Handle: "alice", Marker: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		ChangedAt: now.UnixMilli(), Reason: "independent_write",
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(adapterSessionResponse{OK: true, PendingUsers: []protocol.IndependentSyncUser{pending}})
+	}))
+	defer server.Close()
+	agent, err := New(&config.AgentConfig{
+		Role: "compute", TavernURL: server.URL, AgentPSK: "agent-secret", NodeID: 12, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.collectUserStatuses(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	report := agent.controlModeReport()
+	if report.PendingUserSyncs != 1 || len(report.PendingUsers) != 1 ||
+		report.PendingUsers[0].Marker != pending.Marker {
+		t.Fatalf("report=%+v", report)
+	}
+}

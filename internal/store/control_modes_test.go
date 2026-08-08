@@ -15,7 +15,7 @@ func independentModeFact(now time.Time) NodeControlModeFact {
 		ReasonCode:                "sustained_multi_signal_controller_loss",
 		ConsecutiveHeartbeatFails: 60, ConsecutiveHealthProbeFails: 60,
 		OutageStartedAt: now.Add(-15 * time.Minute), IndependentSince: now.Add(-time.Minute),
-		ActiveIndependentSessions: 2, PendingUserSyncs: 1, ObservedAt: now,
+		ActiveIndependentSessions: 2, PendingUserSyncs: 0, ObservedAt: now,
 	}
 }
 
@@ -33,7 +33,7 @@ func TestReconcileIndependentModeAlwaysReturnsDrainingBoundary(t *testing.T) {
 	mock.ExpectExec(`UPDATE nodes SET control_mode=\$2`).WithArgs(
 		int64(12), NodeModeIndependent, int64(3), NodeModeIndependentDraining, int64(4),
 		fact.ReasonCode, now, int64(5), fact.OutageStartedAt, nil, fact.IndependentSince,
-		60, 60, 2, 1,
+		60, 60, 2, 0,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO node_control_mode_events`).WithArgs(
 		int64(12), NodeModeIndependent, int64(3), NodeModeIndependentDraining, int64(4),

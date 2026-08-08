@@ -111,6 +111,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.conflictResolutionReconciler(ctx)
 	go s.passwordSyncReconciler(ctx)
 	go s.registrationWorkflowReconciler(ctx)
+	go s.independentReconciliationReconciler(ctx)
 
 	srv := &http.Server{
 		Addr:              s.Cfg.Listen,

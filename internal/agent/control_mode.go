@@ -73,6 +73,7 @@ func (a *Agent) controlModeReport() protocol.NodeControlModeReport {
 		IndependentSince:          state.IndependentSince,
 		ActiveIndependentSessions: state.ActiveIndependentSessions,
 		PendingUserSyncs:          state.PendingUserSyncs,
+		PendingUsers:              append([]protocol.IndependentSyncUser(nil), a.state.PendingIndependentUsers...),
 	}
 }
 
@@ -80,6 +81,39 @@ func (a *Agent) managedCommandsAllowed() bool {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	return a.state.ControlMode.Mode == protocol.NodeModeManaged
+}
+
+func (a *Agent) commandChannelAllowed() bool {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.state.ControlMode.Mode == protocol.NodeModeManaged ||
+		a.state.ControlMode.Mode == protocol.NodeModeIndependentDraining
+}
+
+func (a *Agent) commandAllowed(commandType string) bool {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if a.state.ControlMode.Mode == protocol.NodeModeManaged {
+		return true
+	}
+	return a.state.ControlMode.Mode == protocol.NodeModeIndependentDraining &&
+		independentReconciliationCommand(commandType)
+}
+
+// independentReconciliationCommand is deliberately closed rather than a
+// prefix rule. A recovered node may only execute the commands needed to freeze,
+// preserve, inspect and finally acknowledge independent writes while draining.
+func independentReconciliationCommand(commandType string) bool {
+	switch commandType {
+	case "prepare_snapshot_receive", "start_snapshot", "get_snapshot_receipt",
+		"complete_independent_sync", "capture_conflict_evidence",
+		"read_conflict_evidence_page", "start_conflict_evidence_transfer",
+		"prepare_conflict_resolution", "apply_conflict_resolution_decisions",
+		"publish_conflict_resolution":
+		return true
+	default:
+		return false
+	}
 }
 
 // recordControllerFailure requires two independent observations before an

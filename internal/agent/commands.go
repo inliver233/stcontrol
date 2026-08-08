@@ -40,7 +40,7 @@ type safeCommandResult struct {
 func (a *Agent) StartCommandLoop(ctx context.Context) {
 	backoff := time.Second
 	for ctx.Err() == nil {
-		if !a.managedCommandsAllowed() {
+		if !a.commandChannelAllowed() {
 			timer := time.NewTimer(time.Second)
 			select {
 			case <-ctx.Done():
@@ -69,8 +69,8 @@ func (a *Agent) StartCommandLoop(ctx context.Context) {
 }
 
 func (a *Agent) pollAndRunCommand(ctx context.Context) error {
-	if !a.managedCommandsAllowed() {
-		return fmt.Errorf("managed commands paused by node control mode")
+	if !a.commandChannelAllowed() {
+		return fmt.Errorf("controller commands paused by node control mode")
 	}
 	workerID, highestGeneration := a.commandIdentity()
 	status, headers, data, err := a.doControllerRequest(ctx, http.MethodPost, "/api/agent/commands/lease", protocol.LeaseCommandRequest{
@@ -97,6 +97,9 @@ func (a *Agent) pollAndRunCommand(ctx context.Context) error {
 	}
 	if !a.acceptGeneration(command.ControllerGeneration) {
 		return fmt.Errorf("stale command generation rejected")
+	}
+	if !a.commandAllowed(command.CommandType) {
+		return fmt.Errorf("command %q is not allowed while node is draining", command.CommandType)
 	}
 
 	if err := a.callController(ctx, http.MethodPost, "/api/agent/commands/"+command.ID+"/ack", protocol.AckCommandRequest{
@@ -263,6 +266,17 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "local_user_verify_unavailable"})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, LocalUserProof: &verification})
+	case "complete_independent_sync":
+		var payload protocol.CompleteIndependentSyncRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "compute" ||
+			!validUUID(payload.OperationID) || !validHandle(payload.Handle) || !validUUID(payload.Marker) {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		payload.OperationID = command.OperationID
+		if err := a.completeIndependentSync(ctx, payload); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "independent_sync_completion_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true})
 	case "check_node_admin":
 		var payload protocol.CheckNodeAdminRequest
 		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "compute" ||

@@ -35,8 +35,24 @@ func TestNormalizeNodeControlModeRequiresIndependentActivationEvidence(t *testin
 		Mode: protocol.NodeModeIndependentDraining, ModeGeneration: 4, ControllerGeneration: 5,
 		ReasonCode: "controller_recovered", IndependentSince: now.Add(-time.Minute),
 		ActiveIndependentSessions: 1, PendingUserSyncs: 2,
+		PendingUsers: []protocol.IndependentSyncUser{
+			{Handle: "alice", Marker: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", ChangedAt: now.Add(-time.Minute).UnixMilli(), Reason: "independent_write"},
+			{Handle: "bob", Marker: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", ChangedAt: now.Add(-time.Minute).UnixMilli(), Reason: "independent_write"},
+		},
 	}, now)
 	if err != nil || fact.PendingUserSyncs != 2 {
 		t.Fatalf("fact=%+v err=%v", fact, err)
+	}
+}
+
+func TestNormalizeNodeControlModeRejectsUnaccountedPendingMarkers(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	_, err := normalizeNodeControlMode(protocol.NodeControlModeReport{
+		Mode: protocol.NodeModeIndependentDraining, ModeGeneration: 4, ControllerGeneration: 5,
+		ReasonCode: "controller_recovered", PendingUserSyncs: 1,
+	}, now)
+	if err == nil {
+		t.Fatal("pending count without an immutable marker was accepted")
 	}
 }

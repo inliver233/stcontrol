@@ -34,7 +34,15 @@ type NodeControlModeFact struct {
 	IndependentSince            time.Time
 	ActiveIndependentSessions   int
 	PendingUserSyncs            int
+	PendingUsers                []IndependentSyncFact
 	ObservedAt                  time.Time
+}
+
+type IndependentSyncFact struct {
+	Handle    string
+	Marker    string
+	ChangedAt time.Time
+	Reason    string
 }
 
 type NodeControlModeDecision struct {
@@ -57,6 +65,9 @@ func validNodeControlModeFact(fact NodeControlModeFact) bool {
 		fact.ConsecutiveHeartbeatFails < 0 || fact.ConsecutiveHealthProbeFails < 0 ||
 		fact.ActiveIndependentSessions < 0 || fact.PendingUserSyncs < 0 || fact.ObservedAt.IsZero() ||
 		len(fact.ReasonCode) > 128 || strings.ContainsAny(fact.ReasonCode, "\r\n") {
+		return false
+	}
+	if len(fact.PendingUsers) != fact.PendingUserSyncs || len(fact.PendingUsers) > 500 {
 		return false
 	}
 	for _, timestamp := range []time.Time{fact.OutageStartedAt, fact.LastControllerSuccessAt, fact.IndependentSince} {
@@ -170,6 +181,11 @@ func (s *Store) ReconcileNodeControlMode(
 		nodeID, fact.Mode, fact.ModeGeneration, desired, desiredGeneration,
 		activeGeneration, fact.ReasonCode, evidence, fact.ObservedAt)
 	if err != nil {
+		return NodeControlModeDecision{}, err
+	}
+	if err := recordIndependentSyncFactsTx(
+		ctx, tx, nodeID, activeGeneration, fact.PendingUsers, fact.ObservedAt,
+	); err != nil {
 		return NodeControlModeDecision{}, err
 	}
 	if err := tx.Commit(); err != nil {

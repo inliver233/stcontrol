@@ -15,19 +15,21 @@ var (
 )
 
 type CreateSnapshotWorkflowParams struct {
-	WorkflowID        string
-	OperationID       string
-	SnapshotID        string
-	CapabilityID      string
-	CapabilityHash    []byte
-	LegacyBackupJobID int64
-	LegacyUserID      int64
-	GlobalUserID      int64
-	SourceNodeID      int64
-	TargetNodeID      int64
-	DestinationKind   string
-	CapabilityExpires time.Time
-	Now               time.Time
+	WorkflowID                  string
+	OperationID                 string
+	SnapshotID                  string
+	CapabilityID                string
+	CapabilityHash              []byte
+	LegacyBackupJobID           int64
+	LegacyUserID                int64
+	GlobalUserID                int64
+	SourceNodeID                int64
+	TargetNodeID                int64
+	DestinationKind             string
+	IndependentReconciliationID string
+	IndependentMarker           string
+	CapabilityExpires           time.Time
+	Now                         time.Time
 }
 
 type SnapshotWorkflow struct {
@@ -65,6 +67,11 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 		(p.DestinationKind != "archive" && p.DestinationKind != "hot_standby") {
 		return SnapshotWorkflow{}, ErrInvalidSnapshotWorkflow
 	}
+	independentReconciliation := p.IndependentReconciliationID != "" || p.IndependentMarker != ""
+	if independentReconciliation && (p.IndependentReconciliationID == "" || p.IndependentMarker == "" ||
+		p.DestinationKind != "archive") {
+		return SnapshotWorkflow{}, ErrInvalidSnapshotWorkflow
+	}
 	if p.Now.IsZero() {
 		p.Now = time.Now().UTC()
 	}
@@ -90,6 +97,36 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 		}
 		return SnapshotWorkflow{}, err
 	}
+	if independentReconciliation {
+		var reconciliationUserID, reconciliationNodeID, reconciliationGeneration int64
+		var reconciliationMarker, nodeMode string
+		var activeIndependentSessions int
+		err := tx.QueryRowContext(ctx, `
+			SELECT reconciliation.user_id,reconciliation.node_id,reconciliation.marker::text,
+			  reconciliation.controller_generation,node.control_mode,node.active_independent_sessions
+			FROM independent_user_reconciliations reconciliation
+			JOIN nodes node ON node.id=reconciliation.node_id
+			WHERE reconciliation.id=$1::uuid AND reconciliation.state IN ('pending','retry_wait')
+			  AND reconciliation.workflow_id IS NULL AND reconciliation.user_id IS NOT NULL
+			FOR UPDATE OF reconciliation,node`, p.IndependentReconciliationID).Scan(
+			&reconciliationUserID, &reconciliationNodeID, &reconciliationMarker,
+			&reconciliationGeneration, &nodeMode, &activeIndependentSessions,
+		)
+		if err != nil || reconciliationUserID != p.GlobalUserID || reconciliationNodeID != p.SourceNodeID ||
+			reconciliationMarker != p.IndependentMarker || reconciliationGeneration != generation ||
+			nodeMode != NodeModeIndependentDraining || activeIndependentSessions != 0 {
+			return SnapshotWorkflow{}, ErrIndependentReconciliationState
+		}
+		var targetEligible bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT role='storage' AND is_backup_target
+			  AND connectivity_state='online' AND operational_state='active'
+			  AND compatibility_state='compatible' AND capacity_state IN ('open','busy')
+			  AND COALESCE(transfer_url,'')<>''
+			FROM nodes WHERE id=$1 FOR SHARE`, p.TargetNodeID).Scan(&targetEligible); err != nil || !targetEligible {
+			return SnapshotWorkflow{}, ErrIndependentReconciliationState
+		}
+	}
 	activityEpoch := int64(1)
 	var leaseEpoch, writerNodeID, inFlightReads, inFlightWrites int64
 	var leaseExpires time.Time
@@ -103,7 +140,18 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 	}
 	if err == nil {
 		activityEpoch = leaseEpoch
-		if writerNodeID != p.SourceNodeID || leaseExpires.After(p.Now) || inFlightReads != 0 || inFlightWrites != 0 ||
+		if independentReconciliation {
+			if writerNodeID != p.SourceNodeID || inFlightReads != 0 || inFlightWrites != 0 ||
+				(leaseExpires.After(p.Now) && leaseState != "independent") || leaseState == "quiescing" {
+				return SnapshotWorkflow{}, ErrSnapshotUserActive
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE user_activity_leases SET state='ended',lease_expires_at=$2,
+				  in_flight_reads=0,in_flight_writes=0,updated_at=$2
+				WHERE user_id=$1`, p.GlobalUserID, p.Now); err != nil {
+				return SnapshotWorkflow{}, err
+			}
+		} else if writerNodeID != p.SourceNodeID || leaseExpires.After(p.Now) || inFlightReads != 0 || inFlightWrites != 0 ||
 			leaseState == "independent" || leaseState == "quiescing" {
 			return SnapshotWorkflow{}, ErrSnapshotUserActive
 		}
@@ -161,6 +209,22 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 		ON CONFLICT (user_id,node_id) DO UPDATE SET
 		  kind=EXCLUDED.kind, state='syncing'`, p.LegacyUserID, p.TargetNodeID, p.DestinationKind); err != nil {
 		return SnapshotWorkflow{}, err
+	}
+	if independentReconciliation {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE independent_user_reconciliations
+			SET state='snapshotting',workflow_id=$2,next_attempt_at=NULL,error_code=NULL,updated_at=$3
+			WHERE id=$1::uuid AND state IN ('pending','retry_wait') AND workflow_id IS NULL`,
+			p.IndependentReconciliationID, p.WorkflowID, p.Now)
+		if err != nil {
+			return SnapshotWorkflow{}, err
+		}
+		if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+			if err != nil {
+				return SnapshotWorkflow{}, err
+			}
+			return SnapshotWorkflow{}, ErrIndependentReconciliationState
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return SnapshotWorkflow{}, err

@@ -71,6 +71,23 @@ func TestConflictEvidencePagesDoNotEnterGeneralCommandCache(t *testing.T) {
 	}
 }
 
+func TestIndependentDrainingCommandAllowlistIsClosed(t *testing.T) {
+	t.Parallel()
+	for _, commandType := range []string{
+		"start_snapshot", "complete_independent_sync", "capture_conflict_evidence",
+		"publish_conflict_resolution",
+	} {
+		if !independentReconciliationCommand(commandType) {
+			t.Errorf("reconciliation command %q was rejected", commandType)
+		}
+	}
+	for _, commandType := range []string{"provision_user", "set_password", "restore_user_account", "scan_existing", ""} {
+		if independentReconciliationCommand(commandType) {
+			t.Errorf("ordinary command %q was allowed while draining", commandType)
+		}
+	}
+}
+
 func TestPrepareRestoreReceiveRequiresComputeRole(t *testing.T) {
 	t.Parallel()
 	payload, err := json.Marshal(protocol.PrepareSnapshotReceiveRequest{

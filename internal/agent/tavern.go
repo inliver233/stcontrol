@@ -35,13 +35,14 @@ type adapterHealth struct {
 }
 
 type adapterSessionResponse struct {
-	OK    bool                  `json:"ok"`
-	Users []protocol.UserStatus `json:"users"`
+	OK           bool                           `json:"ok"`
+	Users        []protocol.UserStatus          `json:"users"`
+	PendingUsers []protocol.IndependentSyncUser `json:"pending_users"`
 }
 
 var requiredAdapterCapabilities = []string{
 	"account_restore", "activity_leases", "local_account_proof", "login_handoff", "node_admin_handoff", "node_admin_verify", "password_update", "registration_policy",
-	"snapshot_boundary", "user_provision", "write_gate", "control_mode",
+	"snapshot_boundary", "user_provision", "write_gate", "control_mode", "independent_reconciliation",
 }
 
 func (a *Agent) verifyLocalUser(ctx context.Context, req protocol.VerifyLocalUserRequest) (protocol.VerifyLocalUserResponse, error) {
@@ -91,7 +92,8 @@ func (a *Agent) collectUserStatuses(ctx context.Context) ([]protocol.UserStatus,
 	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/sessions", struct{}{}, &response); err != nil {
 		return nil, err
 	}
-	if !response.OK || len(response.Users) > protocol.MaxAccountInventoryUsers {
+	if !response.OK || len(response.Users) > protocol.MaxAccountInventoryUsers ||
+		len(response.PendingUsers) > protocol.MaxAccountInventoryUsers {
 		return nil, fmt.Errorf("invalid adapter session telemetry")
 	}
 	seen := make(map[string]struct{}, len(response.Users))
@@ -107,7 +109,53 @@ func (a *Agent) collectUserStatuses(ctx context.Context) ([]protocol.UserStatus,
 		}
 		seen[user.SessionID] = struct{}{}
 	}
+	pendingHandles := make(map[string]struct{}, len(response.PendingUsers))
+	for _, pending := range response.PendingUsers {
+		changedAt := time.UnixMilli(pending.ChangedAt)
+		if !safeInventoryString(pending.Handle, 128) || !validUUID(pending.Marker) ||
+			pending.ChangedAt <= 0 || changedAt.After(time.Now().Add(time.Minute)) ||
+			!safeInventoryString(pending.Reason, 128) {
+			return nil, fmt.Errorf("invalid adapter pending synchronization fact")
+		}
+		if _, exists := pendingHandles[pending.Handle]; exists {
+			return nil, fmt.Errorf("duplicate adapter pending synchronization fact")
+		}
+		pendingHandles[pending.Handle] = struct{}{}
+	}
+	if err := a.recordAdapterSessionFacts(response.Users, response.PendingUsers); err != nil {
+		return nil, err
+	}
 	return response.Users, nil
+}
+
+func (a *Agent) recordAdapterSessionFacts(users []protocol.UserStatus, pending []protocol.IndependentSyncUser) error {
+	activeIndependent := 0
+	for _, user := range users {
+		if user.LoginMode == protocol.NodeModeIndependent && !user.Ended {
+			activeIndependent++
+		}
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.state.ControlMode.ActiveIndependentSessions = activeIndependent
+	a.state.ControlMode.PendingUserSyncs = len(pending)
+	a.state.PendingIndependentUsers = append([]protocol.IndependentSyncUser(nil), pending...)
+	return a.saveRuntimeStateLocked()
+}
+
+func (a *Agent) completeIndependentSync(ctx context.Context, req protocol.CompleteIndependentSyncRequest) error {
+	var out struct {
+		OK     bool   `json:"ok"`
+		Handle string `json:"handle"`
+		Marker string `json:"marker"`
+	}
+	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/control/sync-complete", req, &out); err != nil {
+		return err
+	}
+	if !out.OK || out.Handle != req.Handle || out.Marker != req.Marker {
+		return fmt.Errorf("invalid independent synchronization completion")
+	}
+	return nil
 }
 
 func (a *Agent) provisionUser(ctx context.Context, req *protocol.ProvisionUserRequest) (*protocol.ProvisionUserResponse, error) {

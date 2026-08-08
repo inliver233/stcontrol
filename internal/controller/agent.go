@@ -260,6 +260,31 @@ func normalizeNodeControlMode(report protocol.NodeControlModeReport, now time.Ti
 	if report.Mode == protocol.NodeModeIndependent && report.IndependentSince.IsZero() {
 		return store.NodeControlModeFact{}, fmt.Errorf("independent mode is missing activation time")
 	}
+	if len(report.PendingUsers) != report.PendingUserSyncs || len(report.PendingUsers) > 500 {
+		return store.NodeControlModeFact{}, fmt.Errorf("pending independent synchronization count mismatch")
+	}
+	seenHandles := make(map[string]struct{}, len(report.PendingUsers))
+	seenMarkers := make(map[string]struct{}, len(report.PendingUsers))
+	for _, pending := range report.PendingUsers {
+		changedAt := time.UnixMilli(pending.ChangedAt).UTC()
+		if !isValidHandle(pending.Handle) || NormalizeHandle(pending.Handle) != pending.Handle ||
+			!isUUID(pending.Marker) || pending.ChangedAt <= 0 || changedAt.After(now.Add(time.Minute)) ||
+			pending.Reason == "" || len(pending.Reason) > 128 || strings.TrimSpace(pending.Reason) != pending.Reason ||
+			strings.ContainsAny(pending.Reason, "\r\n") {
+			return store.NodeControlModeFact{}, fmt.Errorf("invalid pending independent synchronization fact")
+		}
+		if _, exists := seenHandles[pending.Handle]; exists {
+			return store.NodeControlModeFact{}, fmt.Errorf("duplicate pending independent synchronization handle")
+		}
+		if _, exists := seenMarkers[pending.Marker]; exists {
+			return store.NodeControlModeFact{}, fmt.Errorf("duplicate pending independent synchronization marker")
+		}
+		seenHandles[pending.Handle] = struct{}{}
+		seenMarkers[pending.Marker] = struct{}{}
+		fact.PendingUsers = append(fact.PendingUsers, store.IndependentSyncFact{
+			Handle: pending.Handle, Marker: pending.Marker, ChangedAt: changedAt, Reason: pending.Reason,
+		})
+	}
 	return fact, nil
 }
 
