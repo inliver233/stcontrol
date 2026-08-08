@@ -282,3 +282,14 @@
 - `go test -coverprofile=coverage/admin_node_handoff.coverprofile ./...`：通过；总覆盖率 `41.1%`（Agent `48.6%`、Controller `24.0%`、Store `54.7%`），仍低于最终 80% 门禁。
 - `go test ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`、`web/npm run build` 和 `git diff --check`：通过。
 - 尚未完成且未冒充完成：SillyTavern 尚未提供 `/api/stcontrol/internal/admin/verify`、`/check` 和 `/federated-admin-login` 的真实 adapter，也未把核销结果转换为本地管理员 session；本机没有可用 PostgreSQL，迁移、约束和并发核销仍缺真实运行证据。因此 R17 保持 `部分`。
+
+## 2026-08-08：SillyTavern adapter 挂载、真实 HTTP 交接与三项酒馆修复批次
+
+- SillyTavern 的 stcontrol adapter 已挂载到真实 `server-main`：内部能力只接受 loopback Agent HMAC/nonce；持久模式、session、写门和幂等回执移到独立 `_stcontrol` 目录并以 0700/0600 原子保存，兼容旧路径迁移。进程实例变化时只清除无法证明仍存活的 orphan in-flight 计数，继续保留模式世代、session 和 lease 围栏。
+- 用户和管理员交接均使用 POST body 中的一次性短码；adapter 经 Agent HMAC 向 Controller 核销，绑定 session/activity epoch/controller generation 或管理员 permission version，写入隔离的本地 session。测试确认短码不进入 URL、重放拒绝、管理员降权拒绝、伪造 Agent secret 拒绝，并通过完整 SillyTavern server 的 cookie-backed CSRF 路径。
+- 注册供应先以稳定 `registration_id` 原子 claim 节点邀请码，再创建账号；同 claim/同身份可在账号已落盘但 adapter 回执丢失后续跑，不同 claim 或身份漂移失败关闭。实际 Express 路由测试删除幂等回执后重启调用，验证账号不重复、邀请码不二次消费。
+- 单用户 snapshot gate 在真实路由中拒绝新写并等待该用户读写排空，只有精确 token 可 release；错误 token 不能开门。陈旧 writer lease 只能保留读而不能写；受控浏览器页面即使可见但闲置也继续低频 heartbeat，standalone 历史行为不变。
+- 酒馆三项用户问题同时闭环：聊天初始 range/page size 读取“设置→聊天/消息处理”的 `chat_truncation`（0 为全部、1–1000 可调，缓存按 page size 隔离）；Free Gemini 为每个模型持久保存 `gemini/openai` 请求格式且旧配置默认原生 Gemini；“重置一切”只校验当前用户名，错误/缺失用户名不删除，正确用户名经真实路由删除并重新初始化数据，不再存在重置码。
+- SillyTavern 定向套件：`node --test` 覆盖 adapter、真实路由、heartbeat、邀请注册、聊天分页、Free Gemini 和账户重置，共 93 项、86 通过、7 项因测试配置明确跳过、0 失败；`npm run test:optimizations` 128/128 通过；`npm run test:registration` 15/15 通过。相关新增源文件 ESLint 与 `git diff --check` 通过。
+- stcontrol `go test ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...` 通过。新增跨仓库测试由 Go Agent 调用真实 adapter fixture，并启动完整 SillyTavern server 验证实际 router 挂载与 CSRF；缺少 sibling/Node 时只在非验收环境显式 skip。
+- 尚未完成且未冒充完成：当前账号 inventory 硬限 500 且没有分页，不能满足 10k 规模；本批次仍没有真实 PostgreSQL，所以 Controller→数据库→Agent→酒馆的注册、并发写租约和 snapshot durable workflow 尚未闭环；多标签页/休眠、扩展绕过、跨机 TLS/NAT、全故障矩阵与 80% 覆盖率门禁仍待后续阶段。因此相关 R01–R06、R13–R19、R22 均保持 `部分`。
