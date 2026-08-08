@@ -213,9 +213,10 @@ func controllerDisasterFact(
 		ObservedAt: observedAt,
 	}
 	if mode == store.NodeModeIndependent {
-		fact.ReasonCode = "sustained_multi_signal_controller_loss"
+		fact.ReasonCode = "sustained_peer_confirmed_controller_loss"
 		fact.ConsecutiveHeartbeatFails = 64
 		fact.ConsecutiveHealthProbeFails = 64
+		fact.ConsecutivePeerWitnessFails = 64
 		fact.OutageStartedAt = observedAt.Add(-20 * time.Minute)
 		fact.ConfirmedOutageStartedAt = observedAt.Add(-16 * time.Minute)
 		fact.IndependentSince = observedAt.Add(-time.Minute)

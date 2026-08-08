@@ -18,6 +18,7 @@ type agentControlModeState struct {
 	ReasonCode                  string    `json:"reason_code"`
 	ConsecutiveHeartbeatFails   int       `json:"consecutive_heartbeat_failures"`
 	ConsecutiveHealthProbeFails int       `json:"consecutive_health_probe_failures"`
+	ConsecutivePeerWitnessFails int       `json:"consecutive_peer_witness_failures"`
 	OutageStartedAt             time.Time `json:"outage_started_at,omitempty"`
 	ConfirmedOutageStartedAt    time.Time `json:"confirmed_outage_started_at,omitempty"`
 	LastControllerSuccessAt     time.Time `json:"last_controller_success_at,omitempty"`
@@ -70,6 +71,7 @@ func (a *Agent) controlModeReport() protocol.NodeControlModeReport {
 		ControllerGeneration: a.state.HighestGeneration, ReasonCode: state.ReasonCode,
 		ConsecutiveHeartbeatFails:   state.ConsecutiveHeartbeatFails,
 		ConsecutiveHealthProbeFails: state.ConsecutiveHealthProbeFails,
+		ConsecutivePeerWitnessFails: state.ConsecutivePeerWitnessFails,
 		OutageStartedAt:             state.OutageStartedAt,
 		ConfirmedOutageStartedAt:    state.ConfirmedOutageStartedAt,
 		LastControllerSuccessAt:     state.LastControllerSuccessAt,
@@ -119,22 +121,28 @@ func independentReconciliationCommand(commandType string) bool {
 	}
 }
 
-// recordControllerFailure requires two independent observations before an
-// outage may become independent: the signed heartbeat failed and the public
-// health endpoint was also unreachable. An authentication/protocol fault with
-// a healthy controller never opens local login.
-func (a *Agent) recordControllerFailure(now time.Time, healthProbeFailed bool) error {
+// recordControllerFailure requires three independently-routed observations
+// before an outage may become independent: the signed heartbeat failed, the
+// local public-health probe failed, and a majority of configured peer
+// witnesses also observed that same Controller unavailable. Missing or
+// disagreeing witnesses fail closed.
+func (a *Agent) recordControllerFailure(now time.Time, healthProbeFailed, peerQuorumConfirmed bool) error {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	state := &a.state.ControlMode
 	state.ConsecutiveHeartbeatFails++
 	if healthProbeFailed {
-		if state.ConsecutiveHealthProbeFails == 0 || state.ConfirmedOutageStartedAt.IsZero() {
-			state.ConfirmedOutageStartedAt = now
-		}
 		state.ConsecutiveHealthProbeFails++
 	} else {
 		state.ConsecutiveHealthProbeFails = 0
+	}
+	if healthProbeFailed && peerQuorumConfirmed {
+		if state.ConsecutivePeerWitnessFails == 0 || state.ConfirmedOutageStartedAt.IsZero() {
+			state.ConfirmedOutageStartedAt = now
+		}
+		state.ConsecutivePeerWitnessFails++
+	} else {
+		state.ConsecutivePeerWitnessFails = 0
 		state.ConfirmedOutageStartedAt = time.Time{}
 	}
 	if state.OutageStartedAt.IsZero() {
@@ -148,6 +156,14 @@ func (a *Agent) recordControllerFailure(now time.Time, healthProbeFailed bool) e
 	}
 	mode := state.Mode
 	reason := state.ReasonCode
+	// Once any independent observation is disputed, immediately stop opening
+	// new disaster logins. Existing independent sessions and pending user facts
+	// remain behind the draining boundary until an authenticated Controller can
+	// reconcile them; a split network must not keep granting new writers.
+	if mode == protocol.NodeModeIndependent && (!healthProbeFailed || !peerQuorumConfirmed) {
+		mode = protocol.NodeModeIndependentDraining
+		reason = "controller_loss_evidence_disputed"
+	}
 	if mode == protocol.NodeModeManaged && elapsed >= policy.unreachableAfter {
 		mode = protocol.NodeModeControllerUnreachable
 		reason = "controller_heartbeat_timeout"
@@ -155,9 +171,10 @@ func (a *Agent) recordControllerFailure(now time.Time, healthProbeFailed bool) e
 	if a.Cfg.Role == "compute" && mode != protocol.NodeModeIndependentDraining &&
 		!state.ConfirmedOutageStartedAt.IsZero() && confirmedElapsed >= policy.independentAfter &&
 		state.ConsecutiveHeartbeatFails >= policy.minFailures &&
-		state.ConsecutiveHealthProbeFails >= policy.minFailures {
+		state.ConsecutiveHealthProbeFails >= policy.minFailures &&
+		state.ConsecutivePeerWitnessFails >= policy.minFailures {
 		mode = protocol.NodeModeIndependent
-		reason = "sustained_multi_signal_controller_loss"
+		reason = "sustained_peer_confirmed_controller_loss"
 		if state.IndependentSince.IsZero() {
 			state.IndependentSince = now
 		}
@@ -203,6 +220,7 @@ func (a *Agent) recordControllerSuccess(now time.Time, response protocol.Heartbe
 	state.ConfirmedOutageStartedAt = time.Time{}
 	state.ConsecutiveHeartbeatFails = 0
 	state.ConsecutiveHealthProbeFails = 0
+	state.ConsecutivePeerWitnessFails = 0
 	state.ControllerGeneration = response.ControllerGeneration
 	if desired != state.Mode {
 		state.Mode = desired

@@ -29,6 +29,7 @@ type NodeControlModeFact struct {
 	ReasonCode                  string
 	ConsecutiveHeartbeatFails   int
 	ConsecutiveHealthProbeFails int
+	ConsecutivePeerWitnessFails int
 	OutageStartedAt             time.Time
 	ConfirmedOutageStartedAt    time.Time
 	LastControllerSuccessAt     time.Time
@@ -64,6 +65,7 @@ func validControlMode(mode string) bool {
 func validNodeControlModeFact(fact NodeControlModeFact) bool {
 	if !validControlMode(fact.Mode) || fact.ModeGeneration <= 0 || fact.ControllerGeneration <= 0 ||
 		fact.ConsecutiveHeartbeatFails < 0 || fact.ConsecutiveHealthProbeFails < 0 ||
+		fact.ConsecutivePeerWitnessFails < 0 ||
 		fact.ActiveIndependentSessions < 0 || fact.PendingUserSyncs < 0 || fact.ObservedAt.IsZero() ||
 		len(fact.ReasonCode) > 128 || strings.ContainsAny(fact.ReasonCode, "\r\n") {
 		return false
@@ -80,7 +82,8 @@ func validNodeControlModeFact(fact NodeControlModeFact) bool {
 		}
 	}
 	if fact.Mode == NodeModeIndependent &&
-		(fact.IndependentSince.IsZero() || fact.ConfirmedOutageStartedAt.IsZero()) {
+		(fact.IndependentSince.IsZero() || fact.ConfirmedOutageStartedAt.IsZero() ||
+			fact.ConsecutivePeerWitnessFails <= 0) {
 		return false
 	}
 	return true
@@ -207,6 +210,7 @@ func (s *Store) reconcileNodeControlModeAuthenticated(
 	evidence, err := json.Marshal(map[string]any{
 		"consecutive_heartbeat_failures":    fact.ConsecutiveHeartbeatFails,
 		"consecutive_health_probe_failures": fact.ConsecutiveHealthProbeFails,
+		"consecutive_peer_witness_failures": fact.ConsecutivePeerWitnessFails,
 		"active_independent_sessions":       fact.ActiveIndependentSessions,
 		"pending_user_syncs":                fact.PendingUserSyncs,
 		"authenticated_generation":          authenticatedCredentialGeneration,
@@ -225,7 +229,8 @@ func (s *Store) reconcileNodeControlModeAuthenticated(
 		  last_controller_success_at=$10,independent_since=$11,
 		  controller_heartbeat_failures=$12,controller_health_probe_failures=$13,
 		  active_independent_sessions=$14,pending_independent_syncs=$15,
-		  confirmed_controller_outage_started_at=$16
+		  confirmed_controller_outage_started_at=$16,
+		  controller_peer_witness_failures=$18
 		WHERE id=$1`,
 		nodeID, fact.Mode, fact.ModeGeneration, desired, desiredGeneration,
 		fact.ReasonCode, fact.ObservedAt, activeGeneration,
@@ -233,7 +238,7 @@ func (s *Store) reconcileNodeControlModeAuthenticated(
 		nullableControlModeTime(fact.IndependentSince), fact.ConsecutiveHeartbeatFails,
 		fact.ConsecutiveHealthProbeFails, fact.ActiveIndependentSessions, fact.PendingUserSyncs,
 		nullableControlModeTime(fact.ConfirmedOutageStartedAt),
-		authenticatedCredentialGeneration)
+		authenticatedCredentialGeneration, fact.ConsecutivePeerWitnessFails)
 	if err != nil {
 		return NodeControlModeDecision{}, err
 	}

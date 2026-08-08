@@ -24,7 +24,8 @@ func TestDefaultControllerDelaysUnprotectedAlerts(t *testing.T) {
 func TestDefaultAgentUsesFilesystemCapacityUnlessQuotaConfigured(t *testing.T) {
 	t.Parallel()
 	agent := DefaultAgent()
-	if agent.DiskQuotaBytes != 0 || agent.BackupDir == "" || agent.HeartbeatSec <= 0 {
+	if agent.DiskQuotaBytes != 0 || agent.BackupDir == "" || agent.HeartbeatSec <= 0 ||
+		len(agent.Disaster.PeerWitnessURLs) != 0 || agent.Disaster.PeerWitnessSecretEnv == "" {
 		t.Fatalf("agent defaults=%+v", agent)
 	}
 }

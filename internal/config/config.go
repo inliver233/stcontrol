@@ -129,9 +129,11 @@ type AgentConfig struct {
 // sustained failure of the controller health probe; a single flaky request
 // can therefore never open native logins.
 type AgentDisasterPolicy struct {
-	UnreachableAfterSec int `yaml:"unreachable_after_sec"`
-	IndependentAfterSec int `yaml:"independent_after_sec"`
-	MinFailedHeartbeats int `yaml:"min_failed_heartbeats"`
+	UnreachableAfterSec  int      `yaml:"unreachable_after_sec"`
+	IndependentAfterSec  int      `yaml:"independent_after_sec"`
+	MinFailedHeartbeats  int      `yaml:"min_failed_heartbeats"`
+	PeerWitnessURLs      []string `yaml:"peer_witness_urls,omitempty"`
+	PeerWitnessSecretEnv string   `yaml:"peer_witness_secret_env,omitempty"`
 }
 
 // Default 总控默认配置。
@@ -172,9 +174,10 @@ func DefaultAgent() *AgentConfig {
 		DataDir:      "./agent-data",
 		BackupDir:    "./agent-data/backups",
 		Disaster: AgentDisasterPolicy{
-			UnreachableAfterSec: 45,
-			IndependentAfterSec: 15 * 60,
-			MinFailedHeartbeats: 4,
+			UnreachableAfterSec:  45,
+			IndependentAfterSec:  15 * 60,
+			MinFailedHeartbeats:  4,
+			PeerWitnessSecretEnv: "STCONTROL_PEER_WITNESS_PSK",
 		},
 	}
 }

@@ -20,14 +20,19 @@ type Agent struct {
 	mu         sync.Mutex
 	backupJobs map[int64]context.CancelFunc
 
-	httpClient     *http.Client
-	commandSlots   chan struct{}
-	transferSlots  chan struct{}
-	stateMu        sync.Mutex
-	auditMu        sync.Mutex
-	adapterNonceMu sync.Mutex
-	adapterNonces  map[string]time.Time
-	state          agentRuntimeState
+	httpClient        *http.Client
+	commandSlots      chan struct{}
+	transferSlots     chan struct{}
+	witnessSlots      chan struct{}
+	stateMu           sync.Mutex
+	auditMu           sync.Mutex
+	adapterNonceMu    sync.Mutex
+	adapterNonces     map[string]time.Time
+	witnessNonceMu    sync.Mutex
+	witnessNonces     map[string]time.Time
+	peerWitnessSecret []byte
+	peerWitnessProbe  func(context.Context) bool
+	state             agentRuntimeState
 }
 
 // New 创建子控。
@@ -57,7 +62,12 @@ func New(cfg *config.AgentConfig) (*Agent, error) {
 		},
 		commandSlots:  make(chan struct{}, 8),
 		transferSlots: make(chan struct{}, 4),
+		witnessSlots:  make(chan struct{}, 8),
 		adapterNonces: make(map[string]time.Time),
+		witnessNonces: make(map[string]time.Time),
+	}
+	if err := agent.loadPeerWitnessSecret(); err != nil {
+		return nil, err
 	}
 	if err := agent.loadRuntimeState(); err != nil {
 		return nil, fmt.Errorf("load agent runtime state: %w", err)

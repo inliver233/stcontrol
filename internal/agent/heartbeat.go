@@ -122,7 +122,11 @@ func (a *Agent) sendHeartbeat(ctx context.Context) {
 			return
 		}
 		healthProbeFailed := !a.controllerHealthAvailable(ctx)
-		if stateErr := a.recordControllerFailure(time.Now().UTC(), healthProbeFailed); stateErr != nil {
+		peerQuorumConfirmed := false
+		if healthProbeFailed {
+			peerQuorumConfirmed = a.peerWitnessQuorumConfirmsLoss(ctx)
+		}
+		if stateErr := a.recordControllerFailure(time.Now().UTC(), healthProbeFailed, peerQuorumConfirmed); stateErr != nil {
 			log.Printf("持久化总控失联状态失败: %v", stateErr)
 		}
 		if modeErr := a.syncTavernControlMode(ctx); modeErr != nil {

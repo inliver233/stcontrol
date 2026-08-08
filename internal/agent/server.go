@@ -24,10 +24,14 @@ func (a *Agent) Handler() http.Handler {
 	if a.transferSlots == nil {
 		a.transferSlots = make(chan struct{}, 4)
 	}
+	if a.witnessSlots == nil {
+		a.witnessSlots = make(chan struct{}, 8)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /agent/health", func(w http.ResponseWriter, _ *http.Request) {
 		protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
+	mux.HandleFunc("POST "+peerWitnessRoute, a.handlePeerWitness)
 	mux.HandleFunc("POST /agent/tickets/redeem", a.handleAdapterTicketRedeem(false))
 	mux.HandleFunc("POST /agent/tickets/redeem-admin", a.handleAdapterTicketRedeem(true))
 	mux.HandleFunc("POST "+a.snapshotTransferRoute()+"/{snapshotID}", a.handleSnapshotTransfer)
@@ -142,6 +146,9 @@ func validateAgentListenerConfig(cfg *config.AgentConfig) error {
 	}
 	if !isLoopbackListenerHost(host) && !hasCert {
 		return fmt.Errorf("non-loopback agent listener requires TLS")
+	}
+	if err := validatePeerWitnessPolicy(cfg.Disaster); err != nil {
+		return err
 	}
 	if cfg.TransferPublicURL == "" {
 		return nil

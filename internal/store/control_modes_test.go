@@ -13,12 +13,13 @@ import (
 func independentModeFact(now time.Time) NodeControlModeFact {
 	return NodeControlModeFact{
 		Mode: NodeModeIndependent, ModeGeneration: 3, ControllerGeneration: 5,
-		ReasonCode:                "sustained_multi_signal_controller_loss",
+		ReasonCode:                "sustained_peer_confirmed_controller_loss",
 		ConsecutiveHeartbeatFails: 60, ConsecutiveHealthProbeFails: 60,
-		OutageStartedAt:           now.Add(-15 * time.Minute),
-		ConfirmedOutageStartedAt:  now.Add(-14 * time.Minute),
-		IndependentSince:          now.Add(-time.Minute),
-		ActiveIndependentSessions: 2, PendingUserSyncs: 0, ObservedAt: now,
+		ConsecutivePeerWitnessFails: 60,
+		OutageStartedAt:             now.Add(-15 * time.Minute),
+		ConfirmedOutageStartedAt:    now.Add(-14 * time.Minute),
+		IndependentSince:            now.Add(-time.Minute),
+		ActiveIndependentSessions:   2, PendingUserSyncs: 0, ObservedAt: now,
 	}
 }
 
@@ -36,7 +37,7 @@ func TestReconcileIndependentModeAlwaysReturnsDrainingBoundary(t *testing.T) {
 	mock.ExpectExec(`UPDATE nodes SET control_mode=\$2`).WithArgs(
 		int64(12), NodeModeIndependent, int64(3), NodeModeIndependentDraining, int64(4),
 		fact.ReasonCode, now, int64(5), fact.OutageStartedAt, nil, fact.IndependentSince,
-		60, 60, 2, 0, fact.ConfirmedOutageStartedAt, int64(5),
+		60, 60, 2, 0, fact.ConfirmedOutageStartedAt, int64(5), 60,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO node_control_mode_events`).WithArgs(
 		int64(12), NodeModeIndependent, int64(3), NodeModeIndependentDraining, int64(4),
@@ -137,6 +138,18 @@ func TestReconcileNodeControlModeRejectsGenerationRollback(t *testing.T) {
 	assertMockExpectations(t, mock)
 }
 
+func TestReconcileIndependentModeRejectsMissingPeerWitnessEvidence(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	fact := independentModeFact(time.Now().UTC())
+	fact.ConsecutivePeerWitnessFails = 0
+	if _, err := st.ReconcileNodeControlMode(context.Background(), 12, fact); err == nil {
+		t.Fatal("independent mode without peer-witness evidence was accepted")
+	}
+	assertMockExpectations(t, mock)
+}
+
 func TestControllerRebuildAllowsOldCredentialForHeartbeatOnly(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 9, 4, 0, 0, 0, time.UTC)
@@ -158,7 +171,7 @@ func TestControllerRebuildAllowsOldCredentialForHeartbeatOnly(t *testing.T) {
 		).WillReturnRows(sqlmock.NewRows([]string{"allowed"}).AddRow(true))
 		mock.ExpectExec(`UPDATE nodes SET control_mode=\$2`).WithArgs(
 			int64(12), NodeModeManaged, int64(2), NodeModeManaged, int64(2), "", now,
-			int64(6), nil, nil, nil, 0, 0, 0, 0, nil, int64(4),
+			int64(6), nil, nil, nil, 0, 0, 0, 0, nil, int64(4), 0,
 		).WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectExec(`INSERT INTO node_control_mode_events`).WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectQuery(`UPDATE controller_rebuild_nodes item SET`).WithArgs(

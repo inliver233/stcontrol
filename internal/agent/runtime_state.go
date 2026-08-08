@@ -124,13 +124,17 @@ func (a *Agent) loadRuntimeState() error {
 		a.state.ControlMode.ModeGeneration = 1
 		a.state.ControlMode.ChangedAt = time.Now().UTC()
 	}
-	// Runtime states written before the confirmed dual-signal timestamp was
-	// introduced may already be in independent mode. Preserve that safe,
-	// restrictive mode across upgrade while ensuring subsequent reports carry
-	// an explicit durable activation floor.
+	// A runtime state written before peer-witness evidence existed must never
+	// keep opening new native logins after upgrade. Move it to the restrictive
+	// draining boundary; existing sessions and pending sync markers remain
+	// durable and can be reconciled when the Controller returns.
 	if a.state.ControlMode.Mode == protocol.NodeModeIndependent &&
-		a.state.ControlMode.ConfirmedOutageStartedAt.IsZero() {
-		a.state.ControlMode.ConfirmedOutageStartedAt = a.state.ControlMode.OutageStartedAt
+		a.state.ControlMode.ConsecutivePeerWitnessFails <= 0 {
+		a.state.ControlMode.Mode = protocol.NodeModeIndependentDraining
+		a.state.ControlMode.ModeGeneration++
+		a.state.ControlMode.ReasonCode = "legacy_independent_without_peer_witness"
+		a.state.ControlMode.ChangedAt = time.Now().UTC()
+		a.state.ControlMode.AdapterMode = ""
 	}
 	if a.state.ControlMode.ModeGeneration <= 0 || !validNodeControlMode(a.state.ControlMode.Mode) ||
 		(a.state.ControlMode.AdapterMode != "" && !validNodeControlMode(a.state.ControlMode.AdapterMode)) {

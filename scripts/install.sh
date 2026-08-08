@@ -86,6 +86,8 @@ disaster:
   unreachable_after_sec: 45
   independent_after_sec: 900
   min_failed_heartbeats: 4
+  peer_witness_urls: []
+  peer_witness_secret_env: STCONTROL_PEER_WITNESS_PSK
 EOF
 fi
 
@@ -106,6 +108,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
+EnvironmentFile=-$INSTALL_DIR/agent.env
 ExecStart=$BIN_PATH --config $CFG
 Restart=always
 RestartSec=5

@@ -27,6 +27,7 @@ func TestNormalizeNodeControlModeRequiresIndependentActivationEvidence(t *testin
 	_, err := normalizeNodeControlMode(protocol.NodeControlModeReport{
 		Mode: protocol.NodeModeIndependent, ModeGeneration: 3, ControllerGeneration: 5,
 		ConsecutiveHeartbeatFails: 60, ConsecutiveHealthProbeFails: 60,
+		ConsecutivePeerWitnessFails: 60,
 	}, now)
 	if err == nil {
 		t.Fatal("independent report without activation time was accepted")
@@ -42,6 +43,20 @@ func TestNormalizeNodeControlModeRequiresIndependentActivationEvidence(t *testin
 	}, now)
 	if err != nil || fact.PendingUserSyncs != 2 {
 		t.Fatalf("fact=%+v err=%v", fact, err)
+	}
+}
+
+func TestNormalizeNodeControlModeRequiresPeerWitnessEvidence(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	_, err := normalizeNodeControlMode(protocol.NodeControlModeReport{
+		Mode: protocol.NodeModeIndependent, ModeGeneration: 3, ControllerGeneration: 5,
+		ConsecutiveHeartbeatFails: 60, ConsecutiveHealthProbeFails: 60,
+		ConfirmedOutageStartedAt: now.Add(-15 * time.Minute),
+		IndependentSince:         now.Add(-time.Minute),
+	}, now)
+	if err == nil {
+		t.Fatal("independent report without peer-witness evidence was accepted")
 	}
 }
 

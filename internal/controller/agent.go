@@ -245,6 +245,7 @@ func normalizeNodeControlMode(report protocol.NodeControlModeReport, now time.Ti
 		ControllerGeneration: report.ControllerGeneration, ReasonCode: report.ReasonCode,
 		ConsecutiveHeartbeatFails:   report.ConsecutiveHeartbeatFails,
 		ConsecutiveHealthProbeFails: report.ConsecutiveHealthProbeFails,
+		ConsecutivePeerWitnessFails: report.ConsecutivePeerWitnessFails,
 		OutageStartedAt:             report.OutageStartedAt,
 		ConfirmedOutageStartedAt:    report.ConfirmedOutageStartedAt,
 		LastControllerSuccessAt:     report.LastControllerSuccessAt,
@@ -258,12 +259,14 @@ func normalizeNodeControlMode(report protocol.NodeControlModeReport, now time.Ti
 	}
 	if report.ModeGeneration <= 0 || report.ControllerGeneration <= 0 ||
 		report.ConsecutiveHeartbeatFails < 0 || report.ConsecutiveHealthProbeFails < 0 ||
+		report.ConsecutivePeerWitnessFails < 0 ||
 		report.ActiveIndependentSessions < 0 || report.PendingUserSyncs < 0 ||
 		len(report.ReasonCode) > 128 || strings.ContainsAny(report.ReasonCode, "\r\n") {
 		return store.NodeControlModeFact{}, fmt.Errorf("invalid node control mode evidence")
 	}
 	if report.Mode == protocol.NodeModeIndependent &&
-		(report.IndependentSince.IsZero() || report.ConfirmedOutageStartedAt.IsZero()) {
+		(report.IndependentSince.IsZero() || report.ConfirmedOutageStartedAt.IsZero() ||
+			report.ConsecutivePeerWitnessFails <= 0) {
 		return store.NodeControlModeFact{}, fmt.Errorf("independent mode is missing activation time")
 	}
 	if len(report.PendingUsers) != report.PendingUserSyncs || len(report.PendingUsers) > 500 {

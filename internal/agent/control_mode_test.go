@@ -34,7 +34,7 @@ func TestControllerJitterNeverOpensIndependentLogin(t *testing.T) {
 	for _, offset := range []time.Duration{0, 31 * time.Second, 2 * time.Minute} {
 		// The signed heartbeat is failing, but a separately observed healthy
 		// controller proves this is not a confirmed controller loss.
-		if err := a.recordControllerFailure(started.Add(offset), false); err != nil {
+		if err := a.recordControllerFailure(started.Add(offset), false, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -50,7 +50,7 @@ func TestSustainedMultiSignalLossPersistsIndependentModeAcrossRestart(t *testing
 	a := disasterTestAgent(t, dataDir)
 	started := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
 	for _, offset := range []time.Duration{0, 11 * time.Second, 61 * time.Second} {
-		if err := a.recordControllerFailure(started.Add(offset), true); err != nil {
+		if err := a.recordControllerFailure(started.Add(offset), true, true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -58,6 +58,7 @@ func TestSustainedMultiSignalLossPersistsIndependentModeAcrossRestart(t *testing
 	if report.Mode != protocol.NodeModeIndependent || report.ModeGeneration != 3 ||
 		report.IndependentSince.IsZero() || report.ConsecutiveHeartbeatFails != 3 ||
 		report.ConsecutiveHealthProbeFails != 3 ||
+		report.ConsecutivePeerWitnessFails != 3 ||
 		!report.ConfirmedOutageStartedAt.Equal(started) {
 		t.Fatalf("report=%+v", report)
 	}
@@ -66,6 +67,78 @@ func TestSustainedMultiSignalLossPersistsIndependentModeAcrossRestart(t *testing
 	if reloadedReport.Mode != protocol.NodeModeIndependent ||
 		!reloadedReport.IndependentSince.Equal(report.IndependentSince) {
 		t.Fatalf("reloaded=%+v", reloadedReport)
+	}
+}
+
+func TestPeerWitnessDisagreementResetsConfirmedOutageFloor(t *testing.T) {
+	t.Parallel()
+	a := disasterTestAgent(t, t.TempDir())
+	started := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	if err := a.recordControllerFailure(started, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.recordControllerFailure(started.Add(2*time.Minute), true, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.controlModeReport(); got.Mode != protocol.NodeModeControllerUnreachable ||
+		!got.ConfirmedOutageStartedAt.IsZero() || got.ConsecutivePeerWitnessFails != 0 ||
+		got.ConsecutiveHealthProbeFails != 2 {
+		t.Fatalf("peer disagreement did not fail closed: %+v", got)
+	}
+	confirmedAgain := started.Add(3 * time.Minute)
+	for _, offset := range []time.Duration{0, time.Second, 61 * time.Second} {
+		if err := a.recordControllerFailure(confirmedAgain.Add(offset), true, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := a.controlModeReport(); got.Mode != protocol.NodeModeIndependent ||
+		!got.ConfirmedOutageStartedAt.Equal(confirmedAgain) || got.ConsecutivePeerWitnessFails != 3 {
+		t.Fatalf("new uninterrupted quorum window was not used: %+v", got)
+	}
+}
+
+func TestPeerWitnessDisagreementClosesExistingIndependentLogin(t *testing.T) {
+	t.Parallel()
+	a := disasterTestAgent(t, t.TempDir())
+	started := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	for _, offset := range []time.Duration{0, time.Second, 61 * time.Second} {
+		if err := a.recordControllerFailure(started.Add(offset), true, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := a.controlModeReport(); got.Mode != protocol.NodeModeIndependent {
+		t.Fatalf("precondition mode=%+v", got)
+	}
+	if err := a.recordControllerFailure(started.Add(62*time.Second), true, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.controlModeReport(); got.Mode != protocol.NodeModeIndependentDraining ||
+		got.ReasonCode != "controller_loss_evidence_disputed" ||
+		!got.ConfirmedOutageStartedAt.IsZero() || got.ConsecutivePeerWitnessFails != 0 {
+		t.Fatalf("disputed independent evidence remained open: %+v", got)
+	}
+}
+
+func TestLegacyIndependentStateWithoutPeerEvidenceUpgradesToDraining(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	a := disasterTestAgent(t, dataDir)
+	a.stateMu.Lock()
+	a.state.ControlMode.Mode = protocol.NodeModeIndependent
+	a.state.ControlMode.ModeGeneration = 7
+	a.state.ControlMode.IndependentSince = time.Now().UTC().Add(-time.Minute)
+	a.state.ControlMode.ConsecutivePeerWitnessFails = 0
+	if err := a.saveRuntimeStateLocked(); err != nil {
+		a.stateMu.Unlock()
+		t.Fatal(err)
+	}
+	a.stateMu.Unlock()
+
+	reloaded := disasterTestAgent(t, dataDir)
+	report := reloaded.controlModeReport()
+	if report.Mode != protocol.NodeModeIndependentDraining || report.ModeGeneration != 8 ||
+		report.ReasonCode != "legacy_independent_without_peer_witness" {
+		t.Fatalf("legacy state was not closed safely: %+v", report)
 	}
 }
 
@@ -79,13 +152,13 @@ func TestHealthyPublicProbeResetsIndependentOutageDuration(t *testing.T) {
 	// independent public health probe still proves the Controller network is
 	// reachable. That time must never be credited to the dual-signal floor.
 	for _, offset := range []time.Duration{0, 30 * time.Second, 2 * time.Minute} {
-		if err := a.recordControllerFailure(started.Add(offset), false); err != nil {
+		if err := a.recordControllerFailure(started.Add(offset), false, false); err != nil {
 			t.Fatal(err)
 		}
 	}
 	confirmedAt := started.Add(2*time.Minute + time.Second)
 	for _, offset := range []time.Duration{0, time.Second, 2 * time.Second} {
-		if err := a.recordControllerFailure(confirmedAt.Add(offset), true); err != nil {
+		if err := a.recordControllerFailure(confirmedAt.Add(offset), true, true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -102,7 +175,7 @@ func TestHealthyPublicProbeResetsIndependentOutageDuration(t *testing.T) {
 		got.Mode != protocol.NodeModeControllerUnreachable {
 		t.Fatalf("confirmed outage floor was not durable: %+v", got)
 	}
-	if err := reloaded.recordControllerFailure(confirmedAt.Add(61*time.Second), true); err != nil {
+	if err := reloaded.recordControllerFailure(confirmedAt.Add(61*time.Second), true, true); err != nil {
 		t.Fatal(err)
 	}
 	if got := reloaded.controlModeReport(); got.Mode != protocol.NodeModeIndependent {
@@ -115,7 +188,7 @@ func TestControllerRecoveryMustDrainAndRejectsOldGeneration(t *testing.T) {
 	a := disasterTestAgent(t, t.TempDir())
 	started := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
 	for _, offset := range []time.Duration{0, 11 * time.Second, 61 * time.Second} {
-		if err := a.recordControllerFailure(started.Add(offset), true); err != nil {
+		if err := a.recordControllerFailure(started.Add(offset), true, true); err != nil {
 			t.Fatal(err)
 		}
 	}
