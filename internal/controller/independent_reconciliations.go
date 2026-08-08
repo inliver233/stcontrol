@@ -98,7 +98,7 @@ func (s *Server) createIndependentReconciliationSnapshot(
 		LegacyBackupJobID: job.ID, LegacyUserID: item.LegacyUserID, GlobalUserID: item.GlobalUserID,
 		SourceNodeID: item.NodeID, TargetNodeID: target.ID, DestinationKind: "archive",
 		IndependentReconciliationID: item.ID, IndependentMarker: item.Marker,
-		CapabilityExpires: now.Add(15 * time.Minute), Now: now,
+		CapabilityExpires: now.Add(snapshotCapabilityTTL), Now: now,
 	})
 	if err != nil {
 		_ = s.Store.UpdateBackupJobStatus(ctx, job.ID, "failed", 0, 0, 0, "独立模式对账快照创建失败")

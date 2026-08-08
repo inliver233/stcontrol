@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"stcontrol/internal/config"
+	controlcrypto "stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
 )
 
@@ -55,6 +56,9 @@ type pendingTransfer struct {
 	ActivityEpoch   int64                             `json:"activity_epoch"`
 	CapabilityHash  string                            `json:"capability_hash"`
 	ExpiresAt       time.Time                         `json:"expires_at"`
+	RelayTaskID     string                            `json:"relay_task_id,omitempty"`
+	RelayPrivateKey string                            `json:"relay_private_key,omitempty"`
+	RelayPublicKey  string                            `json:"relay_public_key,omitempty"`
 	State           string                            `json:"state"`
 	UpdatedAt       time.Time                         `json:"updated_at"`
 	Receipt         *protocol.SnapshotTransferReceipt `json:"receipt,omitempty"`
@@ -231,20 +235,58 @@ func (a *Agent) clearPendingControllerCredential(version int64) error {
 func (a *Agent) prepareTransfer(transfer pendingTransfer) error {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
+	return a.prepareTransferLocked(transfer)
+}
+
+func (a *Agent) prepareRelayTransfer(transfer pendingTransfer, taskID string) (string, error) {
+	if !validUUID(taskID) {
+		return "", fmt.Errorf("invalid relay task identity")
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if existing, ok := a.state.Transfers[transfer.SnapshotID]; ok &&
+		existing.WorkflowID == transfer.WorkflowID && existing.CapabilityHash == transfer.CapabilityHash &&
+		existing.State == "prepared" && existing.RelayTaskID == taskID &&
+		existing.RelayPrivateKey != "" && existing.RelayPublicKey != "" {
+		return existing.RelayPublicKey, nil
+	}
+	privateKey, publicKey, err := controlcrypto.GenerateRelayKeyPair()
+	if err != nil {
+		return "", err
+	}
+	transfer.RelayTaskID = taskID
+	transfer.RelayPrivateKey = privateKey
+	transfer.RelayPublicKey = publicKey
+	if err := a.prepareTransferLocked(transfer); err != nil {
+		return "", err
+	}
+	return publicKey, nil
+}
+
+func (a *Agent) prepareTransferLocked(transfer pendingTransfer) error {
 	if existing, ok := a.state.Transfers[transfer.SnapshotID]; ok {
 		sameCapability := existing.WorkflowID == transfer.WorkflowID && existing.CapabilityHash == transfer.CapabilityHash
 		if sameCapability && existing.State == "prepared" {
-			return nil
+			if sameTransferScope(existing, transfer) && existing.RelayTaskID == transfer.RelayTaskID &&
+				existing.RelayPrivateKey == transfer.RelayPrivateKey && existing.RelayPublicKey == transfer.RelayPublicKey {
+				return nil
+			}
+			if transfer.RelayTaskID == "" || !sameTransferScope(existing, transfer) {
+				return fmt.Errorf("snapshot transfer identity already exists")
+			}
 		}
-		retryableExpiredRestore := existing.WorkflowID == transfer.WorkflowID &&
+		replaceableExactRetry := sameTransferScope(existing, transfer) &&
+			((existing.State == "failed" && !sameCapability) ||
+				(existing.State == "prepared" && (!sameCapability || transfer.RelayTaskID != "")))
+		retryableExpiredRestore := sameTransferScope(existing, transfer) &&
 			existing.DestinationKind == "restore" && transfer.DestinationKind == "restore" &&
 			existing.State == "consumed" && !existing.ExpiresAt.After(time.Now().UTC())
-		replaceablePreparedRestore := existing.WorkflowID == transfer.WorkflowID &&
+		replaceablePreparedRestore := sameTransferScope(existing, transfer) &&
 			existing.DestinationKind == "restore" && transfer.DestinationKind == "restore" &&
 			existing.State == "prepared" && !sameCapability
-		if sameCapability || (existing.State != "failed" &&
-			!(existing.State == "prepared" && !existing.ExpiresAt.After(time.Now().UTC())) &&
-			!retryableExpiredRestore && !replaceablePreparedRestore) {
+		replaceableExpiredPrepared := sameTransferScope(existing, transfer) && existing.State == "prepared" &&
+			!existing.ExpiresAt.After(time.Now().UTC())
+		if !replaceableExactRetry && !replaceableExpiredPrepared && !retryableExpiredRestore && !replaceablePreparedRestore {
 			return fmt.Errorf("snapshot transfer identity already exists")
 		}
 	}
@@ -252,6 +294,24 @@ func (a *Agent) prepareTransfer(transfer pendingTransfer) error {
 	transfer.UpdatedAt = time.Now().UTC()
 	a.state.Transfers[transfer.SnapshotID] = transfer
 	return a.saveRuntimeStateLocked()
+}
+
+func sameTransferScope(left, right pendingTransfer) bool {
+	return left.WorkflowID == right.WorkflowID && left.SnapshotID == right.SnapshotID &&
+		left.GlobalUserID == right.GlobalUserID && left.TargetNodeID == right.TargetNodeID &&
+		left.Handle == right.Handle && left.DestinationKind == right.DestinationKind &&
+		left.SourceNodeID == right.SourceNodeID && left.ActivityEpoch == right.ActivityEpoch
+}
+
+func (a *Agent) relayTransfer(snapshotID, workflowID, taskID string) (pendingTransfer, error) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	transfer, ok := a.state.Transfers[snapshotID]
+	if !ok || transfer.WorkflowID != workflowID || transfer.RelayTaskID != taskID ||
+		transfer.RelayPrivateKey == "" || transfer.State != "prepared" {
+		return pendingTransfer{}, fmt.Errorf("relay transfer state unavailable")
+	}
+	return transfer, nil
 }
 
 func (a *Agent) consumeTransfer(snapshotID, workflowID, token string, now time.Time) (pendingTransfer, error) {

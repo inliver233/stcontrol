@@ -13,6 +13,12 @@ import (
 	"stcontrol/internal/store"
 )
 
+const (
+	snapshotCapabilityTTL      = 8 * time.Hour
+	snapshotWorkflowLeaseTTL   = 9 * time.Hour
+	snapshotWorkflowCommandTTL = 8 * time.Hour
+)
+
 // scheduleOfflineBackups 扫描所有用户副本, 找出"已离线且数据有变化、配置了备份目标"的用户, 触发备份。
 // 触发条件: 家节点在线 + 用户在节点上 isOnline=false 且 lastActivity 超过保护期 + 当前无 running 备份。
 func (s *Server) scheduleOfflineBackups(ctx context.Context) {
@@ -117,7 +123,7 @@ func (s *Server) TriggerUserBackup(ctx context.Context, userID, srcNodeID int64,
 	capability := deriveTransferCapability(s.secretKey, capabilityID)
 	capabilityHash := sha256.Sum256([]byte(capability))
 	now := time.Now().UTC()
-	capabilityExpires := now.Add(15 * time.Minute)
+	capabilityExpires := now.Add(snapshotCapabilityTTL)
 	workflow, err := s.Store.CreateSnapshotWorkflow(ctx, store.CreateSnapshotWorkflowParams{
 		WorkflowID: workflowID, OperationID: operationID, SnapshotID: snapshotID,
 		CapabilityID: capabilityID, CapabilityHash: capabilityHash[:],
@@ -138,7 +144,7 @@ func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string)
 	if s.workflowWorkerID == "" {
 		return fmt.Errorf("snapshot worker identity unavailable")
 	}
-	claimed, err := s.Store.ClaimSnapshotWorkflow(ctx, workflowID, s.workflowWorkerID, time.Now().UTC(), time.Hour)
+	claimed, err := s.Store.ClaimSnapshotWorkflow(ctx, workflowID, s.workflowWorkerID, time.Now().UTC(), snapshotWorkflowLeaseTTL)
 	if err != nil || !claimed {
 		return err
 	}
@@ -178,16 +184,6 @@ func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string)
 		}
 		return s.completeSnapshotExecution(ctx, execution, receipt)
 	}
-	if execution.Attempt > 0 {
-		if err := s.rotateSnapshotExecutionCapability(ctx, execution); err != nil {
-			return s.retrySnapshotWorkflow(ctx, execution, "capability_rotate_failed", "传输授权轮换失败", err)
-		}
-		execution, err = s.Store.GetSnapshotWorkflowExecution(ctx, workflowID)
-		if err != nil || execution == nil {
-			return err
-		}
-	}
-
 	if execution.CapabilityState != "prepared" || !execution.CapabilityExpires.After(time.Now().UTC().Add(2*time.Minute)) {
 		if execution.State != "quiescing" || execution.CapabilityState == "consumed" {
 			return s.retrySnapshotWorkflow(ctx, execution, "capability_expired", "传输授权已过期", nil)
@@ -208,6 +204,9 @@ func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string)
 		return fmt.Errorf("snapshot capability key mismatch")
 	}
 	capabilityHashHex := hex.EncodeToString(execution.CapabilityHash)
+	if execution.TransferMode == "relay" {
+		return s.executeRelaySnapshotWorkflow(ctx, execution, source, target, capability, capabilityHashHex)
+	}
 	if _, err := s.runAgentCommandWithOperation(ctx, target, "prepare_snapshot_receive", protocol.PrepareSnapshotReceiveRequest{
 		WorkflowID: execution.WorkflowID, SnapshotID: execution.SnapshotID, GlobalUserID: execution.GlobalUserID,
 		Handle: execution.Handle, DestinationKind: execution.DestinationKind, SourceNodeID: execution.SourceNodeID,
@@ -225,7 +224,7 @@ func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string)
 		TargetNodeID: execution.TargetNodeID, TargetTransferURL: target.TransferURL,
 		TransferCapability: capability, CapabilityExpires: execution.CapabilityExpires,
 		DestinationKind: execution.DestinationKind,
-	}, deriveWorkflowOperationID(execution.WorkflowID, fmt.Sprintf("start-source:%s:%d", execution.CapabilityID, execution.Attempt)), 45*time.Minute)
+	}, deriveWorkflowOperationID(execution.WorkflowID, fmt.Sprintf("start-source:%s:%d", execution.CapabilityID, execution.Attempt)), snapshotWorkflowCommandTTL)
 	if runErr != nil || result.Snapshot == nil {
 		latest, _ := s.Store.GetSnapshotWorkflowExecution(ctx, workflowID)
 		if latest != nil && latest.State == "publishing" {
@@ -234,7 +233,17 @@ func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string)
 				return s.completeSnapshotExecution(ctx, latest, receipt)
 			}
 		}
+		if agentCommandErrorCode(runErr) == "snapshot_direct_unreachable" && s.relayAvailable() {
+			if err := s.Store.SwitchSnapshotWorkflowToRelay(ctx, workflowID, time.Now().UTC()); err != nil {
+				return s.retrySnapshotWorkflow(ctx, execution, "relay_switch_failed", "直连失败且无法切换加密中转", err)
+			}
+			execution.TransferMode = "relay"
+			return s.retrySnapshotWorkflow(ctx, execution, "direct_unreachable_relay_queued", "节点直连失败，已排队使用端到端加密中转", runErr)
+		}
 		return s.retrySnapshotWorkflow(ctx, execution, "snapshot_failed", "源或目标节点未完成快照", runErr)
+	}
+	if result.Snapshot.RelayPending {
+		return s.retrySnapshotWorkflow(ctx, execution, "unexpected_relay_receipt", "直连传输返回了无效中转回执", nil)
 	}
 	return s.completeSnapshotExecution(ctx, execution, result.Snapshot)
 }
@@ -261,7 +270,7 @@ func (s *Server) completeSnapshotExecution(
 	execution *store.SnapshotWorkflowExecution,
 	receipt *protocol.SnapshotTransferReceipt,
 ) error {
-	if receipt == nil || receipt.SnapshotID != execution.SnapshotID {
+	if receipt == nil || receipt.RelayPending || receipt.SnapshotID != execution.SnapshotID {
 		return fmt.Errorf("snapshot receipt scope mismatch")
 	}
 	manifestDigest, err := decodeSnapshotDigest(receipt.ManifestSHA256)
@@ -298,7 +307,7 @@ func (s *Server) rotateSnapshotExecutionCapability(ctx context.Context, executio
 	digest := sha256.Sum256([]byte(capability))
 	now := time.Now().UTC()
 	return s.Store.RotateSnapshotCapability(
-		ctx, execution.WorkflowID, capabilityID, digest[:], now.Add(15*time.Minute), now,
+		ctx, execution.WorkflowID, capabilityID, digest[:], now.Add(snapshotCapabilityTTL), now,
 	)
 }
 

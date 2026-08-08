@@ -117,7 +117,7 @@ func (s *Store) LeaseAgentCommand(
 		  AND (
 		    node.control_mode='managed'
 		    OR (node.control_mode='independent-draining' AND command.command_type IN (
-		      'prepare_snapshot_receive','start_snapshot','get_snapshot_receipt',
+		      'prepare_snapshot_receive','start_snapshot','start_relay_receive','get_snapshot_receipt',
 		      'complete_independent_sync','capture_conflict_evidence',
 		      'read_conflict_evidence_page','start_conflict_evidence_transfer',
 		      'prepare_conflict_resolution','apply_conflict_resolution_decisions',

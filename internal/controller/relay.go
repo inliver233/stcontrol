@@ -128,7 +128,7 @@ func (relay *relayDataPlane) handleUpload(w http.ResponseWriter, r *http.Request
 	now := time.Now().UTC()
 	transfer, err := relay.store.ClaimRelayUpload(
 		r.Context(), id, tokenHash, plaintextBytes, r.ContentLength,
-		archiveSHA256, now, 30*time.Minute,
+		archiveSHA256, now, relay.retention,
 	)
 	if err != nil || transfer == nil || transfer.WorkflowID != r.Header.Get("X-Workflow-Id") ||
 		transfer.SnapshotID != r.Header.Get("X-Snapshot-Id") || r.ContentLength > transfer.MaxCiphertextBytes {
@@ -194,7 +194,7 @@ func (relay *relayDataPlane) handleDownload(w http.ResponseWriter, r *http.Reque
 		protocol.WriteError(w, http.StatusForbidden, "中转下载授权无效")
 		return
 	}
-	transfer, err := relay.store.ClaimRelayDownload(r.Context(), id, tokenHash, time.Now().UTC(), 30*time.Minute)
+	transfer, err := relay.store.ClaimRelayDownload(r.Context(), id, tokenHash, time.Now().UTC(), relay.retention)
 	if err != nil || transfer == nil || !transfer.StoragePath.Valid || !transfer.CiphertextBytes.Valid ||
 		!transfer.PlaintextBytes.Valid || len(transfer.ArchiveSHA256) != sha256.Size ||
 		len(transfer.CiphertextSHA256) != sha256.Size {

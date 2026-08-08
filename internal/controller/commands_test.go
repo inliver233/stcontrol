@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"database/sql/driver"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -14,6 +15,14 @@ import (
 
 type secretFreeJSON struct {
 	forbidden string
+}
+
+func TestAgentCommandErrorPreservesSafeFailureCode(t *testing.T) {
+	t.Parallel()
+	err := fmt.Errorf("run source: %w", &agentCommandError{Code: "snapshot_direct_unreachable"})
+	if got := agentCommandErrorCode(err); got != "snapshot_direct_unreachable" {
+		t.Fatalf("code=%q", got)
+	}
 }
 
 func (m secretFreeJSON) Match(value driver.Value) bool {

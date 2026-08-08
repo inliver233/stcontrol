@@ -153,7 +153,7 @@ func DefaultController() *ControllerConfig {
 		Admin: AdminConfig{Username: "admin", PasswordEnv: "CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD"},
 		Relay: RelayConfig{
 			DataDir: "./controller-relay-data", MaxBytes: 110 << 30,
-			RetentionMin: 60, MaxConcurrent: 4,
+			RetentionMin: 720, MaxConcurrent: 4,
 		},
 	}
 }

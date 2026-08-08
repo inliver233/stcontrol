@@ -103,7 +103,7 @@ func (s *Store) CreateRelayTransfer(ctx context.Context, p CreateRelayTransferPa
 	}
 	if out.ID != p.ID || out.SnapshotID != p.SnapshotID || out.SourceNodeID != p.SourceNodeID ||
 		out.TargetNodeID != p.TargetNodeID || out.MaxCiphertextBytes != p.MaxCiphertextBytes ||
-		!out.ExpiresAt.Equal(p.ExpiresAt) || !bytes.Equal(uploadHash, p.UploadTokenHash) ||
+		!bytes.Equal(uploadHash, p.UploadTokenHash) ||
 		!bytes.Equal(downloadHash, p.DownloadTokenHash) {
 		return nil, ErrRelayTransferState
 	}

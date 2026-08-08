@@ -14,7 +14,7 @@ relay:
   tls_cert_file: ""
   tls_key_file: ""
   max_bytes: 118111600640
-  retention_min: 60
+  retention_min: 720
   max_concurrent: 4
 
 node:

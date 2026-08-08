@@ -19,7 +19,7 @@ import (
 
 const (
 	agentCommandLeaseTTL = 45 * time.Second
-	agentCommandRunTTL   = 60 * time.Minute
+	agentCommandRunTTL   = 9 * time.Hour
 	agentCommandTTL      = 10 * time.Minute
 )
 
@@ -39,6 +39,26 @@ type agentCommandSummary struct {
 	NodeAdmin          *protocol.NodeAdminVerification     `json:"node_admin,omitempty"`
 	LocalUserProof     *protocol.VerifyLocalUserResponse   `json:"local_user_proof,omitempty"`
 	Ciphertext         string                              `json:"ciphertext,omitempty"`
+	RelayPublicKey     string                              `json:"relay_public_key,omitempty"`
+}
+
+type agentCommandError struct {
+	Code string
+}
+
+func (err *agentCommandError) Error() string {
+	if err == nil || err.Code == "" {
+		return "agent command failed"
+	}
+	return "agent command failed: " + err.Code
+}
+
+func agentCommandErrorCode(err error) string {
+	var commandErr *agentCommandError
+	if errors.As(err, &commandErr) {
+		return commandErr.Code
+	}
+	return ""
 }
 
 func (s *Server) handleAgentLeaseCommand(w http.ResponseWriter, r *http.Request) {
@@ -270,8 +290,11 @@ func (s *Server) runAgentCommandWithOperation(
 		return agentCommandSummary{}, err
 	}
 	var summary agentCommandSummary
-	if result == nil || result.State != "succeeded" || json.Unmarshal(result.ResultSummary, &summary) != nil || !summary.OK {
-		return agentCommandSummary{}, errors.New("agent command failed")
+	if result == nil || json.Unmarshal(result.ResultSummary, &summary) != nil {
+		return agentCommandSummary{}, &agentCommandError{Code: "invalid_result"}
+	}
+	if result.State != "succeeded" || !summary.OK {
+		return summary, &agentCommandError{Code: summary.Code}
 	}
 	return summary, nil
 }

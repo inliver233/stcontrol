@@ -74,7 +74,7 @@ func TestConflictEvidencePagesDoNotEnterGeneralCommandCache(t *testing.T) {
 func TestIndependentDrainingCommandAllowlistIsClosed(t *testing.T) {
 	t.Parallel()
 	for _, commandType := range []string{
-		"start_snapshot", "complete_independent_sync", "capture_conflict_evidence",
+		"start_snapshot", "start_relay_receive", "complete_independent_sync", "capture_conflict_evidence",
 		"publish_conflict_resolution",
 	} {
 		if !independentReconciliationCommand(commandType) {

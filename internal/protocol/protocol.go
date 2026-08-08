@@ -357,6 +357,7 @@ type PrepareSnapshotReceiveRequest struct {
 	ActivityEpoch   int64     `json:"activity_epoch"`
 	CapabilityHash  string    `json:"capability_hash"`
 	ExpiresAt       time.Time `json:"expires_at"`
+	RelayTaskID     string    `json:"relay_task_id,omitempty"`
 }
 
 type StartSnapshotRequest struct {
@@ -371,6 +372,25 @@ type StartSnapshotRequest struct {
 	TransferCapability string    `json:"transfer_capability"`
 	CapabilityExpires  time.Time `json:"capability_expires"`
 	DestinationKind    string    `json:"destination_kind"`
+	TransferMode       string    `json:"transfer_mode,omitempty"`
+	RelayTaskID        string    `json:"relay_task_id,omitempty"`
+	RelayUploadURL     string    `json:"relay_upload_url,omitempty"`
+	RelayUploadToken   string    `json:"relay_upload_token,omitempty"`
+	RelayTargetKey     string    `json:"relay_target_public_key,omitempty"`
+}
+
+// StartRelayReceiveRequest is sent only to the target Agent. The target keeps
+// the X25519 private key in its local 0600 runtime state, pulls ciphertext over
+// its outbound connection, verifies and publishes it, and only then confirms
+// ciphertext deletion to the Controller relay.
+type StartRelayReceiveRequest struct {
+	WorkflowID         string    `json:"workflow_id"`
+	SnapshotID         string    `json:"snapshot_id"`
+	RelayTaskID        string    `json:"relay_task_id"`
+	RelayDownloadURL   string    `json:"relay_download_url"`
+	RelayDownloadToken string    `json:"relay_download_token"`
+	TransferCapability string    `json:"transfer_capability"`
+	CapabilityExpires  time.Time `json:"capability_expires"`
 }
 
 type StartRestoreTransferRequest struct {
@@ -408,6 +428,7 @@ type SnapshotTransferReceipt struct {
 	ArchiveSHA256  string `json:"archive_sha256"`
 	FileCount      int64  `json:"file_count"`
 	TotalBytes     int64  `json:"total_bytes"`
+	RelayPending   bool   `json:"relay_pending,omitempty"`
 }
 
 type SnapshotProgressRequest struct {

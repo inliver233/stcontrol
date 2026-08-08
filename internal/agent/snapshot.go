@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,11 +18,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/shirou/gopsutil/v3/disk"
+	controlcrypto "stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
 )
 
@@ -34,6 +37,8 @@ const (
 	maxManifestBytes     = int64(32 << 20)
 	maxDecoderWindow     = uint64(64 << 20)
 )
+
+var errSnapshotDirectUnreachable = errors.New("direct snapshot target unreachable")
 
 type archiveReplicaMetadata struct {
 	FormatVersion int                              `json:"format_version"`
@@ -133,7 +138,20 @@ func (a *Agent) RunSnapshot(ctx context.Context, req protocol.StartSnapshotReque
 		return protocol.SnapshotTransferReceipt{}, err
 	}
 
-	receipt, err := a.streamSnapshot(snapshotCtx, req, archivePath, archiveDigest)
+	var receipt protocol.SnapshotTransferReceipt
+	if req.TransferMode == "relay" {
+		if err := a.streamSnapshotRelay(snapshotCtx, req, archivePath, archiveDigest); err != nil {
+			return protocol.SnapshotTransferReceipt{}, err
+		}
+		receipt = protocol.SnapshotTransferReceipt{
+			OK: true, SnapshotID: req.SnapshotID,
+			ManifestSHA256: hex.EncodeToString(manifestDigest[:]),
+			ArchiveSHA256:  hex.EncodeToString(archiveDigest[:]),
+			FileCount:      int64(len(manifest.Files)), TotalBytes: totalBytes, RelayPending: true,
+		}
+		return receipt, nil
+	}
+	receipt, err = a.streamSnapshot(snapshotCtx, req, archivePath, archiveDigest)
 	if err != nil {
 		return protocol.SnapshotTransferReceipt{}, err
 	}
@@ -158,7 +176,24 @@ func validateStartSnapshotRequest(req protocol.StartSnapshotRequest) error {
 		(req.DestinationKind != "archive" && req.DestinationKind != "hot_standby") {
 		return fmt.Errorf("invalid snapshot request")
 	}
+	if req.TransferMode == "" || req.TransferMode == "direct" {
+		if _, err := snapshotTransferEndpoint(req.TargetTransferURL, req.SnapshotID); err != nil {
+			return fmt.Errorf("invalid direct snapshot request")
+		}
+		return nil
+	}
+	if req.TransferMode != "relay" || !validUUID(req.RelayTaskID) || req.RelayUploadToken == "" ||
+		req.RelayTargetKey == "" {
+		return fmt.Errorf("invalid relay snapshot request")
+	}
+	if _, err := relayTransferEndpoint(req.RelayUploadURL, req.RelayTaskID); err != nil {
+		return fmt.Errorf("invalid relay snapshot request")
+	}
 	return nil
+}
+
+func isSnapshotDirectUnreachable(err error) bool {
+	return errors.Is(err, errSnapshotDirectUnreachable)
 }
 
 func (a *Agent) RunRestoreTransfer(
@@ -568,7 +603,7 @@ func (a *Agent) streamSnapshot(ctx context.Context, req protocol.StartSnapshotRe
 	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return protocol.SnapshotTransferReceipt{}, err
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("%w: %v", errSnapshotDirectUnreachable, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
@@ -576,6 +611,10 @@ func (a *Agent) streamSnapshot(ctx context.Context, req protocol.StartSnapshotRe
 		return protocol.SnapshotTransferReceipt{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusBadGateway ||
+			resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
+			return protocol.SnapshotTransferReceipt{}, fmt.Errorf("%w: status %d", errSnapshotDirectUnreachable, resp.StatusCode)
+		}
 		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("snapshot target returned status %d", resp.StatusCode)
 	}
 	var receipt protocol.SnapshotTransferReceipt
@@ -583,6 +622,215 @@ func (a *Agent) streamSnapshot(ctx context.Context, req protocol.StartSnapshotRe
 		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("invalid snapshot target receipt")
 	}
 	return receipt, nil
+}
+
+func (a *Agent) streamSnapshotRelay(
+	ctx context.Context,
+	req protocol.StartSnapshotRequest,
+	archivePath string,
+	archiveDigest [32]byte,
+) error {
+	endpoint, err := relayTransferEndpoint(req.RelayUploadURL, req.RelayTaskID)
+	if err != nil {
+		return err
+	}
+	archive, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer archive.Close()
+	stat, err := archive.Stat()
+	if err != nil || !stat.Mode().IsRegular() || stat.Size() <= 0 || stat.Size() > maxSnapshotBytes {
+		return fmt.Errorf("invalid snapshot archive size")
+	}
+	ciphertextBytes, err := controlcrypto.RelayCiphertextSize(stat.Size())
+	if err != nil {
+		return err
+	}
+	uploadCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	reader, writer := io.Pipe()
+	encryptionDone := make(chan error, 1)
+	go func() {
+		_, encryptErr := controlcrypto.EncryptRelayStream(
+			uploadCtx, writer, archive, req.RelayTargetKey,
+			controlcrypto.RelayCipherContext{
+				TaskID: req.RelayTaskID, WorkflowID: req.WorkflowID, SnapshotID: req.SnapshotID,
+			},
+		)
+		_ = writer.CloseWithError(encryptErr)
+		encryptionDone <- encryptErr
+	}()
+	httpReq, err := http.NewRequestWithContext(uploadCtx, http.MethodPut, endpoint, reader)
+	if err != nil {
+		_ = reader.CloseWithError(err)
+		cancel()
+		<-encryptionDone
+		return err
+	}
+	httpReq.ContentLength = ciphertextBytes
+	httpReq.Header.Set("Content-Type", "application/vnd.stcontrol.relay.v1")
+	httpReq.Header.Set("Authorization", "Bearer "+req.RelayUploadToken)
+	httpReq.Header.Set("X-Workflow-Id", req.WorkflowID)
+	httpReq.Header.Set("X-Snapshot-Id", req.SnapshotID)
+	httpReq.Header.Set("X-Plaintext-Length", strconv.FormatInt(stat.Size(), 10))
+	httpReq.Header.Set("X-Archive-Sha256", hex.EncodeToString(archiveDigest[:]))
+	client := snapshotHTTPClient()
+	resp, requestErr := client.Do(httpReq)
+	cancel()
+	_ = reader.CloseWithError(context.Canceled)
+	encryptErr := <-encryptionDone
+	if requestErr != nil {
+		return fmt.Errorf("relay upload failed: %w", requestErr)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("relay upload returned status %d", resp.StatusCode)
+	}
+	// A 200 response is an idempotent acknowledgement of ciphertext durably
+	// stored by an earlier attempt. The relay intentionally stops reading the
+	// replacement body, so its pipe error must not invalidate that fact.
+	if resp.StatusCode == http.StatusCreated && encryptErr != nil {
+		return fmt.Errorf("encrypt relay snapshot: %w", encryptErr)
+	}
+	return nil
+}
+
+func (a *Agent) RunRelayReceive(
+	ctx context.Context,
+	req protocol.StartRelayReceiveRequest,
+) (protocol.SnapshotTransferReceipt, error) {
+	if runtime.GOOS != "linux" {
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("snapshot publication is enabled only on Linux")
+	}
+	if !validUUID(req.WorkflowID) || !validUUID(req.SnapshotID) || !validUUID(req.RelayTaskID) ||
+		req.RelayDownloadToken == "" || req.TransferCapability == "" ||
+		!req.CapabilityExpires.After(time.Now().UTC()) {
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("invalid relay receive request")
+	}
+	endpoint, err := relayTransferEndpoint(req.RelayDownloadURL, req.RelayTaskID)
+	if err != nil {
+		return protocol.SnapshotTransferReceipt{}, err
+	}
+	transfer, err := a.relayTransfer(req.SnapshotID, req.WorkflowID, req.RelayTaskID)
+	if err != nil || !transfer.ExpiresAt.Equal(req.CapabilityExpires) {
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("relay transfer state mismatch")
+	}
+	resp, err := pullRelayCiphertext(ctx, endpoint, req.RelayDownloadToken, req.CapabilityExpires)
+	if err != nil {
+		return protocol.SnapshotTransferReceipt{}, err
+	}
+	defer resp.Body.Close()
+	plaintextBytes, parseErr := strconv.ParseInt(resp.Header.Get("X-Plaintext-Length"), 10, 64)
+	archiveHash := resp.Header.Get("X-Archive-Sha256")
+	ciphertextDigest, cipherHashErr := hex.DecodeString(resp.Header.Get("X-Ciphertext-Sha256"))
+	expectedCiphertextBytes, sizeErr := controlcrypto.RelayCiphertextSize(plaintextBytes)
+	if parseErr != nil || plaintextBytes <= 0 || plaintextBytes > maxSnapshotBytes || sizeErr != nil ||
+		resp.ContentLength != expectedCiphertextBytes || resp.Header.Get("Content-Type") != "application/vnd.stcontrol.relay.v1" ||
+		resp.Header.Get("X-Workflow-Id") != req.WorkflowID || resp.Header.Get("X-Snapshot-Id") != req.SnapshotID ||
+		!validCapabilityHash(archiveHash) || cipherHashErr != nil || len(ciphertextDigest) != sha256.Size {
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("invalid relay ciphertext metadata")
+	}
+	ciphertextHash := sha256.New()
+	reader, writer := io.Pipe()
+	decryptDone := make(chan relayDecryptResult, 1)
+	go func() {
+		count, decryptErr := controlcrypto.DecryptRelayStream(
+			ctx, writer, io.TeeReader(resp.Body, ciphertextHash), transfer.RelayPrivateKey,
+			controlcrypto.RelayCipherContext{
+				TaskID: req.RelayTaskID, WorkflowID: req.WorkflowID, SnapshotID: req.SnapshotID,
+			},
+		)
+		_ = writer.CloseWithError(decryptErr)
+		decryptDone <- relayDecryptResult{plaintextBytes: count, err: decryptErr}
+	}()
+	receipt, receiveErr := a.ReceiveSnapshot(
+		ctx, req.WorkflowID, req.SnapshotID, req.TransferCapability, archiveHash, reader,
+	)
+	if receiveErr != nil {
+		_ = reader.CloseWithError(receiveErr)
+	}
+	decryptResult := <-decryptDone
+	if receiveErr != nil {
+		return protocol.SnapshotTransferReceipt{}, receiveErr
+	}
+	if decryptResult.err != nil || decryptResult.plaintextBytes != plaintextBytes ||
+		!hmac.Equal(ciphertextHash.Sum(nil), ciphertextDigest) {
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("relay ciphertext verification failed")
+	}
+	if err := completeRelayDownload(ctx, endpoint, req.RelayDownloadToken); err != nil {
+		return protocol.SnapshotTransferReceipt{}, err
+	}
+	return receipt, nil
+}
+
+type relayDecryptResult struct {
+	plaintextBytes int64
+	err            error
+}
+
+func pullRelayCiphertext(
+	ctx context.Context,
+	endpoint, token string,
+	expiresAt time.Time,
+) (*http.Response, error) {
+	backoff := time.Second
+	for {
+		if !expiresAt.After(time.Now().UTC()) {
+			return nil, fmt.Errorf("relay receive capability expired")
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := snapshotHTTPClient().Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			return resp, nil
+		}
+		if err == nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusTooEarly && resp.StatusCode != http.StatusServiceUnavailable {
+				return nil, fmt.Errorf("relay download returned status %d", resp.StatusCode)
+			}
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+		if backoff < 5*time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+func completeRelayDownload(ctx context.Context, endpoint, token string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/complete", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := snapshotHTTPClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("confirm relay download: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("confirm relay download returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func snapshotHTTPClient() *http.Client {
+	return &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
 }
 
 func snapshotTransferEndpoint(raw, snapshotID string) (string, error) {
@@ -598,6 +846,26 @@ func snapshotTransferEndpoint(raw, snapshotID string) (string, error) {
 	}
 	base.Path = strings.TrimRight(base.Path, "/") + "/transfer/v1/snapshots/" + snapshotID
 	return base.String(), nil
+}
+
+func relayTransferEndpoint(raw, taskID string) (string, error) {
+	endpoint, err := url.Parse(raw)
+	if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" ||
+		endpoint.Fragment != "" || !validUUID(taskID) {
+		return "", fmt.Errorf("invalid relay target")
+	}
+	host := endpoint.Hostname()
+	ip := net.ParseIP(host)
+	loopback := strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback())
+	if endpoint.Scheme != "https" && !(endpoint.Scheme == "http" && loopback) {
+		return "", fmt.Errorf("relay transfer requires HTTPS")
+	}
+	wantSuffix := "/relay/v1/transfers/" + taskID
+	if !strings.HasSuffix(strings.TrimRight(endpoint.EscapedPath(), "/"), wantSuffix) {
+		return "", fmt.Errorf("relay transfer scope mismatch")
+	}
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/")
+	return endpoint.String(), nil
 }
 
 func (a *Agent) ReceiveSnapshot(ctx context.Context, workflowID, snapshotID, token, expectedArchiveHash string, body io.Reader) (protocol.SnapshotTransferReceipt, error) {

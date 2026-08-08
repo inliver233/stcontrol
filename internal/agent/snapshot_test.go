@@ -7,7 +7,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"stcontrol/internal/config"
+	controlcrypto "stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
 )
 
@@ -139,6 +142,104 @@ func TestAgentHTTPClientRejectsRedirects(t *testing.T) {
 	}
 	if err := a.httpClient.CheckRedirect(nil, nil); err != http.ErrUseLastResponse {
 		t.Fatalf("redirect policy error=%v", err)
+	}
+}
+
+func TestRelayPreparationReplacesDirectCapabilityAndKeepsStableTargetKey(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	a, err := New(&config.AgentConfig{DataDir: dataDir, NodeID: 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte("relay-capability"))
+	transfer := pendingTransfer{
+		WorkflowID: testWorkflowID, SnapshotID: testSnapshotID, GlobalUserID: 70, TargetNodeID: 9,
+		Handle: "alice", DestinationKind: "archive", SourceNodeID: 8, ActivityEpoch: 4,
+		CapabilityHash: hex.EncodeToString(digest[:]), ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if err := a.prepareTransfer(transfer); err != nil {
+		t.Fatal(err)
+	}
+	taskID := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	publicKey, err := a.prepareRelayTransfer(transfer, taskID)
+	if err != nil || publicKey == "" {
+		t.Fatalf("publicKey=%q err=%v", publicKey, err)
+	}
+	reloaded, err := New(&config.AgentConfig{DataDir: dataDir, NodeID: 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedPublicKey, err := reloaded.prepareRelayTransfer(transfer, taskID)
+	if err != nil || replayedPublicKey != publicKey {
+		t.Fatalf("replayedPublicKey=%q err=%v", replayedPublicKey, err)
+	}
+	persisted, err := reloaded.relayTransfer(testSnapshotID, testWorkflowID, taskID)
+	if err != nil || persisted.RelayPrivateKey == "" || persisted.RelayPublicKey != publicKey {
+		t.Fatalf("persisted=%+v err=%v", persisted, err)
+	}
+}
+
+func TestSnapshotRelayUploadStreamsAuthenticatedCiphertext(t *testing.T) {
+	t.Parallel()
+	taskID := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	privateKey, publicKey, err := controlcrypto.GenerateRelayKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveData := bytes.Repeat([]byte("private-snapshot-data"), 1000)
+	archivePath := filepath.Join(t.TempDir(), "snapshot.tar.zst")
+	if err := os.WriteFile(archivePath, archiveData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archiveDigest := sha256.Sum256(archiveData)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/relay/v1/transfers/"+taskID ||
+			r.Header.Get("Authorization") != "Bearer upload-token" {
+			t.Errorf("unexpected relay request: %s %s headers=%v", r.Method, r.URL.Path, r.Header)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		var plaintext bytes.Buffer
+		if _, err := controlcrypto.DecryptRelayStream(
+			r.Context(), &plaintext, r.Body, privateKey,
+			controlcrypto.RelayCipherContext{TaskID: taskID, WorkflowID: testWorkflowID, SnapshotID: testSnapshotID},
+		); err != nil || !bytes.Equal(plaintext.Bytes(), archiveData) {
+			t.Errorf("relay body failed authentication: bytes=%d err=%v", plaintext.Len(), err)
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	a := &Agent{}
+	err = a.streamSnapshotRelay(context.Background(), protocol.StartSnapshotRequest{
+		WorkflowID: testWorkflowID, SnapshotID: testSnapshotID, RelayTaskID: taskID,
+		RelayUploadURL:   server.URL + "/relay/v1/transfers/" + taskID,
+		RelayUploadToken: "upload-token", RelayTargetKey: publicKey,
+	}, archivePath, archiveDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDirectSnapshotConnectivityFailureIsClassifiedForRelayFallback(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	archivePath := filepath.Join(t.TempDir(), "snapshot.tar.zst")
+	if err := os.WriteFile(archivePath, []byte("archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte("archive"))
+	_, err := (&Agent{}).streamSnapshot(context.Background(), protocol.StartSnapshotRequest{
+		WorkflowID: testWorkflowID, SnapshotID: testSnapshotID,
+		TargetTransferURL: server.URL, TransferCapability: "capability",
+	}, archivePath, digest)
+	if err == nil || !errors.Is(err, errSnapshotDirectUnreachable) {
+		t.Fatalf("error=%v", err)
 	}
 }
 

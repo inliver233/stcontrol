@@ -58,6 +58,7 @@ type SnapshotWorkflowExecution struct {
 	LegacyBackupJobID    int64
 	Trigger              string
 	DestinationKind      string
+	TransferMode         string
 }
 
 func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWorkflowParams) (SnapshotWorkflow, error) {
@@ -245,7 +246,7 @@ func (s *Store) GetSnapshotWorkflowExecution(ctx context.Context, workflowID str
 		  workflow.controller_generation, workflow.user_id, global_user.legacy_user_id,
 		  legacy_user.username, workflow.source_node_id, workflow.target_node_id,
 		  capability.id, capability.token_hash, capability.expires_at, capability.state,
-		  job.id,job.trigger,
+		  job.id,job.trigger,workflow.transfer_mode,
 		  COALESCE(replica.kind, CASE WHEN target.role='storage' THEN 'archive' ELSE 'hot_standby' END)
 		FROM workflows workflow
 		JOIN snapshot_manifests snapshot ON snapshot.workflow_id=workflow.id
@@ -267,7 +268,7 @@ func (s *Store) GetSnapshotWorkflowExecution(ctx context.Context, workflowID str
 			&execution.Handle, &execution.SourceNodeID, &execution.TargetNodeID,
 			&execution.CapabilityID, &execution.CapabilityHash, &execution.CapabilityExpires,
 			&execution.CapabilityState, &execution.LegacyBackupJobID, &execution.Trigger,
-			&execution.DestinationKind,
+			&execution.TransferMode, &execution.DestinationKind,
 		)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -338,7 +339,7 @@ func (s *Store) ScheduleSnapshotRetry(
 	}
 	var attempt int
 	err := s.DB.QueryRowContext(ctx, `
-		UPDATE workflows SET resume_state=state, state='retry_wait', attempt=attempt+1,
+		UPDATE workflows SET resume_state='quiescing', state='retry_wait', attempt=attempt+1,
 		  next_attempt_at=$4, error_code=$2, error_summary=$3, updated_at=$5,
 		  lease_owner=NULL, lease_until=NULL
 		WHERE id=$1 AND state NOT IN ('succeeded','cancelled','failed','retry_wait')
@@ -347,6 +348,37 @@ func (s *Store) ScheduleSnapshotRetry(
 		return 0, ErrSnapshotStateConflict
 	}
 	return attempt, err
+}
+
+// SwitchSnapshotWorkflowToRelay is a one-way durable transition. A workflow
+// can use the relay only after the direct source command has returned the
+// explicit connectivity failure code; later retries never silently switch
+// back to direct and therefore cannot create two simultaneous data planes.
+func (s *Store) SwitchSnapshotWorkflowToRelay(ctx context.Context, workflowID string, now time.Time) error {
+	if workflowID == "" {
+		return ErrInvalidSnapshotWorkflow
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	result, err := s.DB.ExecContext(ctx, `
+		UPDATE workflows workflow SET transfer_mode='relay',updated_at=$2
+		FROM controller_epochs epoch
+		WHERE workflow.id=$1 AND workflow.workflow_type='snapshot'
+		  AND workflow.transfer_mode IN ('direct','relay')
+		  AND workflow.state NOT IN ('succeeded','cancelled','failed')
+		  AND workflow.controller_generation=epoch.generation AND epoch.state='active'`, workflowID, now)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrSnapshotStateConflict
+	}
+	return nil
 }
 
 func (s *Store) ResumeSnapshotRetry(ctx context.Context, workflowID string, now time.Time) error {

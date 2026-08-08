@@ -192,6 +192,29 @@ func TestCompleteSnapshotWorkflowReplaysCommittedResult(t *testing.T) {
 	assertMockExpectations(t, mock)
 }
 
+func TestGetSnapshotWorkflowExecutionReadsDurableTransferMode(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	expires := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`SELECT workflow.id, workflow.state, workflow.attempt`).WithArgs("workflow").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"workflow_id", "state", "attempt", "snapshot_id", "activity_epoch",
+			"controller_generation", "global_user_id", "legacy_user_id", "username",
+			"source_node_id", "target_node_id", "capability_id", "token_hash",
+			"expires_at", "capability_state", "job_id", "trigger", "transfer_mode", "kind",
+		}).AddRow(
+			"workflow", "quiescing", 1, "snapshot", int64(4), int64(3), int64(70), int64(7), "alice",
+			int64(8), int64(9), "capability", make([]byte, 32), expires, "prepared", int64(11),
+			"offline", "relay", "archive",
+		))
+	execution, err := st.GetSnapshotWorkflowExecution(context.Background(), "workflow")
+	if err != nil || execution == nil || execution.TransferMode != "relay" || execution.DestinationKind != "archive" {
+		t.Fatalf("execution=%+v err=%v", execution, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
 func TestSnapshotWorkflowClaimRetryAndResume(t *testing.T) {
 	t.Parallel()
 	st, mock, closeDB := newMockStore(t)
@@ -204,12 +227,17 @@ func TestSnapshotWorkflowClaimRetryAndResume(t *testing.T) {
 	if err != nil || !claimed {
 		t.Fatalf("claimed=%v err=%v", claimed, err)
 	}
-	mock.ExpectQuery(`UPDATE workflows SET resume_state=state`).
+	mock.ExpectQuery(`UPDATE workflows SET resume_state='quiescing'`).
 		WithArgs("workflow", "network_error", "retry safely", now.Add(10*time.Second), now).
 		WillReturnRows(sqlmock.NewRows([]string{"attempt"}).AddRow(2))
 	attempt, err := st.ScheduleSnapshotRetry(context.Background(), "workflow", "network_error", "retry safely", now, 10*time.Second)
 	if err != nil || attempt != 2 {
 		t.Fatalf("attempt=%d err=%v", attempt, err)
+	}
+	mock.ExpectExec(`UPDATE workflows workflow SET transfer_mode='relay'`).WithArgs("workflow", now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := st.SwitchSnapshotWorkflowToRelay(context.Background(), "workflow", now); err != nil {
+		t.Fatal(err)
 	}
 	mock.ExpectExec(`UPDATE workflows SET state=resume_state`).WithArgs("workflow", now).
 		WillReturnResult(sqlmock.NewResult(0, 1))

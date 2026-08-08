@@ -3,8 +3,11 @@ package controller
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"testing"
 
+	"stcontrol/internal/config"
+	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
 
@@ -65,5 +68,50 @@ func TestSnapshotRetryOperationsAreAttemptScoped(t *testing.T) {
 	retry := deriveWorkflowOperationID(workflowID, fmt.Sprintf("start-source:%s:%d", capabilityID, 1))
 	if first == retry {
 		t.Fatal("snapshot retry reused a completed command operation")
+	}
+}
+
+func TestRelayBearersAreRecoverablePurposeScopedAndNeverStoredPlaintext(t *testing.T) {
+	t.Parallel()
+	key := []byte("stable-controller-secret")
+	taskID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	upload := deriveRelayBearer(key, taskID, "upload")
+	download := deriveRelayBearer(key, taskID, "download")
+	if len(upload) < 32 || upload == download || upload != deriveRelayBearer(key, taskID, "upload") {
+		t.Fatalf("upload=%q download=%q", upload, download)
+	}
+	endpoint, err := snapshotRelayEndpoint("https://relay.example/data", taskID)
+	if err != nil || !strings.HasSuffix(endpoint, "/data/relay/v1/transfers/"+taskID) {
+		t.Fatalf("endpoint=%q err=%v", endpoint, err)
+	}
+}
+
+func TestRelayFallbackRequiresExplicitConfiguration(t *testing.T) {
+	t.Parallel()
+	server := &Server{Cfg: config.DefaultController()}
+	if server.relayAvailable() {
+		t.Fatal("disabled relay was considered available")
+	}
+	server.Cfg.Relay.Listen = "127.0.0.1:9444"
+	server.Cfg.Relay.PublicURL = "http://127.0.0.1:9444"
+	if !server.relayAvailable() {
+		t.Fatal("fully configured relay was not available")
+	}
+}
+
+func TestRelayCompletionRequiresMatchingSourceAndTargetFacts(t *testing.T) {
+	t.Parallel()
+	source := &protocol.SnapshotTransferReceipt{
+		OK: true, RelayPending: true, SnapshotID: "snapshot", ManifestSHA256: "manifest",
+		ArchiveSHA256: "archive", FileCount: 2, TotalBytes: 3,
+	}
+	target := *source
+	target.RelayPending = false
+	if !matchingRelayReceipts(source, &target) {
+		t.Fatal("matching relay facts were rejected")
+	}
+	target.TotalBytes++
+	if matchingRelayReceipts(source, &target) {
+		t.Fatal("mismatched relay facts were accepted")
 	}
 }

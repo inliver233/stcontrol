@@ -33,6 +33,7 @@ type safeCommandResult struct {
 	NodeAdmin          *protocol.NodeAdminVerification     `json:"node_admin,omitempty"`
 	LocalUserProof     *protocol.VerifyLocalUserResponse   `json:"local_user_proof,omitempty"`
 	Ciphertext         string                              `json:"ciphertext,omitempty"`
+	RelayPublicKey     string                              `json:"relay_public_key,omitempty"`
 }
 
 // StartCommandLoop maintains the Agent-initiated control channel. It never
@@ -296,15 +297,23 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			(payload.DestinationKind == "restore" && a.Cfg.Role != "compute") ||
 			(payload.DestinationKind == "conflict_input" && a.Cfg.Role != "compute") ||
 			!validCapabilityHash(payload.CapabilityHash) || !payload.ExpiresAt.After(time.Now().UTC()) ||
-			payload.ExpiresAt.After(time.Now().UTC().Add(20*time.Minute)) {
+			payload.ExpiresAt.After(time.Now().UTC().Add(9*time.Hour)) {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
 		}
-		if err := a.prepareTransfer(pendingTransfer{
+		transfer := pendingTransfer{
 			WorkflowID: payload.WorkflowID, SnapshotID: payload.SnapshotID, GlobalUserID: payload.GlobalUserID,
 			TargetNodeID: a.Cfg.NodeID, Handle: payload.Handle,
 			DestinationKind: payload.DestinationKind, SourceNodeID: payload.SourceNodeID,
 			ActivityEpoch: payload.ActivityEpoch, CapabilityHash: payload.CapabilityHash, ExpiresAt: payload.ExpiresAt,
-		}); err != nil {
+		}
+		if payload.RelayTaskID != "" {
+			publicKey, err := a.prepareRelayTransfer(transfer, payload.RelayTaskID)
+			if err != nil {
+				return false, marshalSafeResult(safeCommandResult{OK: false, Code: "prepare_transfer_failed"})
+			}
+			return true, marshalSafeResult(safeCommandResult{OK: true, RelayPublicKey: publicKey})
+		}
+		if err := a.prepareTransfer(transfer); err != nil {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "prepare_transfer_failed"})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true})
@@ -315,7 +324,20 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		}
 		receipt, err := a.RunSnapshot(ctx, payload)
 		if err != nil {
+			if isSnapshotDirectUnreachable(err) {
+				return false, marshalSafeResult(safeCommandResult{OK: false, Code: "snapshot_direct_unreachable"})
+			}
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "snapshot_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, Snapshot: &receipt})
+	case "start_relay_receive":
+		var payload protocol.StartRelayReceiveRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		receipt, err := a.RunRelayReceive(ctx, payload)
+		if err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "relay_receive_failed"})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, Snapshot: &receipt})
 	case "start_restore_transfer":
