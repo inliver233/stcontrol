@@ -325,8 +325,8 @@ func (s *Store) CreateRestoreWorkflow(
 		  actor_type,actor_id,action,target_type,target_id,operation_id,
 		  controller_generation,input_digest,outcome,detail
 		) VALUES ('user',$1::text,'archive-restore','global_user',$1::text,$2,$3,$4,
-		  'scheduled',jsonb_build_object('source_node_id',$5,'target_node_id',$6,
-		    'source_snapshot_id',$7,'source_published_at',$8))`,
+		  'scheduled',jsonb_build_object('source_node_id',$5::bigint,'target_node_id',$6::bigint,
+		    'source_snapshot_id',$7::uuid,'source_published_at',$8::timestamptz))`,
 		p.GlobalUserID, p.OperationID, generation, p.RequestDigest,
 		execution.SourceNodeID, p.TargetNodeID, execution.SourceSnapshotID, execution.SourcePublishedAt); err != nil {
 		return nil, err
@@ -1015,8 +1015,8 @@ func (s *Store) CompleteRestoreWorkflow(
 		  controller_generation,input_digest,outcome,detail
 		) SELECT 'user',$1::text,'archive-restore','global_user',$1::text,$2,$3,
 		  operation.request_digest,'succeeded',jsonb_build_object(
-		    'source_node_id',$4,'target_node_id',$5,'source_snapshot_id',$6,
-		    'source_published_at',$7,'restore_snapshot_id',$8)
+		    'source_node_id',$4::bigint,'target_node_id',$5::bigint,'source_snapshot_id',$6::uuid,
+		    'source_published_at',$7::timestamptz,'restore_snapshot_id',$8::uuid)
 		  FROM restore_operations operation WHERE operation.workflow_id=$9`,
 		userID, operationID, generation, sourceNodeID, targetNodeID, sourceSnapshotID,
 		sourcePublishedAt, p.RestoreSnapshotID, p.WorkflowID)

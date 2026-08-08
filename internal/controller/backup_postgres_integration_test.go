@@ -403,6 +403,21 @@ func (h *controllerBackupCommandHarness) handleCommand(
 		return agentCommandSummary{}, false, err
 	}
 	switch lease.CommandType {
+	case "restore_user_account":
+		if nodeID != h.targetNodeID {
+			return agentCommandSummary{}, false, fmt.Errorf("restore account command leased by non-target node %d", nodeID)
+		}
+		var request protocol.RestoreUserAccountRequest
+		if err := json.Unmarshal(plaintext, &request); err != nil || request.WorkflowID == "" ||
+			request.GlobalUserID <= 0 || request.Handle == "" || request.AccountVersion <= 0 {
+			return agentCommandSummary{}, false, fmt.Errorf("decode restore account command: %w", err)
+		}
+		if request.Handle == "restore-user" &&
+			(request.PasswordHash != "restore-password-hash" || request.PasswordSalt != "restore-password-salt") {
+			return agentCommandSummary{}, false, fmt.Errorf("restore account password material was not bound to the source account")
+		}
+		return agentCommandSummary{OK: true, LocalUserID: "restored-local-" + request.Handle}, true, nil
+
 	case "prepare_snapshot_receive":
 		if nodeID != h.targetNodeID {
 			return agentCommandSummary{}, false, fmt.Errorf("prepare command leased by non-target node %d", nodeID)
@@ -464,6 +479,34 @@ func (h *controllerBackupCommandHarness) handleCommand(
 		h.receipts[request.WorkflowID] = receipt
 		h.mu.Unlock()
 		if request.Handle == "backup-lost-receipt" {
+			return agentCommandSummary{OK: false, Code: "response_lost"}, false, nil
+		}
+		return agentCommandSummary{OK: true, Snapshot: receipt}, true, nil
+
+	case "start_restore_transfer":
+		if nodeID != h.sourceNodeID {
+			return agentCommandSummary{}, false, fmt.Errorf("restore transfer command leased by non-source node %d", nodeID)
+		}
+		var request protocol.StartRestoreTransferRequest
+		if err := json.Unmarshal(plaintext, &request); err != nil || request.WorkflowID == "" ||
+			request.SourceSnapshotID == "" || request.RestoreSnapshotID == "" ||
+			request.TargetNodeID != h.targetNodeID || request.TransferCapability == "" {
+			return agentCommandSummary{}, false, fmt.Errorf("decode restore transfer command: %w", err)
+		}
+		now := time.Now().UTC()
+		for index, state := range []string{"verifying", "publishing"} {
+			if err := h.store.SetSnapshotWorkflowProgress(
+				h.ctx, request.WorkflowID, request.RestoreSnapshotID, h.targetNodeID,
+				state, now.Add(time.Duration(index)*time.Millisecond),
+			); err != nil {
+				return agentCommandSummary{}, false, fmt.Errorf("persist restore %s progress: %w", state, err)
+			}
+		}
+		receipt := controllerBackupSnapshotReceipt(request.RestoreSnapshotID, false)
+		h.mu.Lock()
+		h.receipts[request.WorkflowID] = receipt
+		h.mu.Unlock()
+		if request.Handle == "restore-user" {
 			return agentCommandSummary{OK: false, Code: "response_lost"}, false, nil
 		}
 		return agentCommandSummary{OK: true, Snapshot: receipt}, true, nil
