@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -26,9 +27,9 @@ const controllerBackupPostgresDSNEnv = "STCONTROL_TEST_POSTGRES_DSN"
 
 // TestControllerSnapshotWorkflowThroughDurableAgentCommands exercises the
 // Controller backup orchestration without bypassing the durable Agent command
-// queue. The opt-in real PostgreSQL path covers normal completion, a lost
-// source response after target publication, and a retry resumed by a new
-// Controller worker.
+// queue. The opt-in real PostgreSQL path covers normal completion, lost source
+// responses after target publication, a retry resumed by a new Controller
+// worker, and the one-way direct-to-encrypted-relay fallback.
 func TestControllerSnapshotWorkflowThroughDurableAgentCommands(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Controller backup PostgreSQL integration is disabled in short mode")
@@ -63,6 +64,10 @@ func TestControllerSnapshotWorkflowThroughDurableAgentCommands(t *testing.T) {
 	t.Cleanup(harness.stop)
 	cfg := config.DefaultController()
 	cfg.Backup.RetryMax = 3
+	cfg.Relay.Listen = "127.0.0.1:9443"
+	cfg.Relay.PublicURL = "https://relay.example.test"
+	cfg.Relay.MaxBytes = 16 << 20
+	cfg.Relay.RetentionMin = 30
 	server := New(cfg, st, secretKey)
 
 	t.Run("normal publish is atomic and replay is idempotent", func(t *testing.T) {
@@ -166,8 +171,116 @@ func TestControllerSnapshotWorkflowThroughDurableAgentCommands(t *testing.T) {
 		}
 	})
 
+	t.Run("direct unreachable switches once to encrypted relay", func(t *testing.T) {
+		assertControllerRelaySnapshot(
+			t, ctx, st, cfg, secretKey, server, source, target,
+			"backup-relay-normal", false,
+		)
+	})
+
+	t.Run("relay publish survives lost source result", func(t *testing.T) {
+		assertControllerRelaySnapshot(
+			t, ctx, st, cfg, secretKey, server, source, target,
+			"backup-relay-lost", true,
+		)
+	})
+
 	if errs := harness.errors(); len(errs) > 0 {
 		t.Fatalf("durable Agent command harness errors: %v", errs)
+	}
+}
+
+func assertControllerRelaySnapshot(
+	t *testing.T,
+	ctx context.Context,
+	st *store.Store,
+	cfg *config.ControllerConfig,
+	secretKey []byte,
+	server *Server,
+	source, target *store.Node,
+	handle string,
+	lostSourceResult bool,
+) {
+	t.Helper()
+	user := createControllerBackupUser(t, ctx, st, source.ID, handle)
+	if err := server.TriggerUserBackup(ctx, user.ID, source.ID, "offline"); err == nil {
+		t.Fatal("direct snapshot connectivity failure did not enter relay retry")
+	}
+	workflowID := controllerBackupWorkflowID(t, ctx, st, user.GlobalID)
+	execution, err := st.GetSnapshotWorkflowExecution(ctx, workflowID)
+	if err != nil || execution == nil || execution.State != "retry_wait" ||
+		execution.TransferMode != "relay" || execution.Attempt != 1 {
+		t.Fatalf("direct-to-relay transition: execution=%+v err=%v", execution, err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE workflows SET next_attempt_at=now()-interval '1 second' WHERE id=$1`, workflowID); err != nil {
+		t.Fatalf("advance relay retry: %v", err)
+	}
+
+	restarted := New(cfg, st, secretKey)
+	if restarted.workflowWorkerID == server.workflowWorkerID {
+		t.Fatal("relay retry reused Controller worker identity")
+	}
+	if err := restarted.executeSnapshotWorkflow(ctx, workflowID); err != nil {
+		t.Fatalf("resume encrypted relay workflow: %v", err)
+	}
+	assertControllerBackupPublished(t, ctx, st, workflowID, user.GlobalID, target.ID)
+	execution, err = st.GetSnapshotWorkflowExecution(ctx, workflowID)
+	if err != nil || execution == nil || execution.Attempt != 1 || execution.TransferMode != "relay" {
+		t.Fatalf("completed relay execution: execution=%+v err=%v", execution, err)
+	}
+
+	relayTaskID := deriveWorkflowOperationID(workflowID, "relay-task:1")
+	directOperationID := deriveWorkflowOperationID(
+		workflowID, fmt.Sprintf("start-source:%s:%d", execution.CapabilityID, 0),
+	)
+	sourceOperationID := deriveWorkflowOperationID(
+		workflowID, fmt.Sprintf("start-relay-source:%s:%d", relayTaskID, 1),
+	)
+	receiverOperationID := deriveWorkflowOperationID(
+		workflowID, fmt.Sprintf("receive-relay:%s:%d", relayTaskID, 1),
+	)
+	receiptOperationID := deriveWorkflowOperationID(
+		workflowID, fmt.Sprintf("target-receipt:%s:%d", execution.CapabilityID, 1),
+	)
+
+	var relayState, storagePath, sourceState, receiverState string
+	var uploadHashBytes, downloadHashBytes, archiveHashBytes, ciphertextHashBytes int
+	var directFailures, receiptSuccesses int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT state,storage_path,octet_length(upload_token_hash),octet_length(download_token_hash),
+		       octet_length(archive_sha256),octet_length(ciphertext_sha256)
+		FROM relay_transfers WHERE id=$1`, relayTaskID).Scan(
+		&relayState, &storagePath, &uploadHashBytes, &downloadHashBytes,
+		&archiveHashBytes, &ciphertextHashBytes,
+	); err != nil {
+		t.Fatalf("query encrypted relay facts: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT source.state,receiver.state,
+		       (SELECT count(*) FROM agent_commands WHERE operation_id=$3 AND state='failed'),
+		       (SELECT count(*) FROM agent_commands WHERE operation_id=$4 AND state='succeeded')
+		FROM agent_commands source CROSS JOIN agent_commands receiver
+		WHERE source.operation_id=$1 AND receiver.operation_id=$2`,
+		sourceOperationID, receiverOperationID, directOperationID, receiptOperationID).Scan(
+		&sourceState, &receiverState, &directFailures, &receiptSuccesses,
+	); err != nil {
+		t.Fatalf("query encrypted relay command history: %v", err)
+	}
+	wantSourceState := "succeeded"
+	wantReceiptSuccesses := 0
+	if lostSourceResult {
+		wantSourceState = "failed"
+		wantReceiptSuccesses = 1
+	}
+	if relayState != "consumed" || storagePath != "relay-spool/"+relayTaskID+".bin" ||
+		uploadHashBytes != sha256.Size || downloadHashBytes != sha256.Size ||
+		archiveHashBytes != sha256.Size || ciphertextHashBytes != sha256.Size ||
+		directFailures != 1 || sourceState != wantSourceState || receiverState != "succeeded" ||
+		receiptSuccesses != wantReceiptSuccesses {
+		t.Fatalf("relay convergence: relay=%s path=%q hashes=%d/%d/%d/%d direct_failures=%d source=%s receiver=%s receipt=%d",
+			relayState, storagePath, uploadHashBytes, downloadHashBytes, archiveHashBytes,
+			ciphertextHashBytes, directFailures, sourceState, receiverState, receiptSuccesses)
 	}
 }
 
@@ -307,7 +420,11 @@ func (h *controllerBackupCommandHarness) handleCommand(
 		if fail {
 			return agentCommandSummary{OK: false, Code: "target_prepare_failed"}, false, nil
 		}
-		return agentCommandSummary{OK: true}, true, nil
+		summary := agentCommandSummary{OK: true}
+		if request.RelayTaskID != "" {
+			summary.RelayPublicKey = "controller-backup-test-x25519-public-key"
+		}
+		return summary, true, nil
 
 	case "start_snapshot":
 		if nodeID != h.sourceNodeID {
@@ -316,6 +433,12 @@ func (h *controllerBackupCommandHarness) handleCommand(
 		var request protocol.StartSnapshotRequest
 		if err := json.Unmarshal(plaintext, &request); err != nil || request.WorkflowID == "" || request.SnapshotID == "" {
 			return agentCommandSummary{}, false, fmt.Errorf("decode start snapshot command: %w", err)
+		}
+		if controllerBackupRelayHandle(request.Handle) && request.TransferMode == "" {
+			return agentCommandSummary{OK: false, Code: "snapshot_direct_unreachable"}, false, nil
+		}
+		if request.TransferMode == "relay" {
+			return h.handleRelaySource(request)
 		}
 		progress := []struct {
 			nodeID int64
@@ -336,14 +459,7 @@ func (h *controllerBackupCommandHarness) handleCommand(
 				return agentCommandSummary{}, false, fmt.Errorf("persist %s progress: %w", step.state, err)
 			}
 		}
-		manifestDigest := sha256.Sum256([]byte("manifest:" + request.SnapshotID))
-		archiveDigest := sha256.Sum256([]byte("archive:" + request.SnapshotID))
-		receipt := &protocol.SnapshotTransferReceipt{
-			OK: true, SnapshotID: request.SnapshotID,
-			ManifestSHA256: hex.EncodeToString(manifestDigest[:]),
-			ArchiveSHA256:  hex.EncodeToString(archiveDigest[:]),
-			FileCount:      3, TotalBytes: 4096,
-		}
+		receipt := controllerBackupSnapshotReceipt(request.SnapshotID, false)
 		h.mu.Lock()
 		h.receipts[request.WorkflowID] = receipt
 		h.mu.Unlock()
@@ -351,6 +467,17 @@ func (h *controllerBackupCommandHarness) handleCommand(
 			return agentCommandSummary{OK: false, Code: "response_lost"}, false, nil
 		}
 		return agentCommandSummary{OK: true, Snapshot: receipt}, true, nil
+
+	case "start_relay_receive":
+		if nodeID != h.targetNodeID {
+			return agentCommandSummary{}, false, fmt.Errorf("relay receive command leased by non-target node %d", nodeID)
+		}
+		var request protocol.StartRelayReceiveRequest
+		if err := json.Unmarshal(plaintext, &request); err != nil || request.WorkflowID == "" ||
+			request.SnapshotID == "" || request.RelayTaskID == "" {
+			return agentCommandSummary{}, false, fmt.Errorf("decode relay receive command: %w", err)
+		}
+		return h.handleRelayTarget(request)
 
 	case "get_snapshot_receipt":
 		if nodeID != h.targetNodeID {
@@ -373,6 +500,134 @@ func (h *controllerBackupCommandHarness) handleCommand(
 	default:
 		return agentCommandSummary{}, false, fmt.Errorf("unexpected durable Agent command %q", lease.CommandType)
 	}
+}
+
+func controllerBackupRelayHandle(handle string) bool {
+	return handle == "backup-relay-normal" || handle == "backup-relay-lost"
+}
+
+func controllerBackupSnapshotReceipt(snapshotID string, relayPending bool) *protocol.SnapshotTransferReceipt {
+	manifestDigest := sha256.Sum256([]byte("manifest:" + snapshotID))
+	archiveDigest := sha256.Sum256([]byte("archive:" + snapshotID))
+	return &protocol.SnapshotTransferReceipt{
+		OK: true, SnapshotID: snapshotID,
+		ManifestSHA256: hex.EncodeToString(manifestDigest[:]),
+		ArchiveSHA256:  hex.EncodeToString(archiveDigest[:]),
+		FileCount:      3, TotalBytes: 4096, RelayPending: relayPending,
+	}
+}
+
+func (h *controllerBackupCommandHarness) handleRelaySource(
+	request protocol.StartSnapshotRequest,
+) (agentCommandSummary, bool, error) {
+	if !controllerBackupRelayHandle(request.Handle) || request.RelayTaskID == "" ||
+		request.RelayUploadToken == "" || request.RelayTargetKey == "" {
+		return agentCommandSummary{}, false, fmt.Errorf("invalid relay source command scope")
+	}
+	now := time.Now().UTC()
+	for index, state := range []string{"drained", "snapshotting"} {
+		if err := h.store.SetSnapshotWorkflowProgress(
+			h.ctx, request.WorkflowID, request.SnapshotID, h.sourceNodeID,
+			state, now.Add(time.Duration(index)*time.Millisecond),
+		); err != nil {
+			return agentCommandSummary{}, false, fmt.Errorf("persist relay %s progress: %w", state, err)
+		}
+	}
+	uploadHash := sha256.Sum256([]byte(request.RelayUploadToken))
+	archiveDigest := sha256.Sum256([]byte("archive:" + request.SnapshotID))
+	ciphertextDigest := sha256.Sum256([]byte("ciphertext:" + request.SnapshotID))
+	if _, err := h.store.ClaimRelayUpload(
+		h.ctx, request.RelayTaskID, uploadHash[:], 4096, 4352,
+		archiveDigest[:], now.Add(2*time.Millisecond), time.Minute,
+	); err != nil {
+		return agentCommandSummary{}, false, fmt.Errorf("claim relay upload: %w", err)
+	}
+	if err := h.store.CompleteRelayUpload(
+		h.ctx, request.RelayTaskID, uploadHash[:], ciphertextDigest[:], 4352,
+		"relay-spool/"+request.RelayTaskID+".bin", now.Add(3*time.Millisecond),
+	); err != nil {
+		return agentCommandSummary{}, false, fmt.Errorf("complete relay upload: %w", err)
+	}
+	if err := h.store.SetSnapshotWorkflowProgress(
+		h.ctx, request.WorkflowID, request.SnapshotID, h.sourceNodeID,
+		"transferring", now.Add(4*time.Millisecond),
+	); err != nil {
+		return agentCommandSummary{}, false, fmt.Errorf("persist relay transferring progress: %w", err)
+	}
+	receipt := controllerBackupSnapshotReceipt(request.SnapshotID, true)
+	if request.Handle == "backup-relay-lost" {
+		deadline := time.NewTimer(3 * time.Second)
+		defer deadline.Stop()
+		for {
+			execution, err := h.store.GetSnapshotWorkflowExecution(h.ctx, request.WorkflowID)
+			if err != nil {
+				return agentCommandSummary{}, false, fmt.Errorf("wait for relay target publication: %w", err)
+			}
+			if execution != nil && (execution.State == "publishing" || execution.State == "succeeded") {
+				return agentCommandSummary{OK: false, Code: "response_lost"}, false, nil
+			}
+			select {
+			case <-h.ctx.Done():
+				return agentCommandSummary{}, false, h.ctx.Err()
+			case <-deadline.C:
+				return agentCommandSummary{}, false, fmt.Errorf("relay target did not publish before source response loss")
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+	return agentCommandSummary{OK: true, Snapshot: receipt}, true, nil
+}
+
+func (h *controllerBackupCommandHarness) handleRelayTarget(
+	request protocol.StartRelayReceiveRequest,
+) (agentCommandSummary, bool, error) {
+	downloadHash := sha256.Sum256([]byte(request.RelayDownloadToken))
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	var transfer *store.RelayTransfer
+	for {
+		var err error
+		transfer, err = h.store.ClaimRelayDownload(
+			h.ctx, request.RelayTaskID, downloadHash[:], time.Now().UTC(), time.Minute,
+		)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, store.ErrRelayTransferState) {
+			return agentCommandSummary{}, false, fmt.Errorf("claim relay download: %w", err)
+		}
+		select {
+		case <-h.ctx.Done():
+			return agentCommandSummary{}, false, h.ctx.Err()
+		case <-deadline.C:
+			return agentCommandSummary{}, false, fmt.Errorf("relay ciphertext was not stored before target timeout")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if transfer == nil || transfer.SnapshotID != request.SnapshotID ||
+		transfer.PlaintextBytes.Int64 != 4096 || transfer.CiphertextBytes.Int64 != 4352 {
+		return agentCommandSummary{}, false, fmt.Errorf("relay download facts do not match snapshot")
+	}
+	now := time.Now().UTC()
+	for index, state := range []string{"verifying", "publishing"} {
+		if err := h.store.SetSnapshotWorkflowProgress(
+			h.ctx, request.WorkflowID, request.SnapshotID, h.targetNodeID,
+			state, now.Add(time.Duration(index)*time.Millisecond),
+		); err != nil {
+			return agentCommandSummary{}, false, fmt.Errorf("persist relay %s progress: %w", state, err)
+		}
+	}
+	path, err := h.store.CompleteRelayDownload(
+		h.ctx, request.RelayTaskID, downloadHash[:], now.Add(2*time.Millisecond),
+	)
+	if err != nil || path != "relay-spool/"+request.RelayTaskID+".bin" {
+		return agentCommandSummary{}, false, fmt.Errorf("complete relay download: path=%q err=%w", path, err)
+	}
+	receipt := controllerBackupSnapshotReceipt(request.SnapshotID, false)
+	h.mu.Lock()
+	h.receipts[request.WorkflowID] = receipt
+	h.mu.Unlock()
+	return agentCommandSummary{OK: true, Snapshot: receipt}, true, nil
 }
 
 func decryptControllerBackupCommand(lease *store.AgentCommandLease, psk string) ([]byte, error) {
