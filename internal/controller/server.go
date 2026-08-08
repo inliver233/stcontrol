@@ -18,16 +18,17 @@ import (
 
 // Server 总控服务。
 type Server struct {
-	Cfg                  *config.ControllerConfig
-	Store                *store.Store
-	secretKey            []byte // 用户凭据 AES 密钥
-	workflowWorkerID     string
-	snapshotSlots        chan struct{}
-	registrationSlots    chan struct{}
-	passwordSyncMu       sync.Mutex
-	controlPlaneMu       sync.RWMutex
-	newOperationsBlocked bool
-	controlPlaneReason   string
+	Cfg                   *config.ControllerConfig
+	Store                 *store.Store
+	secretKey             []byte // 用户凭据 AES 密钥
+	workflowWorkerID      string
+	snapshotSlots         chan struct{}
+	replicaIntegritySlots chan struct{}
+	registrationSlots     chan struct{}
+	passwordSyncMu        sync.Mutex
+	controlPlaneMu        sync.RWMutex
+	newOperationsBlocked  bool
+	controlPlaneReason    string
 
 	// 节点上用户在线状态（离线备份调度用）
 	actMu    sync.Mutex
@@ -55,13 +56,14 @@ func New(cfg *config.ControllerConfig, st *store.Store, secretKey []byte) *Serve
 	workerID, _ := newUUID()
 	dummyPasswordHash, _ := controlcrypto.HashPassword("stcontrol-dummy-password-never-used")
 	return &Server{
-		Cfg:               cfg,
-		Store:             st,
-		secretKey:         secretKey,
-		workflowWorkerID:  workerID,
-		snapshotSlots:     make(chan struct{}, 4),
-		registrationSlots: make(chan struct{}, 8),
-		activity:          make(map[int64]map[string]protocol.UserStatus),
+		Cfg:                   cfg,
+		Store:                 st,
+		secretKey:             secretKey,
+		workflowWorkerID:      workerID,
+		snapshotSlots:         make(chan struct{}, 4),
+		replicaIntegritySlots: make(chan struct{}, 2),
+		registrationSlots:     make(chan struct{}, 8),
+		activity:              make(map[int64]map[string]protocol.UserStatus),
 		oauthHTTP: &http.Client{
 			Timeout: 15 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -129,6 +131,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.backupScheduler(ctx)
 	go s.sessionJanitor(ctx)
 	go s.snapshotWorkflowReconciler(ctx)
+	go s.replicaIntegrityReconciler(ctx)
 	go s.restoreWorkflowReconciler(ctx)
 	go s.conflictEvidenceReconciler(ctx)
 	go s.conflictResolutionReconciler(ctx)

@@ -677,7 +677,18 @@ func (s *Store) CompleteSnapshotWorkflow(ctx context.Context, p CompleteSnapshot
 		  snapshot_id=EXCLUDED.snapshot_id, replica_kind=EXCLUDED.replica_kind,
 		  state='ready', origin=EXCLUDED.origin, compatibility_state='compatible',
 		  published_at=EXCLUDED.published_at, verified_at=EXCLUDED.verified_at,
+		  integrity_state='due', integrity_operation_id=NULL,
+		  integrity_controller_generation=NULL, integrity_lease_until=NULL,
+		  integrity_attempt=0, integrity_checked_at=NULL,
+		  integrity_next_check_at=EXCLUDED.updated_at, integrity_error_code=NULL,
 		  updated_at=EXCLUDED.updated_at`, userID, p.TargetNodeID, p.SnapshotID, p.ReplicaKind, p.ReplicaOrigin, p.Now); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE alerts SET state='resolved',resolved_at=$3,last_seen_at=$3
+		WHERE deduplication_key='replica-integrity:'||(
+		  SELECT id::text FROM replica_copies WHERE user_id=$1 AND node_id=$2
+		) AND state IN ('open','acknowledged')`, userID, p.TargetNodeID, p.Now); err != nil {
 		return 0, err
 	}
 	if p.ReplicaKind == "archive" {

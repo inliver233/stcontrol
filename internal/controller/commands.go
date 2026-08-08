@@ -40,6 +40,7 @@ type agentCommandSummary struct {
 	LocalUserProof     *protocol.VerifyLocalUserResponse   `json:"local_user_proof,omitempty"`
 	Ciphertext         string                              `json:"ciphertext,omitempty"`
 	RelayPublicKey     string                              `json:"relay_public_key,omitempty"`
+	ReplicaIntegrity   *protocol.ReplicaIntegrityReceipt   `json:"replica_integrity,omitempty"`
 }
 
 type agentCommandError struct {

@@ -106,7 +106,7 @@ func (a *Agent) commandAllowed(commandType string) bool {
 func independentReconciliationCommand(commandType string) bool {
 	switch commandType {
 	case "prepare_snapshot_receive", "start_snapshot", "start_relay_receive", "get_snapshot_receipt",
-		"complete_independent_sync", "capture_conflict_evidence",
+		"verify_replica_integrity", "complete_independent_sync", "capture_conflict_evidence",
 		"read_conflict_evidence_page", "start_conflict_evidence_transfer",
 		"prepare_conflict_resolution", "apply_conflict_resolution_decisions",
 		"publish_conflict_resolution":

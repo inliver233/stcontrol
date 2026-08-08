@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -34,6 +35,7 @@ type safeCommandResult struct {
 	LocalUserProof     *protocol.VerifyLocalUserResponse   `json:"local_user_proof,omitempty"`
 	Ciphertext         string                              `json:"ciphertext,omitempty"`
 	RelayPublicKey     string                              `json:"relay_public_key,omitempty"`
+	ReplicaIntegrity   *protocol.ReplicaIntegrityReceipt   `json:"replica_integrity,omitempty"`
 }
 
 // StartCommandLoop maintains the Agent-initiated control channel. It never
@@ -363,6 +365,21 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "snapshot_receipt_unavailable"})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, Snapshot: receipt})
+	case "verify_replica_integrity":
+		var payload protocol.VerifyReplicaIntegrityRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		payload.OperationID = command.OperationID
+		receipt, err := a.VerifyReplicaIntegrity(ctx, payload)
+		if err != nil {
+			code := "replica_integrity_unavailable"
+			if errors.Is(err, errReplicaIntegrityMismatch) {
+				code = "replica_integrity_mismatch"
+			}
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: code})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, ReplicaIntegrity: &receipt})
 	case "capture_conflict_evidence":
 		var payload protocol.CaptureConflictEvidenceRequest
 		if err := json.Unmarshal(plaintext, &payload); err != nil || !validConflictEvidenceRequest(payload) {

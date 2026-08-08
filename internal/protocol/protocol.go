@@ -437,6 +437,24 @@ type SnapshotProgressRequest struct {
 	State      string `json:"state"`
 }
 
+type VerifyReplicaIntegrityRequest struct {
+	OperationID    string `json:"operation_id"`
+	SnapshotID     string `json:"snapshot_id"`
+	Handle         string `json:"handle"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	ArchiveSHA256  string `json:"archive_sha256"`
+	FileCount      int64  `json:"file_count"`
+	TotalBytes     int64  `json:"total_bytes"`
+}
+
+type ReplicaIntegrityReceipt struct {
+	SnapshotID     string `json:"snapshot_id"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	ArchiveSHA256  string `json:"archive_sha256"`
+	FileCount      int64  `json:"file_count"`
+	TotalBytes     int64  `json:"total_bytes"`
+}
+
 // ManifestEntry 单个文件的校验条目。
 type ManifestEntry struct {
 	Path   string `json:"path"`

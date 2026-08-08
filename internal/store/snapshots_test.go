@@ -142,6 +142,9 @@ func TestCompleteSnapshotWorkflowPublishesFactsAfterVerification(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO replica_copies`).
 		WithArgs(int64(70), int64(9), "snapshot", "archive", "configured", now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE alerts SET state='resolved'`).
+		WithArgs(int64(70), int64(9), now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE replica_copies SET state='stale'`).
 		WithArgs(int64(70), int64(9), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))

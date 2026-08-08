@@ -75,7 +75,7 @@ func TestIndependentDrainingCommandAllowlistIsClosed(t *testing.T) {
 	t.Parallel()
 	for _, commandType := range []string{
 		"start_snapshot", "start_relay_receive", "complete_independent_sync", "capture_conflict_evidence",
-		"publish_conflict_resolution",
+		"publish_conflict_resolution", "verify_replica_integrity",
 	} {
 		if !independentReconciliationCommand(commandType) {
 			t.Errorf("reconciliation command %q was rejected", commandType)
