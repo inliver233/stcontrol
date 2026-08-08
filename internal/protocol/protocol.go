@@ -360,6 +360,23 @@ type SetPasswordRequest struct {
 	Version      int64  `json:"version"`
 }
 
+// FreezeUserDataRequest is the complete, closed command contract for a
+// single authoritative-home data fault. It deliberately contains no path,
+// command line or release credential.
+type FreezeUserDataRequest struct {
+	OperationID   string `json:"operation_id"`
+	FaultID       string `json:"fault_id"`
+	GlobalUserID  int64  `json:"global_user_id"`
+	Handle        string `json:"handle"`
+	ActivityEpoch int64  `json:"activity_epoch"`
+}
+
+type FreezeUserDataResponse struct {
+	OK      bool `json:"ok"`
+	Frozen  bool `json:"frozen"`
+	Drained bool `json:"drained"`
+}
+
 type VerifyLocalUserRequest struct {
 	OperationID string `json:"operation_id"`
 	Handle      string `json:"handle"`

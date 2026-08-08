@@ -291,6 +291,18 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "independent_sync_completion_failed"})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true})
+	case "freeze_user_data":
+		var payload protocol.FreezeUserDataRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "compute" ||
+			!validUUID(command.OperationID) || !validUUID(payload.FaultID) || payload.GlobalUserID <= 0 ||
+			!validHandle(payload.Handle) || payload.ActivityEpoch <= 0 {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		payload.OperationID = command.OperationID
+		if err := a.freezeUserData(ctx, payload); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "user_data_freeze_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true})
 	case "check_node_admin":
 		var payload protocol.CheckNodeAdminRequest
 		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "compute" ||

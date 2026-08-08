@@ -42,7 +42,7 @@ type adapterSessionResponse struct {
 
 var requiredAdapterCapabilities = []string{
 	"account_inventory_paging", "account_restore", "activity_leases", "local_account_proof", "login_handoff", "node_admin_handoff", "node_admin_verify", "password_update", "registration_policy",
-	"snapshot_boundary", "user_provision", "write_gate", "control_mode", "independent_reconciliation",
+	"snapshot_boundary", "user_data_fault_freeze", "user_provision", "write_gate", "control_mode", "independent_reconciliation",
 }
 
 func (a *Agent) verifyLocalUser(ctx context.Context, req protocol.VerifyLocalUserRequest) (protocol.VerifyLocalUserResponse, error) {
@@ -192,6 +192,17 @@ func (a *Agent) setPassword(ctx context.Context, req *protocol.SetPasswordReques
 	}
 	if !out.OK {
 		return fmt.Errorf("node adapter rejected password update")
+	}
+	return nil
+}
+
+func (a *Agent) freezeUserData(ctx context.Context, req protocol.FreezeUserDataRequest) error {
+	var out protocol.FreezeUserDataResponse
+	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/data-faults/freeze", req, &out); err != nil {
+		return err
+	}
+	if !out.OK || !out.Frozen || !out.Drained {
+		return fmt.Errorf("node adapter did not drain the user data fault gate")
 	}
 	return nil
 }
