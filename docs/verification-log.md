@@ -249,3 +249,15 @@
 - 单元测试覆盖 compute/storage 捕获、archive digest 绑定、加密分页无路径泄露、证据篡改重放拒绝、隐藏目录不进入用户遥测、任务 list/claim/retry/terminal、encrypted pages 原子完成/读取、持久页二次解密校验和不同路径/同路径差异分类。
 - `go test ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`、`web/npm run build` 与 `git diff --check`：通过。`go test -coverprofile=coverage/conflict_evidence.coverprofile ./...`：通过，总覆盖率 `44.4%`（Agent `51.4%`、Controller `26.0%`、Store `60.8%`），仍低于最终 80% 门禁。
 - 当前仍未实现用户来源选择、同路径决策、不同路径实际合并、双份原件保留、结果原子发布/解冻；没有可用真实 PostgreSQL/双 Agent 环境，迁移、租约竞争、重启续跑和大清单仍只有 SQL mock/单进程证据，R19/R20 保持 `部分`。
+
+## 2026-08-08：用户主导冲突有限合并与原子解冻批次
+
+- 新增 `0020_conflict_resolutions.sql`：稳定 operation/request HMAC、冲突版本、最终计算节点、结果 snapshot、逐路径决策和每来源短期传输 capability 都是 PostgreSQL 事实；长路径以 SHA-256 建索引而不把 4096-byte 路径直接放入 B-tree 主键。
+- 提交事务只接受 `awaiting_decision`、全部证据 ready、用户/旧账号仍冻结、无在途请求、active controller generation、健康 compatible 计算主节点；冲突版本、来源、逐路径 source 和用户请求摘要全部失败关闭。相同 operation 可重放，失败终态只能复用原 operation 和原冻结证据重启。
+- 非主来源通过独立数据面、15 分钟 hash-only 单次 capability 直接传到最终计算 Agent；响应丢失先查询目标持久回执，明确失败/过期才轮换 capability。Controller 只下发加密固定命令，不接收大文件，也不记录路径明文命令结果。
+- Agent 在准备阶段重新验证本地和汇集证据的 scope、entries digest 与逐文件内容。不同路径自动并入；同路径可选源。`preserve_both` 会把每个不同内容版本复制到 `conflict-preserved/<conflict>/<source>/...`，源路径和目标路径分别校验，避免把重命名后的目标路径误当源路径或覆盖用户原文件；所有结果排序、限文件数/总字节并在同文件系统原子换代。
+- PostgreSQL 只有在 Agent 返回绑定 operation/conflict/result 的回执后，才在 serializable 事务固化 immutable manifest、降级旧 conflict 副本、晋升唯一权威计算副本、更新 legacy home、结束冲突写租约、解冻用户、撤销原恢复 session 并写审计。原始 conflict evidence 和来源事实不物理删除；保护投影随后重新调和并触发纯存储保护修复。
+- 冲突页面现可选择最终计算节点、全局保守策略和逐路径来源/双份保留；分页间保存选择，稳定 operation 写入 sessionStorage，显示准备/发布/退避/失败状态，失败可从同一证据重试。未显式逐项的同路径冲突按用户确认的全局策略处理；若主来源没有该路径且其他来源彼此不同，后端强制逐项选择。
+- `go test ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`、`web/npm run build`、嵌入迁移顺序测试与 `git diff --check`：通过。
+- `go test -coverprofile=coverage/conflict_resolution.coverprofile ./...`：通过；总覆盖率 `41.3%`（Agent `48.8%`、Controller `24.7%`、Store `54.6%`）。新状态机增加的 SQL/Controller 路径尚未达到 80% 门禁。
+- 本机 Docker daemon 与 PostgreSQL 均不可用，因此 `0020` 的真实迁移、serializable 并发、双 Agent 直传、进程崩溃恢复和大清单/磁盘满仍缺运行证据；SillyTavern 写门 adapter 尚未挂载，节点退役/升级/损坏也未实现，R19/R20 仍严格保持 `部分`。

@@ -637,11 +637,16 @@ func (a *Agent) ReceiveSnapshot(ctx context.Context, workflowID, snapshotID, tok
 		_ = a.finishTransfer(snapshotID, "failed")
 		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("snapshot archive digest mismatch")
 	}
-	if err := a.reportSnapshotProgress(ctx, workflowID, snapshotID, "verifying"); err != nil {
-		_ = a.finishTransfer(snapshotID, "failed")
-		return protocol.SnapshotTransferReceipt{}, err
+	if transfer.DestinationKind != "conflict_input" {
+		if err := a.reportSnapshotProgress(ctx, workflowID, snapshotID, "verifying"); err != nil {
+			_ = a.finishTransfer(snapshotID, "failed")
+			return protocol.SnapshotTransferReceipt{}, err
+		}
 	}
 	receipt, err := extractVerifyAndPublish(ctx, archivePath, taskRoot, finalPath, transfer, archiveDigest, func() error {
+		if transfer.DestinationKind == "conflict_input" {
+			return nil
+		}
 		return a.reportSnapshotProgress(ctx, workflowID, snapshotID, "publishing")
 	})
 	if err != nil {
@@ -665,6 +670,9 @@ func (a *Agent) targetSnapshotPaths(transfer pendingTransfer) (taskRoot, finalPa
 	} else if transfer.DestinationKind == "hot_standby" || transfer.DestinationKind == "restore" {
 		root = a.dataRoot()
 		finalPath = filepath.Join(root, transfer.Handle)
+	} else if transfer.DestinationKind == "conflict_input" {
+		root = a.dataRoot()
+		finalPath = filepath.Join(root, ".stcontrol-conflict-inputs", transfer.WorkflowID, transfer.SnapshotID)
 	} else {
 		return "", "", fmt.Errorf("invalid destination kind")
 	}
@@ -787,7 +795,7 @@ func extractVerifyAndPublish(
 		ManifestSHA256: hex.EncodeToString(manifestDigest[:]), ArchiveSHA256: hex.EncodeToString(archiveDigest),
 		FileCount: int64(len(manifest.Files)), TotalBytes: declaredTotal,
 	}
-	if transfer.DestinationKind == "archive" {
+	if transfer.DestinationKind == "archive" || transfer.DestinationKind == "conflict_input" {
 		if err := writeArchiveReplicaMetadata(staging, manifest, receipt); err != nil {
 			return protocol.SnapshotTransferReceipt{}, err
 		}

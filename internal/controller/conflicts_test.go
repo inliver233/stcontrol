@@ -199,3 +199,37 @@ func TestConflictSessionCanOnlyReachConflictRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestValidateConflictResolutionChoicesRequiresExplicitSourceWhenBaseMissing(t *testing.T) {
+	t.Parallel()
+	conflict := &store.ReplicaConflict{
+		ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		Sources: []store.ReplicaConflictSource{
+			{NodeID: 8, NodeRole: "compute"},
+			{NodeID: 9, NodeRole: "compute"},
+			{NodeID: 10, NodeRole: "storage"},
+		},
+	}
+	entries := map[int64]map[string]protocol.ManifestEntry{
+		8:  {"only-base.txt": {Path: "only-base.txt", Size: 1, SHA256: strings.Repeat("1", 64)}},
+		9:  {"same.json": {Path: "same.json", Size: 2, SHA256: strings.Repeat("2", 64)}},
+		10: {"same.json": {Path: "same.json", Size: 3, SHA256: strings.Repeat("3", 64)}},
+	}
+	req := startConflictResolutionRequest{BaseNodeID: 8, DefaultAction: "preserve_all_originals"}
+	if _, err := validateConflictResolutionChoices(conflict, entries, req); err == nil {
+		t.Fatal("missing explicit choice for a conflict absent from the base was accepted")
+	}
+	req.Decisions = []conflictResolutionDecisionRequest{
+		{Path: "same.json", SourceNodeID: 9, Action: "preserve_both"},
+	}
+	decisions, err := validateConflictResolutionChoices(conflict, entries, req)
+	if err != nil || len(decisions) != 1 || decisions[0].SourceNodeID != 9 {
+		t.Fatalf("decisions=%+v err=%v", decisions, err)
+	}
+	req.Decisions = []conflictResolutionDecisionRequest{
+		{Path: "only-base.txt", SourceNodeID: 8, Action: "use_source"},
+	}
+	if _, err := validateConflictResolutionChoices(conflict, entries, req); err == nil {
+		t.Fatal("decision for a disjoint path was accepted")
+	}
+}

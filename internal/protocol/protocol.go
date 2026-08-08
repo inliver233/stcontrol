@@ -341,6 +341,62 @@ type ConflictEvidencePage struct {
 	Entries    []ManifestEntry `json:"entries"`
 }
 
+type StartConflictEvidenceTransferRequest struct {
+	ConflictID         string    `json:"conflict_id"`
+	EvidenceID         string    `json:"evidence_id"`
+	GlobalUserID       int64     `json:"global_user_id"`
+	Handle             string    `json:"handle"`
+	TargetNodeID       int64     `json:"target_node_id"`
+	TargetTransferURL  string    `json:"target_transfer_url"`
+	TransferCapability string    `json:"transfer_capability"`
+	CapabilityExpires  time.Time `json:"capability_expires"`
+}
+
+type ConflictResolutionSource struct {
+	NodeID        int64  `json:"node_id"`
+	EvidenceID    string `json:"evidence_id"`
+	EntriesSHA256 string `json:"entries_sha256"`
+}
+
+type PrepareConflictResolutionRequest struct {
+	OperationID       string                     `json:"operation_id"`
+	ConflictID        string                     `json:"conflict_id"`
+	ResultID          string                     `json:"result_id"`
+	GlobalUserID      int64                      `json:"global_user_id"`
+	Handle            string                     `json:"handle"`
+	BaseNodeID        int64                      `json:"base_node_id"`
+	DefaultAction     string                     `json:"default_action"`
+	DecisionPageCount int                        `json:"decision_page_count"`
+	DecisionCount     int                        `json:"decision_count"`
+	Sources           []ConflictResolutionSource `json:"sources"`
+}
+
+type ConflictResolutionDecision struct {
+	Path         string `json:"path"`
+	SourceNodeID int64  `json:"source_node_id"`
+	Action       string `json:"action"`
+}
+
+type ApplyConflictResolutionDecisionsRequest struct {
+	OperationID string                       `json:"operation_id"`
+	PageIndex   int                          `json:"page_index"`
+	Decisions   []ConflictResolutionDecision `json:"decisions"`
+}
+
+type PublishConflictResolutionRequest struct {
+	OperationID string `json:"operation_id"`
+}
+
+type ConflictResolutionReceipt struct {
+	OperationID      string `json:"operation_id"`
+	ConflictID       string `json:"conflict_id"`
+	ResultID         string `json:"result_id"`
+	EntriesSHA256    string `json:"entries_sha256"`
+	FileCount        int64  `json:"file_count"`
+	TotalBytes       int64  `json:"total_bytes"`
+	PreservedSources int    `json:"preserved_sources"`
+}
+
 // ---------- HMAC 签名 ----------
 
 // bodyHash 计算请求体的 SHA256 hex。

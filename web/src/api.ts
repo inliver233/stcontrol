@@ -144,6 +144,20 @@ export interface ConflictDifferences {
   files: ConflictDifference[]
 }
 
+export interface ConflictResolutionDecision {
+  path: string
+  source_node_id: number
+  action: 'use_source' | 'preserve_both'
+}
+
+export interface ConflictResolutionStatus {
+  operation_id: string
+  state: 'preparing' | 'publishing' | 'retrying' | 'failed' | 'succeeded'
+  base_node_id: number
+  base_node_name: string
+  error?: string
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
 	const method = (options?.method || 'GET').toUpperCase()
 	const headers = new Headers(options?.headers)
@@ -197,6 +211,20 @@ export const api = {
   conflict: () => request<ReplicaConflict>('/api/conflicts/me'),
   conflictDifferences: (offset = 0, limit = 50) =>
     request<ConflictDifferences>(`/api/conflicts/me/differences?offset=${offset}&limit=${limit}`),
+  startConflictResolution: (body: {
+    operation_id: string
+    expected_conflict_version: number
+    base_node_id: number
+    default_action: 'use_base' | 'preserve_all_originals'
+    acknowledge_freeze: boolean
+    decisions: ConflictResolutionDecision[]
+  }) => request<ConflictResolutionStatus>('/api/conflicts/me/resolutions', {
+    method: 'POST', body: JSON.stringify(body),
+  }),
+  conflictResolutionStatus: (operation_id: string) =>
+    request<ConflictResolutionStatus>(`/api/conflicts/me/resolutions/${encodeURIComponent(operation_id)}`),
+  retryConflictResolution: (operation_id: string) =>
+    request<ConflictResolutionStatus>(`/api/conflicts/me/resolutions/${encodeURIComponent(operation_id)}/retry`, { method: 'POST' }),
   conflictLogout: () => request<{ ok: boolean }>('/api/conflicts/auth/logout', { method: 'POST' }),
 
   // 节点

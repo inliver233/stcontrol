@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api, ConflictDifferences, ReplicaConflict } from '../api'
+import { api, ConflictDifferences, ConflictResolutionDecision, ConflictResolutionStatus, ReplicaConflict } from '../api'
 
 const pageSize = 50
 
@@ -33,12 +33,19 @@ export default function ConflictPage() {
   const [offset, setOffset] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [baseNodeID, setBaseNodeID] = useState(0)
+  const [defaultAction, setDefaultAction] = useState<'use_base' | 'preserve_all_originals'>('preserve_all_originals')
+  const [decisions, setDecisions] = useState<Record<string, ConflictResolutionDecision>>({})
+  const [resolution, setResolution] = useState<ConflictResolutionStatus | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const operationID = useRef<string>(crypto.randomUUID())
   const navigate = useNavigate()
 
   const loadConflict = useCallback(async () => {
     try {
       const current = await api.conflict()
       setConflict(current)
+      setBaseNodeID(previous => previous || current.sources.find(source => source.is_authoritative && source.node_role === 'compute')?.node_id || current.sources.find(source => source.node_role === 'compute')?.node_id || 0)
       setError('')
     } catch (err: any) {
       setError(err.message)
@@ -63,6 +70,89 @@ export default function ConflictPage() {
 	  .then(page => { setDifferences(page); setError('') })
 	  .catch((err: any) => setError(err.message))
   }, [conflict?.id, conflict?.inspection_state, offset])
+
+  useEffect(() => {
+    if (!conflict?.id || resolution) return
+    const key = `stcontrol_conflict_resolution:${conflict.id}`
+    const savedOperation = window.sessionStorage.getItem(key)
+    if (!savedOperation) return
+    operationID.current = savedOperation
+    void api.conflictResolutionStatus(savedOperation)
+      .then(setResolution)
+      .catch(() => window.sessionStorage.removeItem(key))
+  }, [conflict?.id, resolution])
+
+  useEffect(() => {
+    if (!differences) return
+    setDecisions(previous => {
+      const next = { ...previous }
+      for (const file of differences.files) {
+        if (file.difference !== 'different_at_same_path' || next[file.path]) continue
+        const basePresent = file.sources.some(source => source.node_id === baseNodeID && source.present)
+        if (!basePresent) {
+          const fallback = file.sources.find(source => source.present)
+          if (fallback) next[file.path] = { path: file.path, source_node_id: fallback.node_id, action: 'use_source' }
+        }
+      }
+      return next
+    })
+  }, [baseNodeID, differences])
+
+  useEffect(() => {
+    if (!resolution || resolution.state === 'failed' || resolution.state === 'succeeded') return
+    const timer = window.setInterval(() => {
+      void api.conflictResolutionStatus(resolution.operation_id)
+        .then(setResolution)
+        .catch(() => {
+          window.clearInterval(timer)
+          navigate('/login', { replace: true, state: { message: '冲突处理已完成，请重新登录。' } })
+        })
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [navigate, resolution])
+
+  const updateDecision = (path: string, sourceNodeID: number, preserveBoth: boolean) => {
+    setDecisions(previous => ({
+      ...previous,
+      [path]: { path, source_node_id: sourceNodeID, action: preserveBoth ? 'preserve_both' : 'use_source' },
+    }))
+  }
+
+  const submitResolution = async () => {
+    if (!conflict || baseNodeID <= 0) return
+    if (!window.confirm('确认后系统会继续冻结写入，先保留全部原始证据，再在所选计算节点原子发布结果。是否继续？')) return
+    setSubmitting(true)
+    setError('')
+    try {
+      const status = await api.startConflictResolution({
+        operation_id: operationID.current,
+        expected_conflict_version: conflict.version,
+        base_node_id: baseNodeID,
+        default_action: defaultAction,
+        acknowledge_freeze: true,
+        decisions: Object.values(decisions).sort((left, right) => left.path.localeCompare(right.path)),
+      })
+      window.sessionStorage.setItem(`stcontrol_conflict_resolution:${conflict.id}`, operationID.current)
+      setResolution(status)
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const retryResolution = async () => {
+    if (!resolution) return
+    setSubmitting(true)
+    setError('')
+    try {
+      setResolution(await api.retryConflictResolution(resolution.operation_id))
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   const logout = async () => {
 	try {
@@ -109,6 +199,21 @@ export default function ConflictPage() {
           {conflict.inspection_state === 'evidence_failed' && <div className="error-msg">至少一个节点无法生成可信证据。系统保持冻结，不会用不完整结果继续。</div>}
           {conflict.inspection_state === 'identical' && <div className="success-msg">各来源的文件路径、大小和内容摘要一致，没有检测到文件差异。</div>}
 
+          {(conflict.inspection_state === 'differences_ready' || conflict.inspection_state === 'identical') && !resolution && <div className="conflict-resolution-panel">
+            <div className="section-title">选择最终主版本</div>
+            <label>最终写入节点</label>
+            <select value={baseNodeID} onChange={event => setBaseNodeID(Number(event.target.value))}>
+              {conflict.sources.filter(source => source.node_role === 'compute').map(source =>
+                <option value={source.node_id} key={source.node_id}>{source.node_name}{source.is_authoritative ? '（检测时家节点）' : ''}</option>)}
+            </select>
+            <label>未逐项指定的同路径冲突</label>
+            <select value={defaultAction} onChange={event => setDefaultAction(event.target.value as 'use_base' | 'preserve_all_originals')}>
+              <option value="preserve_all_originals">以主版本为准，并把其他不同内容另存（推荐）</option>
+              <option value="use_base">仅使用主版本</option>
+            </select>
+            <small>不同路径会自动并入。原始冻结证据不会因完成处理而立即删除。</small>
+          </div>}
+
           {differences && differences.total > 0 && <>
             <div className="section-title">可理解差异</div>
             <div className="warning-msg">
@@ -120,7 +225,7 @@ export default function ConflictPage() {
             </div>
             <div className="conflict-table-wrap">
               <table className="table conflict-table">
-                <thead><tr><th>路径</th><th>类型</th><th>差异</th><th>来源</th></tr></thead>
+                <thead><tr><th>路径</th><th>类型</th><th>差异</th><th>来源</th><th>处理</th></tr></thead>
                 <tbody>{differences.files.map(file => <tr key={file.path}>
                   <td className="mono conflict-path">{file.path}</td>
                   <td>{categoryLabel[file.category] || file.category}</td>
@@ -128,6 +233,22 @@ export default function ConflictPage() {
                   <td>{file.sources.map(source => <div key={source.node_id}>
                     {source.node_name}：{source.present ? formatBytes(source.size) : '不存在'}
                   </div>)}</td>
+                  <td>{file.difference === 'different_at_same_path' ? <div className="conflict-choice">
+                    <select
+                      aria-label={`${file.path} 主来源`}
+                      value={decisions[file.path]?.source_node_id || (file.sources.some(source => source.node_id === baseNodeID && source.present) ? baseNodeID : file.sources.find(source => source.present)?.node_id || 0)}
+                      onChange={event => updateDecision(file.path, Number(event.target.value), decisions[file.path]?.action === 'preserve_both')}
+                    >
+                      {file.sources.filter(source => source.present).map(source => <option value={source.node_id} key={source.node_id}>{source.node_name}</option>)}
+                    </select>
+                    <label className="inline-check">
+                      <input type="checkbox" checked={decisions[file.path]?.action === 'preserve_both'} onChange={event => {
+                        const selected = decisions[file.path]?.source_node_id || (file.sources.some(source => source.node_id === baseNodeID && source.present) ? baseNodeID : file.sources.find(source => source.present)?.node_id || 0)
+                        updateDecision(file.path, selected, event.target.checked)
+                      }} /> 保留其他不同内容
+                    </label>
+                    {!decisions[file.path] && <small>当前沿用上方默认策略</small>}
+                  </div> : '自动并入'}</td>
                 </tr>)}</tbody>
               </table>
             </div>
@@ -137,6 +258,19 @@ export default function ConflictPage() {
               <button className="btn-sm" disabled={offset + pageSize >= differences.total} onClick={() => setOffset(offset + pageSize)}>下一页</button>
             </div>
           </>}
+          {!resolution && (conflict.inspection_state === 'differences_ready' || conflict.inspection_state === 'identical') && <button className="btn primary conflict-submit" disabled={submitting || baseNodeID <= 0} onClick={submitResolution}>
+            {submitting ? '正在安全排队…' : '确认选择并开始处理'}
+          </button>}
+          {resolution && <div className={resolution.state === 'failed' ? 'error-msg' : 'warning-msg'}>
+            {resolution.state === 'preparing' && '正在把所有不可变原始证据汇集到主计算节点…'}
+            {resolution.state === 'publishing' && '正在逐文件校验并原子发布结果…'}
+            {resolution.state === 'retrying' && '节点暂时不可用，系统正在使用原任务自动重试…'}
+            {resolution.state === 'failed' && `自动处理未能收敛：${resolution.error || '原始证据仍保持冻结，请稍后重试。'}`}
+            {resolution.state === 'succeeded' && '冲突已处理完成。请重新登录。'}
+          </div>}
+          {resolution?.state === 'failed' && <button className="btn primary conflict-submit" disabled={submitting} onClick={retryResolution}>
+            {submitting ? '正在重新排队…' : '使用原始冻结证据重试'}
+          </button>}
           <button className="btn secondary conflict-logout" onClick={logout}>退出冲突恢复</button>
         </>}
       </div>

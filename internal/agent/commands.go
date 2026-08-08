@@ -23,13 +23,14 @@ type encryptedCommandEnvelope struct {
 }
 
 type safeCommandResult struct {
-	OK               bool                              `json:"ok"`
-	Code             string                            `json:"code,omitempty"`
-	LocalUserID      string                            `json:"local_user_id,omitempty"`
-	Users            []protocol.ScanExistingUser       `json:"users,omitempty"`
-	Snapshot         *protocol.SnapshotTransferReceipt `json:"snapshot,omitempty"`
-	ConflictEvidence *protocol.ConflictEvidenceReceipt `json:"conflict_evidence,omitempty"`
-	Ciphertext       string                            `json:"ciphertext,omitempty"`
+	OK                 bool                                `json:"ok"`
+	Code               string                              `json:"code,omitempty"`
+	LocalUserID        string                              `json:"local_user_id,omitempty"`
+	Users              []protocol.ScanExistingUser         `json:"users,omitempty"`
+	Snapshot           *protocol.SnapshotTransferReceipt   `json:"snapshot,omitempty"`
+	ConflictEvidence   *protocol.ConflictEvidenceReceipt   `json:"conflict_evidence,omitempty"`
+	ConflictResolution *protocol.ConflictResolutionReceipt `json:"conflict_resolution,omitempty"`
+	Ciphertext         string                              `json:"ciphertext,omitempty"`
 }
 
 // StartCommandLoop maintains the Agent-initiated control channel. It never
@@ -220,8 +221,9 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		var payload protocol.PrepareSnapshotReceiveRequest
 		if err := json.Unmarshal(plaintext, &payload); err != nil || !validUUID(payload.WorkflowID) ||
 			!validUUID(payload.SnapshotID) || payload.GlobalUserID <= 0 || !validHandle(payload.Handle) || payload.SourceNodeID <= 0 ||
-			payload.ActivityEpoch <= 0 || (payload.DestinationKind != "archive" && payload.DestinationKind != "hot_standby" && payload.DestinationKind != "restore") ||
+			payload.ActivityEpoch <= 0 || (payload.DestinationKind != "archive" && payload.DestinationKind != "hot_standby" && payload.DestinationKind != "restore" && payload.DestinationKind != "conflict_input") ||
 			(payload.DestinationKind == "restore" && a.Cfg.Role != "compute") ||
+			(payload.DestinationKind == "conflict_input" && a.Cfg.Role != "compute") ||
 			!validCapabilityHash(payload.CapabilityHash) || !payload.ExpiresAt.After(time.Now().UTC()) ||
 			payload.ExpiresAt.After(time.Now().UTC().Add(20*time.Minute)) {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
@@ -288,6 +290,44 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "conflict_evidence_page_failed"})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, Ciphertext: ciphertext})
+	case "start_conflict_evidence_transfer":
+		var payload protocol.StartConflictEvidenceTransferRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		receipt, err := a.RunConflictEvidenceTransfer(ctx, payload)
+		if err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "conflict_evidence_transfer_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, Snapshot: &receipt})
+	case "prepare_conflict_resolution":
+		var payload protocol.PrepareConflictResolutionRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "compute" {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		if err := a.prepareConflictResolution(ctx, payload); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "conflict_resolution_prepare_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true})
+	case "apply_conflict_resolution_decisions":
+		var payload protocol.ApplyConflictResolutionDecisionsRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "compute" {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		if err := a.applyConflictResolutionDecisions(payload); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "conflict_resolution_decisions_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true})
+	case "publish_conflict_resolution":
+		var payload protocol.PublishConflictResolutionRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "compute" {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		receipt, err := a.publishConflictResolution(ctx, payload.OperationID)
+		if err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "conflict_resolution_publish_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, ConflictResolution: &receipt})
 	default:
 		return false, marshalSafeResult(safeCommandResult{OK: false, Code: "unsupported_command"})
 	}

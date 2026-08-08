@@ -305,3 +305,12 @@ a:hover { color: var(--primary-hover); }
 .conflict-path { max-width: 360px; white-space: normal; overflow-wrap: anywhere; }
 .conflict-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 14px; color: var(--text-dim); }
 .conflict-logout { margin-top: 24px; }
+.conflict-resolution-panel { display: grid; grid-template-columns: minmax(160px, 220px) minmax(260px, 1fr); align-items: center; gap: 10px 16px; margin: 20px 0; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-input); }
+.conflict-resolution-panel .section-title, .conflict-resolution-panel small { grid-column: 1 / -1; }
+.conflict-choice { display: grid; gap: 8px; min-width: 190px; }
+.inline-check { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+.conflict-submit { margin-top: 18px; }
+@media (max-width: 680px) {
+  .conflict-resolution-panel { grid-template-columns: 1fr; }
+  .conflict-resolution-panel .section-title, .conflict-resolution-panel small { grid-column: auto; }
+}
