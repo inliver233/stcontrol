@@ -106,6 +106,7 @@ type NodeControlModeReport struct {
 	ConsecutiveHeartbeatFails   int                   `json:"consecutive_heartbeat_failures"`
 	ConsecutiveHealthProbeFails int                   `json:"consecutive_health_probe_failures"`
 	OutageStartedAt             time.Time             `json:"outage_started_at,omitempty"`
+	ConfirmedOutageStartedAt    time.Time             `json:"confirmed_outage_started_at,omitempty"`
 	LastControllerSuccessAt     time.Time             `json:"last_controller_success_at,omitempty"`
 	IndependentSince            time.Time             `json:"independent_since,omitempty"`
 	ActiveIndependentSessions   int                   `json:"active_independent_sessions"`

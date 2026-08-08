@@ -30,6 +30,7 @@ type NodeControlModeFact struct {
 	ConsecutiveHeartbeatFails   int
 	ConsecutiveHealthProbeFails int
 	OutageStartedAt             time.Time
+	ConfirmedOutageStartedAt    time.Time
 	LastControllerSuccessAt     time.Time
 	IndependentSince            time.Time
 	ActiveIndependentSessions   int
@@ -70,12 +71,16 @@ func validNodeControlModeFact(fact NodeControlModeFact) bool {
 	if len(fact.PendingUsers) != fact.PendingUserSyncs || len(fact.PendingUsers) > 500 {
 		return false
 	}
-	for _, timestamp := range []time.Time{fact.OutageStartedAt, fact.LastControllerSuccessAt, fact.IndependentSince} {
+	for _, timestamp := range []time.Time{
+		fact.OutageStartedAt, fact.ConfirmedOutageStartedAt,
+		fact.LastControllerSuccessAt, fact.IndependentSince,
+	} {
 		if !timestamp.IsZero() && timestamp.After(fact.ObservedAt.Add(time.Minute)) {
 			return false
 		}
 	}
-	if fact.Mode == NodeModeIndependent && fact.IndependentSince.IsZero() {
+	if fact.Mode == NodeModeIndependent &&
+		(fact.IndependentSince.IsZero() || fact.ConfirmedOutageStartedAt.IsZero()) {
 		return false
 	}
 	return true
@@ -177,7 +182,17 @@ func (s *Store) reconcileNodeControlModeAuthenticated(
 		desired = NodeModeIndependentDraining
 	case NodeModeIndependentDraining:
 		if fact.ActiveIndependentSessions == 0 && fact.PendingUserSyncs == 0 {
-			desired = NodeModeManaged
+			var durablePending bool
+			if err := tx.QueryRowContext(ctx, `
+				SELECT EXISTS (
+				  SELECT 1 FROM independent_user_reconciliations
+				  WHERE node_id=$1 AND state NOT IN ('succeeded','superseded')
+				)`, nodeID).Scan(&durablePending); err != nil {
+				return NodeControlModeDecision{}, err
+			}
+			if !durablePending {
+				desired = NodeModeManaged
+			}
 		}
 	}
 	desiredGeneration := fact.ModeGeneration
@@ -195,6 +210,7 @@ func (s *Store) reconcileNodeControlModeAuthenticated(
 		"active_independent_sessions":       fact.ActiveIndependentSessions,
 		"pending_user_syncs":                fact.PendingUserSyncs,
 		"authenticated_generation":          authenticatedCredentialGeneration,
+		"confirmed_outage_started_at":       fact.ConfirmedOutageStartedAt,
 	})
 	if err != nil {
 		return NodeControlModeDecision{}, err
@@ -203,18 +219,20 @@ func (s *Store) reconcileNodeControlModeAuthenticated(
 		UPDATE nodes SET control_mode=$2,control_mode_generation=$3,
 		  desired_control_mode=$4,desired_mode_generation=$5,
 		  control_mode_reason_code=NULLIF($6,''),control_mode_changed_at=$7,
-		  controller_generation=CASE WHEN $16::bigint=$8::bigint
+		  controller_generation=CASE WHEN $17::bigint=$8::bigint
 		    THEN $8::bigint ELSE controller_generation END,
 		  controller_outage_started_at=$9,
 		  last_controller_success_at=$10,independent_since=$11,
 		  controller_heartbeat_failures=$12,controller_health_probe_failures=$13,
-		  active_independent_sessions=$14,pending_independent_syncs=$15
+		  active_independent_sessions=$14,pending_independent_syncs=$15,
+		  confirmed_controller_outage_started_at=$16
 		WHERE id=$1`,
 		nodeID, fact.Mode, fact.ModeGeneration, desired, desiredGeneration,
 		fact.ReasonCode, fact.ObservedAt, activeGeneration,
 		nullableControlModeTime(fact.OutageStartedAt), nullableControlModeTime(fact.LastControllerSuccessAt),
 		nullableControlModeTime(fact.IndependentSince), fact.ConsecutiveHeartbeatFails,
 		fact.ConsecutiveHealthProbeFails, fact.ActiveIndependentSessions, fact.PendingUserSyncs,
+		nullableControlModeTime(fact.ConfirmedOutageStartedAt),
 		authenticatedCredentialGeneration)
 	if err != nil {
 		return NodeControlModeDecision{}, err

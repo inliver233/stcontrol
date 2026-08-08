@@ -19,6 +19,7 @@ type agentControlModeState struct {
 	ConsecutiveHeartbeatFails   int       `json:"consecutive_heartbeat_failures"`
 	ConsecutiveHealthProbeFails int       `json:"consecutive_health_probe_failures"`
 	OutageStartedAt             time.Time `json:"outage_started_at,omitempty"`
+	ConfirmedOutageStartedAt    time.Time `json:"confirmed_outage_started_at,omitempty"`
 	LastControllerSuccessAt     time.Time `json:"last_controller_success_at,omitempty"`
 	IndependentSince            time.Time `json:"independent_since,omitempty"`
 	ChangedAt                   time.Time `json:"changed_at"`
@@ -69,11 +70,13 @@ func (a *Agent) controlModeReport() protocol.NodeControlModeReport {
 		ControllerGeneration: a.state.HighestGeneration, ReasonCode: state.ReasonCode,
 		ConsecutiveHeartbeatFails:   state.ConsecutiveHeartbeatFails,
 		ConsecutiveHealthProbeFails: state.ConsecutiveHealthProbeFails,
-		OutageStartedAt:             state.OutageStartedAt, LastControllerSuccessAt: state.LastControllerSuccessAt,
-		IndependentSince:          state.IndependentSince,
-		ActiveIndependentSessions: state.ActiveIndependentSessions,
-		PendingUserSyncs:          state.PendingUserSyncs,
-		PendingUsers:              append([]protocol.IndependentSyncUser(nil), a.state.PendingIndependentUsers...),
+		OutageStartedAt:             state.OutageStartedAt,
+		ConfirmedOutageStartedAt:    state.ConfirmedOutageStartedAt,
+		LastControllerSuccessAt:     state.LastControllerSuccessAt,
+		IndependentSince:            state.IndependentSince,
+		ActiveIndependentSessions:   state.ActiveIndependentSessions,
+		PendingUserSyncs:            state.PendingUserSyncs,
+		PendingUsers:                append([]protocol.IndependentSyncUser(nil), a.state.PendingIndependentUsers...),
 	}
 }
 
@@ -126,15 +129,23 @@ func (a *Agent) recordControllerFailure(now time.Time, healthProbeFailed bool) e
 	state := &a.state.ControlMode
 	state.ConsecutiveHeartbeatFails++
 	if healthProbeFailed {
+		if state.ConsecutiveHealthProbeFails == 0 || state.ConfirmedOutageStartedAt.IsZero() {
+			state.ConfirmedOutageStartedAt = now
+		}
 		state.ConsecutiveHealthProbeFails++
 	} else {
 		state.ConsecutiveHealthProbeFails = 0
+		state.ConfirmedOutageStartedAt = time.Time{}
 	}
 	if state.OutageStartedAt.IsZero() {
 		state.OutageStartedAt = now
 	}
 	policy := normalizeDisasterPolicy(a.Cfg.Disaster)
 	elapsed := now.Sub(state.OutageStartedAt)
+	confirmedElapsed := time.Duration(0)
+	if !state.ConfirmedOutageStartedAt.IsZero() {
+		confirmedElapsed = now.Sub(state.ConfirmedOutageStartedAt)
+	}
 	mode := state.Mode
 	reason := state.ReasonCode
 	if mode == protocol.NodeModeManaged && elapsed >= policy.unreachableAfter {
@@ -142,7 +153,7 @@ func (a *Agent) recordControllerFailure(now time.Time, healthProbeFailed bool) e
 		reason = "controller_heartbeat_timeout"
 	}
 	if a.Cfg.Role == "compute" && mode != protocol.NodeModeIndependentDraining &&
-		elapsed >= policy.independentAfter &&
+		!state.ConfirmedOutageStartedAt.IsZero() && confirmedElapsed >= policy.independentAfter &&
 		state.ConsecutiveHeartbeatFails >= policy.minFailures &&
 		state.ConsecutiveHealthProbeFails >= policy.minFailures {
 		mode = protocol.NodeModeIndependent
@@ -189,6 +200,7 @@ func (a *Agent) recordControllerSuccess(now time.Time, response protocol.Heartbe
 	}
 	state.LastControllerSuccessAt = now
 	state.OutageStartedAt = time.Time{}
+	state.ConfirmedOutageStartedAt = time.Time{}
 	state.ConsecutiveHeartbeatFails = 0
 	state.ConsecutiveHealthProbeFails = 0
 	state.ControllerGeneration = response.ControllerGeneration

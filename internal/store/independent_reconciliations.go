@@ -172,7 +172,7 @@ func recordIndependentSyncFactsTx(
 		  WHERE reconciliation.state='conflict' AND global_user.legacy_user_id IS NOT NULL
 		)
 		UPDATE user_replicas replica SET state='conflict'
-		FROM conflicted WHERE replica.user_id=conflicted.user_id`, now); err != nil {
+		FROM conflicted WHERE replica.user_id=conflicted.user_id`); err != nil {
 		return fmt.Errorf("mark legacy replicas conflicted: %w", err)
 	}
 	return nil

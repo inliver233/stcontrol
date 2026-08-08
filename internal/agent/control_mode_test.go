@@ -57,7 +57,8 @@ func TestSustainedMultiSignalLossPersistsIndependentModeAcrossRestart(t *testing
 	report := a.controlModeReport()
 	if report.Mode != protocol.NodeModeIndependent || report.ModeGeneration != 3 ||
 		report.IndependentSince.IsZero() || report.ConsecutiveHeartbeatFails != 3 ||
-		report.ConsecutiveHealthProbeFails != 3 {
+		report.ConsecutiveHealthProbeFails != 3 ||
+		!report.ConfirmedOutageStartedAt.Equal(started) {
 		t.Fatalf("report=%+v", report)
 	}
 	reloaded := disasterTestAgent(t, dataDir)
@@ -65,6 +66,47 @@ func TestSustainedMultiSignalLossPersistsIndependentModeAcrossRestart(t *testing
 	if reloadedReport.Mode != protocol.NodeModeIndependent ||
 		!reloadedReport.IndependentSince.Equal(report.IndependentSince) {
 		t.Fatalf("reloaded=%+v", reloadedReport)
+	}
+}
+
+func TestHealthyPublicProbeResetsIndependentOutageDuration(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	a := disasterTestAgent(t, dataDir)
+	started := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+
+	// A signed heartbeat/authentication path may fail for hours while the
+	// independent public health probe still proves the Controller network is
+	// reachable. That time must never be credited to the dual-signal floor.
+	for _, offset := range []time.Duration{0, 30 * time.Second, 2 * time.Minute} {
+		if err := a.recordControllerFailure(started.Add(offset), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	confirmedAt := started.Add(2*time.Minute + time.Second)
+	for _, offset := range []time.Duration{0, time.Second, 2 * time.Second} {
+		if err := a.recordControllerFailure(confirmedAt.Add(offset), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report := a.controlModeReport()
+	if report.Mode != protocol.NodeModeControllerUnreachable ||
+		!report.ConfirmedOutageStartedAt.Equal(confirmedAt) ||
+		report.ConsecutiveHealthProbeFails != 3 {
+		t.Fatalf("short confirmed outage incorrectly opened independent mode: %+v", report)
+	}
+
+	// The confirmed floor is security state and must survive a process restart.
+	reloaded := disasterTestAgent(t, dataDir)
+	if got := reloaded.controlModeReport(); !got.ConfirmedOutageStartedAt.Equal(confirmedAt) ||
+		got.Mode != protocol.NodeModeControllerUnreachable {
+		t.Fatalf("confirmed outage floor was not durable: %+v", got)
+	}
+	if err := reloaded.recordControllerFailure(confirmedAt.Add(61*time.Second), true); err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.controlModeReport(); got.Mode != protocol.NodeModeIndependent {
+		t.Fatalf("sustained confirmed outage did not open independent mode: %+v", got)
 	}
 }
 

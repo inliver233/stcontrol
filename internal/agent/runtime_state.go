@@ -124,6 +124,14 @@ func (a *Agent) loadRuntimeState() error {
 		a.state.ControlMode.ModeGeneration = 1
 		a.state.ControlMode.ChangedAt = time.Now().UTC()
 	}
+	// Runtime states written before the confirmed dual-signal timestamp was
+	// introduced may already be in independent mode. Preserve that safe,
+	// restrictive mode across upgrade while ensuring subsequent reports carry
+	// an explicit durable activation floor.
+	if a.state.ControlMode.Mode == protocol.NodeModeIndependent &&
+		a.state.ControlMode.ConfirmedOutageStartedAt.IsZero() {
+		a.state.ControlMode.ConfirmedOutageStartedAt = a.state.ControlMode.OutageStartedAt
+	}
 	if a.state.ControlMode.ModeGeneration <= 0 || !validNodeControlMode(a.state.ControlMode.Mode) ||
 		(a.state.ControlMode.AdapterMode != "" && !validNodeControlMode(a.state.ControlMode.AdapterMode)) {
 		return fmt.Errorf("invalid persisted node control mode")

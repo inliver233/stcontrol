@@ -15,7 +15,9 @@ func independentModeFact(now time.Time) NodeControlModeFact {
 		Mode: NodeModeIndependent, ModeGeneration: 3, ControllerGeneration: 5,
 		ReasonCode:                "sustained_multi_signal_controller_loss",
 		ConsecutiveHeartbeatFails: 60, ConsecutiveHealthProbeFails: 60,
-		OutageStartedAt: now.Add(-15 * time.Minute), IndependentSince: now.Add(-time.Minute),
+		OutageStartedAt:           now.Add(-15 * time.Minute),
+		ConfirmedOutageStartedAt:  now.Add(-14 * time.Minute),
+		IndependentSince:          now.Add(-time.Minute),
 		ActiveIndependentSessions: 2, PendingUserSyncs: 0, ObservedAt: now,
 	}
 }
@@ -34,7 +36,7 @@ func TestReconcileIndependentModeAlwaysReturnsDrainingBoundary(t *testing.T) {
 	mock.ExpectExec(`UPDATE nodes SET control_mode=\$2`).WithArgs(
 		int64(12), NodeModeIndependent, int64(3), NodeModeIndependentDraining, int64(4),
 		fact.ReasonCode, now, int64(5), fact.OutageStartedAt, nil, fact.IndependentSince,
-		60, 60, 2, 0, int64(5),
+		60, 60, 2, 0, fact.ConfirmedOutageStartedAt, int64(5),
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO node_control_mode_events`).WithArgs(
 		int64(12), NodeModeIndependent, int64(3), NodeModeIndependentDraining, int64(4),
@@ -68,6 +70,8 @@ func TestReconcileDrainingOnlyReturnsManagedAfterSessionsAndSyncsFinish(t *testi
 		WillReturnRows(sqlmock.NewRows([]string{
 			"role", "control_mode", "control_mode_generation", "desired_control_mode", "desired_mode_generation", "generation",
 		}).AddRow("compute", NodeModeIndependentDraining, int64(4), NodeModeIndependentDraining, int64(4), int64(5)))
+	mock.ExpectQuery(`(?s)SELECT EXISTS .*independent_user_reconciliations`).WithArgs(int64(12)).
+		WillReturnRows(sqlmock.NewRows([]string{"pending"}).AddRow(false))
 	mock.ExpectExec(`UPDATE nodes SET control_mode=\$2`).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO node_control_mode_events`).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery(`UPDATE controller_rebuild_nodes item SET`).WithArgs(
@@ -77,6 +81,38 @@ func TestReconcileDrainingOnlyReturnsManagedAfterSessionsAndSyncsFinish(t *testi
 	mock.ExpectCommit()
 	decision, err := st.ReconcileNodeControlMode(context.Background(), 12, fact)
 	if err != nil || decision.DesiredMode != NodeModeManaged || decision.ModeGeneration != 5 {
+		t.Fatalf("decision=%+v err=%v", decision, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestReconcileDrainingCannotTrustAnEmptyAgentReportOverDurablePendingWork(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 8, 10, 2, 0, 0, time.UTC)
+	fact := independentModeFact(now)
+	fact.Mode = NodeModeIndependentDraining
+	fact.ModeGeneration = 4
+	fact.ActiveIndependentSessions = 0
+	fact.PendingUserSyncs = 0
+	fact.PendingUsers = nil
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT n.role,n.control_mode,n.control_mode_generation`).WithArgs(int64(12)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"role", "control_mode", "control_mode_generation", "desired_control_mode", "desired_mode_generation", "generation",
+		}).AddRow("compute", NodeModeIndependentDraining, int64(4), NodeModeIndependentDraining, int64(4), int64(5)))
+	mock.ExpectQuery(`(?s)SELECT EXISTS .*independent_user_reconciliations`).WithArgs(int64(12)).
+		WillReturnRows(sqlmock.NewRows([]string{"pending"}).AddRow(true))
+	mock.ExpectExec(`UPDATE nodes SET control_mode=\$2`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO node_control_mode_events`).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`UPDATE controller_rebuild_nodes item SET`).WithArgs(
+		int64(12), int64(5), int64(5), NodeModeIndependentDraining,
+		NodeModeIndependentDraining, now,
+	).WillReturnError(sql.ErrNoRows)
+	mock.ExpectCommit()
+	decision, err := st.ReconcileNodeControlMode(context.Background(), 12, fact)
+	if err != nil || decision.DesiredMode != NodeModeIndependentDraining || decision.ModeGeneration != 4 {
 		t.Fatalf("decision=%+v err=%v", decision, err)
 	}
 	assertMockExpectations(t, mock)
@@ -122,7 +158,7 @@ func TestControllerRebuildAllowsOldCredentialForHeartbeatOnly(t *testing.T) {
 		).WillReturnRows(sqlmock.NewRows([]string{"allowed"}).AddRow(true))
 		mock.ExpectExec(`UPDATE nodes SET control_mode=\$2`).WithArgs(
 			int64(12), NodeModeManaged, int64(2), NodeModeManaged, int64(2), "", now,
-			int64(6), nil, nil, nil, 0, 0, 0, 0, int64(4),
+			int64(6), nil, nil, nil, 0, 0, 0, 0, nil, int64(4),
 		).WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectExec(`INSERT INTO node_control_mode_events`).WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectQuery(`UPDATE controller_rebuild_nodes item SET`).WithArgs(
