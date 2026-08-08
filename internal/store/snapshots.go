@@ -780,17 +780,25 @@ func (s *Store) CompleteSnapshotWorkflow(ctx context.Context, p CompleteSnapshot
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO replica_copies (
 		  id, user_id, node_id, snapshot_id, replica_kind, state, origin,
-		  is_authoritative, compatibility_state, published_at, verified_at, created_at, updated_at
-		) VALUES (gen_random_uuid(),$1,$2,$3,$4,'ready',$5,false,'compatible',$6,$6,$6,$6)
+		  is_authoritative, compatibility_state, published_at, verified_at, created_at, updated_at,
+		  integrity_state,integrity_check_kind,integrity_checked_at,integrity_last_light_at,
+		  integrity_last_deep_at,integrity_next_check_at,integrity_deep_check_at
+		) VALUES (gen_random_uuid(),$1,$2,$3,$4,'ready',$5,false,'compatible',$6,$6,$6,$6,
+		  'verified','deep',$6,$6,$6,$7,$8)
 		ON CONFLICT (user_id,node_id) DO UPDATE SET
 		  snapshot_id=EXCLUDED.snapshot_id, replica_kind=EXCLUDED.replica_kind,
 		  state='ready', origin=EXCLUDED.origin, compatibility_state='compatible',
 		  published_at=EXCLUDED.published_at, verified_at=EXCLUDED.verified_at,
-		  integrity_state='due', integrity_operation_id=NULL,
+		  integrity_state='verified', integrity_check_kind='deep',integrity_operation_id=NULL,
 		  integrity_controller_generation=NULL, integrity_lease_until=NULL,
-		  integrity_attempt=0, integrity_checked_at=NULL,
-		  integrity_next_check_at=EXCLUDED.updated_at, integrity_error_code=NULL,
-		  updated_at=EXCLUDED.updated_at`, userID, p.TargetNodeID, p.SnapshotID, p.ReplicaKind, p.ReplicaOrigin, p.Now); err != nil {
+		  integrity_attempt=0, integrity_checked_at=EXCLUDED.integrity_checked_at,
+		  integrity_last_light_at=EXCLUDED.integrity_last_light_at,
+		  integrity_last_deep_at=EXCLUDED.integrity_last_deep_at,
+		  integrity_next_check_at=EXCLUDED.integrity_next_check_at,
+		  integrity_deep_check_at=EXCLUDED.integrity_deep_check_at,integrity_error_code=NULL,
+		  updated_at=EXCLUDED.updated_at`, userID, p.TargetNodeID, p.SnapshotID, p.ReplicaKind,
+		p.ReplicaOrigin, p.Now, p.Now.Add(ReplicaIntegrityLightInterval),
+		p.Now.Add(ReplicaIntegrityDeepInterval)); err != nil {
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `

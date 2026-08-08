@@ -62,6 +62,10 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 		assertPostgresNodeRetirementExecutor(t, stores[0])
 	})
 
+	t.Run("tiered replica integrity escalates light anomalies before quarantine", func(t *testing.T) {
+		assertPostgresTieredReplicaIntegrity(t, stores[0], generation)
+	})
+
 	t.Run("ten-thousand account inventory is durable and page bounded", func(t *testing.T) {
 		assertPostgresAccountInventoryScale(t, stores[0], nodeA)
 	})
@@ -240,6 +244,177 @@ func insertIntegrationGlobalUser(t *testing.T, st *Store, displayName string) in
 		t.Fatalf("insert integration global user: %v", err)
 	}
 	return id
+}
+
+func assertPostgresTieredReplicaIntegrity(t *testing.T, st *Store, generation int64) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	homeNodeID := insertIntegrationNode(t, st, "integrity-home")
+	storageNodeID := insertIntegrationNode(t, st, "integrity-storage")
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE nodes SET role='storage',is_backup_target=true,
+		  transfer_url='https://integrity-storage.example/transfer'
+		WHERE id=$1`, storageNodeID); err != nil {
+		t.Fatalf("configure integrity storage: %v", err)
+	}
+	var legacyUserID, globalUserID int64
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO users (username,display_name,auth_provider,home_node_id,status)
+		VALUES ('integrity-user','Integrity User','password',$1,'active') RETURNING id`, homeNodeID).
+		Scan(&legacyUserID); err != nil {
+		t.Fatalf("insert integrity legacy user: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO global_users (uuid,legacy_user_id,display_name,status)
+		VALUES ('73000000-0000-4000-8000-000000000009',$1,'Integrity User','active') RETURNING id`,
+		legacyUserID).Scan(&globalUserID); err != nil {
+		t.Fatalf("insert integrity global user: %v", err)
+	}
+	manifestHash := sha256.Sum256([]byte("tiered-integrity-manifest"))
+	archiveHash := sha256.Sum256([]byte("tiered-integrity-archive"))
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO workflows (
+		  id,operation_id,workflow_type,state,user_id,source_node_id,target_node_id,
+		  activity_epoch,controller_generation,created_at,updated_at,finished_at
+		) VALUES (
+		  '73000000-0000-4000-8000-000000000002','73000000-0000-4000-8000-000000000003',
+		  'snapshot','succeeded',$1,$2,$3,1,$4,$5,$5,$5
+		)`, globalUserID, homeNodeID, storageNodeID, generation, now); err != nil {
+		t.Fatalf("insert tiered integrity workflow: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO snapshot_manifests (
+		  id,workflow_id,user_id,source_node_id,activity_epoch,format_version,
+		  manifest_sha256,archive_sha256,file_count,total_bytes,state,created_at
+		) VALUES (
+		  '73000000-0000-4000-8000-000000000004','73000000-0000-4000-8000-000000000002',
+		  $1,$2,1,1,$3,$4,2,30,'immutable',$5
+		)`, globalUserID, homeNodeID, manifestHash[:], archiveHash[:], now); err != nil {
+		t.Fatalf("insert tiered integrity manifest: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO replica_copies (
+		  id,user_id,node_id,snapshot_id,replica_kind,state,origin,is_authoritative,
+		  compatibility_state,published_at,verified_at,created_at,updated_at,
+		  integrity_state,integrity_check_kind,integrity_next_check_at,integrity_deep_check_at,
+		  integrity_last_light_at,integrity_last_deep_at
+		) VALUES (
+		  '73000000-0000-4000-8000-000000000001',$1,$2,
+		  '73000000-0000-4000-8000-000000000004','archive','ready','configured',false,
+		  'compatible',$3,$3,$3,$3,'verified','deep',$4,$5,$3,$3
+		)`, globalUserID, storageNodeID, now, now.Add(-time.Hour), now.Add(7*24*time.Hour)); err != nil {
+		t.Fatalf("insert tiered integrity copy: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO user_replicas (user_id,node_id,kind,state,data_version,checksum,size_bytes,last_sync_at)
+		VALUES ($1,$2,'archive','ready',1,$3,30,$4)`,
+		legacyUserID, storageNodeID, fmt.Sprintf("%x", manifestHash), now); err != nil {
+		t.Fatalf("insert tiered integrity legacy replica: %v", err)
+	}
+
+	light, err := st.ClaimReplicaIntegrityTask(
+		ctx, "73000000-0000-4000-8000-000000000005", now, time.Hour,
+	)
+	if err != nil || light == nil || light.CheckKind != "light" {
+		t.Fatalf("claim light integrity task=%+v err=%v", light, err)
+	}
+	if err := st.FailReplicaIntegrityTask(
+		ctx, light.ReplicaID, light.OperationID, "replica_integrity_mismatch", true,
+		now.Add(time.Second), time.Hour,
+	); !errors.Is(err, ErrReplicaIntegrityState) {
+		t.Fatalf("light task direct corruption error=%v", err)
+	}
+	if err := st.EscalateReplicaIntegrityTask(
+		ctx, light.ReplicaID, light.OperationID, "lightweight_integrity_anomaly", now.Add(time.Second),
+	); err != nil {
+		t.Fatalf("escalate light integrity task: %v", err)
+	}
+	var copyState, integrityState string
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT state,integrity_state FROM replica_copies WHERE id=$1`, light.ReplicaID).
+		Scan(&copyState, &integrityState); err != nil || copyState != "ready" || integrityState != "due" {
+		t.Fatalf("light escalation copy=%q integrity=%q err=%v", copyState, integrityState, err)
+	}
+
+	deep, err := st.ClaimReplicaIntegrityTask(
+		ctx, "73000000-0000-4000-8000-000000000006", now.Add(2*time.Second), time.Hour,
+	)
+	if err != nil || deep == nil || deep.CheckKind != "deep" {
+		t.Fatalf("claim escalated deep integrity task=%+v err=%v", deep, err)
+	}
+	if err := st.CompleteReplicaIntegrityTask(ctx, CompleteReplicaIntegrityParams{
+		ReplicaID: deep.ReplicaID, OperationID: deep.OperationID, SnapshotID: deep.SnapshotID,
+		ManifestSHA256: deep.ManifestSHA256, ArchiveSHA256: deep.ArchiveSHA256,
+		FileCount: deep.FileCount, TotalBytes: deep.TotalBytes, CheckKind: "deep",
+		Now: now.Add(3 * time.Second), NextCheckAfter: ReplicaIntegrityLightInterval,
+		NextDeepAfter: ReplicaIntegrityDeepInterval,
+	}); err != nil {
+		t.Fatalf("complete deep integrity task: %v", err)
+	}
+	var lastDeep time.Time
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT integrity_last_deep_at FROM replica_copies WHERE id=$1`, deep.ReplicaID).Scan(&lastDeep); err != nil ||
+		!lastDeep.Equal(now.Add(3*time.Second)) {
+		t.Fatalf("deep completion at=%v err=%v", lastDeep, err)
+	}
+
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE replica_copies SET integrity_next_check_at=$2 WHERE id=$1`,
+		deep.ReplicaID, now.Add(4*time.Second)); err != nil {
+		t.Fatalf("schedule next light integrity task: %v", err)
+	}
+	lightAgain, err := st.ClaimReplicaIntegrityTask(
+		ctx, "73000000-0000-4000-8000-000000000007", now.Add(4*time.Second), time.Hour,
+	)
+	if err != nil || lightAgain == nil || lightAgain.CheckKind != "light" {
+		t.Fatalf("claim next light integrity task=%+v err=%v", lightAgain, err)
+	}
+	if err := st.CompleteReplicaIntegrityTask(ctx, CompleteReplicaIntegrityParams{
+		ReplicaID: lightAgain.ReplicaID, OperationID: lightAgain.OperationID, SnapshotID: lightAgain.SnapshotID,
+		ManifestSHA256: lightAgain.ManifestSHA256, ArchiveSHA256: lightAgain.ArchiveSHA256,
+		FileCount: lightAgain.FileCount, TotalBytes: lightAgain.TotalBytes, CheckKind: "light",
+		Now: now.Add(5 * time.Second), NextCheckAfter: ReplicaIntegrityLightInterval,
+		NextDeepAfter: ReplicaIntegrityDeepInterval,
+	}); err != nil {
+		t.Fatalf("complete next light integrity task: %v", err)
+	}
+	var lastDeepAfterLight time.Time
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT integrity_last_deep_at FROM replica_copies WHERE id=$1`, lightAgain.ReplicaID).
+		Scan(&lastDeepAfterLight); err != nil || !lastDeepAfterLight.Equal(lastDeep) {
+		t.Fatalf("light check changed deep cursor: before=%v after=%v err=%v", lastDeep, lastDeepAfterLight, err)
+	}
+
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE replica_copies SET integrity_next_check_at=$2,integrity_deep_check_at=$2 WHERE id=$1`,
+		deep.ReplicaID, now.Add(6*time.Second)); err != nil {
+		t.Fatalf("schedule corruption deep check: %v", err)
+	}
+	corrupt, err := st.ClaimReplicaIntegrityTask(
+		ctx, "73000000-0000-4000-8000-000000000008", now.Add(6*time.Second), time.Hour,
+	)
+	if err != nil || corrupt == nil || corrupt.CheckKind != "deep" {
+		t.Fatalf("claim corruption deep task=%+v err=%v", corrupt, err)
+	}
+	if err := st.FailReplicaIntegrityTask(
+		ctx, corrupt.ReplicaID, corrupt.OperationID, "replica_integrity_mismatch", true,
+		now.Add(7*time.Second), time.Hour,
+	); err != nil {
+		t.Fatalf("quarantine corrupt deep replica: %v", err)
+	}
+	var legacyState, alertSeverity string
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT copy.state,copy.integrity_state,legacy.state,alert.severity
+		FROM replica_copies copy
+		JOIN user_replicas legacy ON legacy.user_id=$2 AND legacy.node_id=copy.node_id
+		JOIN alerts alert ON alert.deduplication_key='replica-integrity:'||copy.id::text
+		WHERE copy.id=$1`, corrupt.ReplicaID, legacyUserID).
+		Scan(&copyState, &integrityState, &legacyState, &alertSeverity); err != nil ||
+		copyState != "corrupt" || integrityState != "corrupt" || legacyState != "corrupt" || alertSeverity != "critical" {
+		t.Fatalf("deep corruption copy=%q integrity=%q legacy=%q alert=%q err=%v",
+			copyState, integrityState, legacyState, alertSeverity, err)
+	}
 }
 
 func assertPostgresAccountInventoryScale(t *testing.T, st *Store, nodeID int64) {

@@ -24,6 +24,7 @@ func (a *Agent) VerifyReplicaIntegrity(
 	req protocol.VerifyReplicaIntegrityRequest,
 ) (protocol.ReplicaIntegrityReceipt, error) {
 	if !validUUID(req.OperationID) || !validUUID(req.SnapshotID) || !validHandle(req.Handle) ||
+		(req.CheckKind != "light" && req.CheckKind != "deep") ||
 		!validCapabilityHash(req.ManifestSHA256) || !validCapabilityHash(req.ArchiveSHA256) ||
 		req.FileCount < 0 || req.FileCount > maxSnapshotFiles || req.TotalBytes < 0 || req.TotalBytes > maxSnapshotBytes {
 		return protocol.ReplicaIntegrityReceipt{}, fmt.Errorf("invalid replica integrity request")
@@ -62,7 +63,11 @@ func (a *Agent) VerifyReplicaIntegrity(
 		int64(len(metadata.Manifest.Files)) != req.FileCount {
 		return protocol.ReplicaIntegrityReceipt{}, fmt.Errorf("%w: metadata scope", errReplicaIntegrityMismatch)
 	}
-	totalBytes, err := verifyArchiveReplica(ctx, replicaRoot, metadata.Manifest.Files)
+	verify := verifyArchiveReplicaLight
+	if req.CheckKind == "deep" {
+		verify = verifyArchiveReplica
+	}
+	totalBytes, err := verify(ctx, replicaRoot, metadata.Manifest.Files)
 	if err != nil {
 		if ctx.Err() != nil {
 			return protocol.ReplicaIntegrityReceipt{}, errReplicaIntegrityUnavailable
@@ -73,7 +78,7 @@ func (a *Agent) VerifyReplicaIntegrity(
 		return protocol.ReplicaIntegrityReceipt{}, fmt.Errorf("%w: total bytes", errReplicaIntegrityMismatch)
 	}
 	return protocol.ReplicaIntegrityReceipt{
-		SnapshotID: req.SnapshotID, ManifestSHA256: req.ManifestSHA256,
+		SnapshotID: req.SnapshotID, CheckKind: req.CheckKind, ManifestSHA256: req.ManifestSHA256,
 		ArchiveSHA256: req.ArchiveSHA256, FileCount: req.FileCount, TotalBytes: req.TotalBytes,
 	}, nil
 }

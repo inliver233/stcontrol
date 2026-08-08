@@ -376,10 +376,15 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "snapshot_receipt_unavailable"})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, Snapshot: receipt})
-	case "verify_replica_integrity":
+	case "verify_replica_integrity", "verify_replica_integrity_v2":
 		var payload protocol.VerifyReplicaIntegrityRequest
 		if err := json.Unmarshal(plaintext, &payload); err != nil {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		if command.CommandType == "verify_replica_integrity" && payload.CheckKind == "" {
+			// Commands durably queued before the tiered protocol always performed
+			// a full rehash. Preserve that exact behavior during rolling upgrades.
+			payload.CheckKind = "deep"
 		}
 		payload.OperationID = command.OperationID
 		receipt, err := a.VerifyReplicaIntegrity(ctx, payload)

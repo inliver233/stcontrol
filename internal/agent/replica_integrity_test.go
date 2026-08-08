@@ -18,6 +18,7 @@ import (
 func TestVerifyReplicaIntegrityRehashesPrivateArchive(t *testing.T) {
 	t.Parallel()
 	agent, request, dataPath := replicaIntegrityFixture(t)
+	request.CheckKind = "deep"
 	receipt, err := agent.VerifyReplicaIntegrity(context.Background(), request)
 	if err != nil || receipt.SnapshotID != request.SnapshotID ||
 		receipt.ManifestSHA256 != request.ManifestSHA256 || receipt.TotalBytes != request.TotalBytes {
@@ -31,10 +32,67 @@ func TestVerifyReplicaIntegrityRehashesPrivateArchive(t *testing.T) {
 	}
 }
 
+func TestVerifyReplicaIntegrityLightChecksStructureBeforeDeepHash(t *testing.T) {
+	t.Parallel()
+	agent, request, dataPath := replicaIntegrityFixture(t)
+	request.CheckKind = "light"
+	original, err := os.ReadFile(dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := append([]byte(nil), original...)
+	tampered[0] ^= 0xff
+	if err := os.WriteFile(dataPath, tampered, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := agent.VerifyReplicaIntegrity(context.Background(), request)
+	if err != nil || receipt.CheckKind != "light" {
+		t.Fatalf("light receipt=%+v err=%v", receipt, err)
+	}
+	request.CheckKind = "deep"
+	if _, err := agent.VerifyReplicaIntegrity(context.Background(), request); !errors.Is(err, errReplicaIntegrityMismatch) {
+		t.Fatalf("deep tamper error=%v, want integrity mismatch", err)
+	}
+	if err := os.Truncate(dataPath, int64(len(tampered)-1)); err != nil {
+		t.Fatal(err)
+	}
+	request.CheckKind = "light"
+	if _, err := agent.VerifyReplicaIntegrity(context.Background(), request); !errors.Is(err, errReplicaIntegrityMismatch) {
+		t.Fatalf("light structural error=%v, want integrity mismatch", err)
+	}
+}
+
 func TestVerifyReplicaIntegrityReturnsOnlySafeCommandFailure(t *testing.T) {
 	t.Parallel()
 	agent, request, dataPath := replicaIntegrityFixture(t)
+	request.CheckKind = "deep"
 	if err := os.WriteFile(dataPath, []byte("tampered-private-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := encryptedTestCommand(t, agent.Cfg.AgentPSK, "verify_replica_integrity_v2", payload)
+	command.OperationID = request.OperationID
+	succeeded, result := agent.executeCommand(context.Background(), command)
+	if succeeded || !strings.Contains(string(result), `"code":"replica_integrity_mismatch"`) ||
+		strings.Contains(string(result), dataPath) || strings.Contains(string(result), "tampered-private-data") {
+		t.Fatalf("unsafe or unexpected command result: %s", result)
+	}
+}
+
+func TestLegacyReplicaIntegrityCommandDefaultsToDeepDuringRollingUpgrade(t *testing.T) {
+	t.Parallel()
+	agent, request, dataPath := replicaIntegrityFixture(t)
+	request.CheckKind = ""
+	original, err := os.ReadFile(dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := append([]byte(nil), original...)
+	tampered[0] ^= 0xff
+	if err := os.WriteFile(dataPath, tampered, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	payload, err := json.Marshal(request)
@@ -44,9 +102,8 @@ func TestVerifyReplicaIntegrityReturnsOnlySafeCommandFailure(t *testing.T) {
 	command := encryptedTestCommand(t, agent.Cfg.AgentPSK, "verify_replica_integrity", payload)
 	command.OperationID = request.OperationID
 	succeeded, result := agent.executeCommand(context.Background(), command)
-	if succeeded || !strings.Contains(string(result), `"code":"replica_integrity_mismatch"`) ||
-		strings.Contains(string(result), dataPath) || strings.Contains(string(result), "tampered-private-data") {
-		t.Fatalf("unsafe or unexpected command result: %s", result)
+	if succeeded || !strings.Contains(string(result), `"code":"replica_integrity_mismatch"`) {
+		t.Fatalf("legacy command did not retain deep verification: %s", result)
 	}
 }
 
@@ -57,6 +114,7 @@ func TestVerifyReplicaIntegrityRejectsInvalidAndUnavailableRequests(t *testing.T
 	}
 	request := protocol.VerifyReplicaIntegrityRequest{
 		OperationID: testWorkflowID, SnapshotID: testSnapshotID, Handle: "alice",
+		CheckKind:      "deep",
 		ManifestSHA256: strings.Repeat("a", 64), ArchiveSHA256: strings.Repeat("b", 64),
 	}
 	if _, err := (&Agent{Cfg: &config.AgentConfig{}}).VerifyReplicaIntegrity(context.Background(), request); !errors.Is(err, errReplicaIntegrityUnavailable) {
@@ -102,6 +160,7 @@ func replicaIntegrityFixture(t *testing.T) (*Agent, protocol.VerifyReplicaIntegr
 	}}
 	return agent, protocol.VerifyReplicaIntegrityRequest{
 		OperationID: testWorkflowID, SnapshotID: testSnapshotID, Handle: "alice",
+		CheckKind:      "deep",
 		ManifestSHA256: receipt.ManifestSHA256, ArchiveSHA256: receipt.ArchiveSHA256,
 		FileCount: receipt.FileCount, TotalBytes: receipt.TotalBytes,
 	}, dataPath

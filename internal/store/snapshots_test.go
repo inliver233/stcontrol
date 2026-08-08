@@ -140,7 +140,8 @@ func TestCompleteSnapshotWorkflowPublishesFactsAfterVerification(t *testing.T) {
 	mock.ExpectQuery(`SELECT COALESCE\(MAX\(data_version\),0\)\+1`).WithArgs(int64(70)).
 		WillReturnRows(sqlmock.NewRows([]string{"data_version"}).AddRow(int64(5)))
 	mock.ExpectExec(`INSERT INTO replica_copies`).
-		WithArgs(int64(70), int64(9), "snapshot", "archive", "configured", now).
+		WithArgs(int64(70), int64(9), "snapshot", "archive", "configured", now,
+			now.Add(ReplicaIntegrityLightInterval), now.Add(ReplicaIntegrityDeepInterval)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE alerts SET state='resolved'`).
 		WithArgs(int64(70), int64(9), now).

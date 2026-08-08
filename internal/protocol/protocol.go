@@ -467,6 +467,7 @@ type SnapshotProgressRequest struct {
 type VerifyReplicaIntegrityRequest struct {
 	OperationID    string `json:"operation_id"`
 	SnapshotID     string `json:"snapshot_id"`
+	CheckKind      string `json:"check_kind"`
 	Handle         string `json:"handle"`
 	ManifestSHA256 string `json:"manifest_sha256"`
 	ArchiveSHA256  string `json:"archive_sha256"`
@@ -476,6 +477,7 @@ type VerifyReplicaIntegrityRequest struct {
 
 type ReplicaIntegrityReceipt struct {
 	SnapshotID     string `json:"snapshot_id"`
+	CheckKind      string `json:"check_kind"`
 	ManifestSHA256 string `json:"manifest_sha256"`
 	ArchiveSHA256  string `json:"archive_sha256"`
 	FileCount      int64  `json:"file_count"`

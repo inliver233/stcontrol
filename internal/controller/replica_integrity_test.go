@@ -16,10 +16,10 @@ func TestMatchingReplicaIntegrityReceiptBindsImmutableFacts(t *testing.T) {
 	manifest[0], archive[0] = 1, 2
 	task := store.ReplicaIntegrityTask{
 		SnapshotID: integrityControllerSnapshotID, ManifestSHA256: manifest, ArchiveSHA256: archive,
-		FileCount: 2, TotalBytes: 30,
+		CheckKind: "light", FileCount: 2, TotalBytes: 30,
 	}
 	receipt := &protocol.ReplicaIntegrityReceipt{
-		SnapshotID: task.SnapshotID, ManifestSHA256: hex.EncodeToString(manifest),
+		SnapshotID: task.SnapshotID, CheckKind: "light", ManifestSHA256: hex.EncodeToString(manifest),
 		ArchiveSHA256: hex.EncodeToString(archive), FileCount: 2, TotalBytes: 30,
 	}
 	if !matchingReplicaIntegrityReceipt(receipt, task) {
@@ -30,6 +30,11 @@ func TestMatchingReplicaIntegrityReceiptBindsImmutableFacts(t *testing.T) {
 		t.Fatal("receipt with mismatched immutable facts was accepted")
 	}
 	receipt.TotalBytes--
+	receipt.CheckKind = "deep"
+	if matchingReplicaIntegrityReceipt(receipt, task) {
+		t.Fatal("receipt with mismatched check kind was accepted")
+	}
+	receipt.CheckKind = "light"
 	receipt.ArchiveSHA256 = "not-hex"
 	if matchingReplicaIntegrityReceipt(receipt, task) {
 		t.Fatal("malformed digest was accepted")

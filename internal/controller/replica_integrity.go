@@ -12,7 +12,6 @@ import (
 
 const (
 	replicaIntegrityLeaseTTL = 9 * time.Hour
-	replicaIntegrityInterval = 24 * time.Hour
 )
 
 func (s *Server) replicaIntegrityReconciler(ctx context.Context) {
@@ -66,30 +65,49 @@ func (s *Server) executeReplicaIntegrityTask(ctx context.Context, task store.Rep
 		return
 	}
 	request := protocol.VerifyReplicaIntegrityRequest{
-		OperationID: task.OperationID, SnapshotID: task.SnapshotID, Handle: task.Handle,
+		OperationID: task.OperationID, SnapshotID: task.SnapshotID,
+		CheckKind: task.CheckKind, Handle: task.Handle,
 		ManifestSHA256: hex.EncodeToString(task.ManifestSHA256),
 		ArchiveSHA256:  hex.EncodeToString(task.ArchiveSHA256),
 		FileCount:      task.FileCount, TotalBytes: task.TotalBytes,
 	}
 	result, err := s.runAgentCommandWithOperation(
-		ctx, node, "verify_replica_integrity", request, task.OperationID, snapshotWorkflowCommandTTL,
+		ctx, node, "verify_replica_integrity_v2", request, task.OperationID, snapshotWorkflowCommandTTL,
 	)
 	if err != nil {
 		code := safeReplicaIntegrityFailureCode(agentCommandErrorCode(err))
-		corrupt := code == "replica_integrity_mismatch"
-		s.failReplicaIntegrityTask(ctx, task, code, corrupt)
+		if code == "replica_integrity_mismatch" && task.CheckKind == "light" {
+			s.escalateReplicaIntegrityTask(ctx, task, "lightweight_integrity_anomaly")
+			return
+		}
+		s.failReplicaIntegrityTask(ctx, task, code, code == "replica_integrity_mismatch")
 		return
 	}
 	if !matchingReplicaIntegrityReceipt(result.ReplicaIntegrity, task) {
+		if task.CheckKind == "light" {
+			s.escalateReplicaIntegrityTask(ctx, task, "lightweight_receipt_mismatch")
+			return
+		}
 		s.failReplicaIntegrityTask(ctx, task, "receipt_mismatch", true)
 		return
 	}
 	_ = s.Store.CompleteReplicaIntegrityTask(ctx, store.CompleteReplicaIntegrityParams{
 		ReplicaID: task.ReplicaID, OperationID: task.OperationID, SnapshotID: task.SnapshotID,
 		ManifestSHA256: task.ManifestSHA256, ArchiveSHA256: task.ArchiveSHA256,
-		FileCount: task.FileCount, TotalBytes: task.TotalBytes,
-		Now: time.Now().UTC(), NextCheckAfter: replicaIntegrityInterval,
+		FileCount: task.FileCount, TotalBytes: task.TotalBytes, CheckKind: task.CheckKind,
+		Now: time.Now().UTC(), NextCheckAfter: store.ReplicaIntegrityLightInterval,
+		NextDeepAfter: store.ReplicaIntegrityDeepInterval,
 	})
+}
+
+func (s *Server) escalateReplicaIntegrityTask(
+	ctx context.Context,
+	task store.ReplicaIntegrityTask,
+	code string,
+) {
+	_ = s.Store.EscalateReplicaIntegrityTask(
+		ctx, task.ReplicaID, task.OperationID, code, time.Now().UTC(),
+	)
 }
 
 func safeReplicaIntegrityFailureCode(code string) string {
@@ -117,7 +135,7 @@ func matchingReplicaIntegrityReceipt(
 	receipt *protocol.ReplicaIntegrityReceipt,
 	task store.ReplicaIntegrityTask,
 ) bool {
-	if receipt == nil || receipt.SnapshotID != task.SnapshotID ||
+	if receipt == nil || receipt.SnapshotID != task.SnapshotID || receipt.CheckKind != task.CheckKind ||
 		receipt.FileCount != task.FileCount || receipt.TotalBytes != task.TotalBytes {
 		return false
 	}

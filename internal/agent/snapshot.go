@@ -320,6 +320,19 @@ func readArchiveReplicaMetadata(sourceRoot string) (archiveReplicaMetadata, erro
 }
 
 func verifyArchiveReplica(ctx context.Context, sourceRoot string, entries []protocol.ManifestEntry) (int64, error) {
+	return verifyArchiveReplicaTree(ctx, sourceRoot, entries, true)
+}
+
+func verifyArchiveReplicaLight(ctx context.Context, sourceRoot string, entries []protocol.ManifestEntry) (int64, error) {
+	return verifyArchiveReplicaTree(ctx, sourceRoot, entries, false)
+}
+
+func verifyArchiveReplicaTree(
+	ctx context.Context,
+	sourceRoot string,
+	entries []protocol.ManifestEntry,
+	rehash bool,
+) (int64, error) {
 	if len(entries) > maxSnapshotFiles {
 		return 0, fmt.Errorf("archive recovery file limit exceeded")
 	}
@@ -363,9 +376,11 @@ func verifyArchiveReplica(ctx context.Context, sourceRoot string, entries []prot
 		if !ok || entry.Size != info.Size() || seen[rel] {
 			return fmt.Errorf("archive recovery tree differs from manifest")
 		}
-		digest, err := hashFile(path)
-		if err != nil || !strings.EqualFold(hex.EncodeToString(digest[:]), entry.SHA256) {
-			return fmt.Errorf("archive recovery file verification failed")
+		if rehash {
+			digest, err := hashFile(path)
+			if err != nil || !strings.EqualFold(hex.EncodeToString(digest[:]), entry.SHA256) {
+				return fmt.Errorf("archive recovery file verification failed")
+			}
 		}
 		seen[rel] = true
 		return nil

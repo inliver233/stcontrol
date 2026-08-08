@@ -353,3 +353,12 @@
 - 真实 PostgreSQL 覆盖空节点 claim/同 owner 重入拒绝/竞争租约/释放重领/最终化、陈旧 generation 拒绝、compute 账号供应、满容量目标零 artifact 拒绝、完整快照阶段推进、权威 home 原子迁移与精确重放，以及 storage archive 替换和最终化；10,000-item 清单也在真实数据库运行。
 - `STCONTROL_TEST_POSTGRES_DSN=... go test -count=1 -coverprofile=coverage/node_retirement_executor.coverprofile ./...`、`go vet ./...`、Linux amd64 CGO0 build、web production build、30 个 embedded migration 并发应用/checksum 校验和 `git diff --check` 通过；总覆盖率 44.6%（Agent 54.1%、Controller 25.1%、Store 57.6%）。
 - 尚未完成且未冒充完成：物理节点清理/最终兼容性 retired 标记、跨 generation 自动接管、升级失败隔离、权威数据静默损坏恢复、双进程/掉电/磁盘满矩阵和 80% 覆盖率门禁仍是后续验收缺口，因此 R19/R22 保持 `部分`。
+
+## 2026-08-09：分层低频 archive 完整性复核批次
+
+- 新增 `0031_tiered_replica_integrity.sql`，为每个 archive 持久保存本次 check kind、最近 light/deep 时间和下次 deep 游标；发布完成的 manifest/逐文件/归档校验直接记为 deep 基线，24 小时后做 light，30 天后分批 deep，仍由 2 路 bounded worker 和 active generation/lease 栅栏领取。
+- light 校验只复核私有 metadata scope、manifest digest、目录路径、文件类型、数量、大小和总量，不读取聊天内容做语义判断；deep 才逐文件 SHA-256。light mismatch/回执错配只把同一用户副本立即排成 deep due，Store 明确禁止 light operation 直接写 `corrupt`；deep mismatch 才同时隔离规范化 copy/遗留 read model 并发 critical alert，既有 storage repair 随后只为该用户重建 archive。
+- 层级协议使用新的固定白名单命令 `verify_replica_integrity_v2`：旧 Agent 不认识时安全拒绝并退避，不会把无层级回执误当 deep；新 Agent 仍接收升级前已经 durable 排队的旧命令，并固定按旧语义执行完整 deep rehash。没有新增任意 shell、路径或内容回传。
+- Agent 测试证明同尺寸字节篡改可通过 light 但必被 deep 捕获，截短/结构变化由 light 捕获，命令错误不泄露路径/内容；Store/Controller 测试覆盖 check-kind 回执绑定、轻检升级、深检隔离和退避。真实 PostgreSQL 覆盖 light 不能直接 quarantine、light→deep、deep 成功重排、后续 light 不改变 deep cursor，最终 deep mismatch 原子标 corrupt 与 critical alert。
+- `STCONTROL_TEST_POSTGRES_DSN=... go test -count=1 -coverprofile=coverage/tiered_integrity.coverprofile ./...`、`go vet ./...`、Linux amd64 CGO0 build、web production build、31 个 embedded migration 并发应用/checksum 校验和 `git diff --check` 通过；总覆盖率 44.6%（Agent 54.3%、Controller 25.1%、Store 57.7%）。
+- 尚未完成且未冒充完成：本批只闭环 immutable archive 的三层校验与按用户 storage repair 入口；升级/插件 incident、管理员标记单用户权威数据损坏、权威 home 的安全检测/恢复、真实磁盘位翻转/进程重启和 80% 覆盖率仍是后续缺口，因此 R19/R22 保持 `部分`。
