@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	controlcrypto "stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
 )
 
@@ -41,6 +42,9 @@ func (a *Agent) StartHeartbeat(ctx context.Context) {
 
 // sendHeartbeat 采集并上报一次心跳。
 func (a *Agent) sendHeartbeat(ctx context.Context) {
+	if err := a.resumeControllerCredentialRotation(ctx); err != nil && ctx.Err() == nil {
+		log.Printf("Agent 凭据轮换确认尚未完成: %v", err)
+	}
 	// Retry the local mode application before reporting facts. A persisted mode
 	// transition therefore survives either process restarting midway through
 	// the Controller/adapter handshake.
@@ -131,6 +135,9 @@ func (a *Agent) sendHeartbeat(ctx context.Context) {
 		log.Printf("心跳响应被世代门禁拒绝: %v", err)
 		return
 	}
+	if err := a.acceptControllerCredentialRotation(ctx, response); err != nil {
+		log.Printf("Agent 凭据轮换提议被拒绝: %v", err)
+	}
 	if err := a.syncTavernControlMode(ctx); err != nil {
 		log.Printf("应用总控恢复模式失败: %v", err)
 	}
@@ -192,6 +199,16 @@ func (a *Agent) callController(ctx context.Context, method, path string, body an
 }
 
 func (a *Agent) doControllerRequest(ctx context.Context, method, path string, body any) (int, http.Header, []byte, error) {
+	psk, _ := a.controllerCredential()
+	return a.doControllerRequestWithPSK(ctx, method, path, body, psk)
+}
+
+func (a *Agent) doControllerRequestWithPSK(
+	ctx context.Context,
+	method, path string,
+	body any,
+	psk string,
+) (int, http.Header, []byte, error) {
 	var payload []byte
 	var err error
 	if body != nil {
@@ -211,7 +228,10 @@ func (a *Agent) doControllerRequest(ctx context.Context, method, path string, bo
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	protocol.SignRequest(req, a.Cfg.NodeID, a.Cfg.AgentPSK, payload)
+	if psk == "" {
+		return 0, nil, nil, fmt.Errorf("controller credential unavailable")
+	}
+	protocol.SignRequest(req, a.Cfg.NodeID, psk, payload)
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
@@ -223,6 +243,67 @@ func (a *Agent) doControllerRequest(ctx context.Context, method, path string, bo
 		return 0, nil, nil, err
 	}
 	return resp.StatusCode, resp.Header.Clone(), data, nil
+}
+
+func (a *Agent) acceptControllerCredentialRotation(
+	ctx context.Context,
+	response protocol.HeartbeatResponse,
+) error {
+	offer := response.CredentialRotation
+	if offer == nil {
+		return nil
+	}
+	currentPSK, currentVersion := a.controllerCredential()
+	if offer.CredentialVersion <= currentVersion || offer.ControllerGeneration != response.ControllerGeneration ||
+		offer.ControllerGeneration <= 0 || !offer.ExpiresAt.After(time.Now().UTC()) ||
+		offer.ExpiresAt.After(time.Now().UTC().Add(25*time.Hour)) || offer.EncryptedPSK == "" {
+		return fmt.Errorf("invalid controller credential rotation offer")
+	}
+	plaintext, err := controlcrypto.Decrypt(
+		controlcrypto.DeriveAgentCredentialRotationKey(currentPSK), offer.EncryptedPSK,
+	)
+	if err != nil || len(plaintext) < 32 || len(plaintext) > 128 {
+		return fmt.Errorf("decrypt controller credential rotation offer")
+	}
+	if err := a.persistPendingControllerCredential(
+		string(plaintext), offer.CredentialVersion, offer.ControllerGeneration, offer.ExpiresAt,
+	); err != nil {
+		return err
+	}
+	return a.resumeControllerCredentialRotation(ctx)
+}
+
+func (a *Agent) resumeControllerCredentialRotation(ctx context.Context) error {
+	credential := a.pendingControllerCredential()
+	if credential.PendingPSK == "" {
+		return nil
+	}
+	if !credential.PendingExpiresAt.After(time.Now().UTC()) {
+		return a.clearPendingControllerCredential(credential.PendingVersion)
+	}
+	status, _, data, err := a.doControllerRequestWithPSK(
+		ctx, http.MethodPost, "/api/agent/credentials/confirm",
+		protocol.ConfirmAgentCredentialRequest{CredentialVersion: credential.PendingVersion},
+		credential.PendingPSK,
+	)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusConflict || status == http.StatusGone {
+		return a.clearPendingControllerCredential(credential.PendingVersion)
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("credential confirmation returned status %d", status)
+	}
+	var response protocol.ConfirmAgentCredentialResponse
+	if err := json.Unmarshal(data, &response); err != nil || !response.OK ||
+		response.CredentialVersion != credential.PendingVersion ||
+		response.ControllerGeneration != credential.PendingGeneration {
+		return fmt.Errorf("invalid credential confirmation response")
+	}
+	return a.activatePendingControllerCredential(
+		response.CredentialVersion, response.ControllerGeneration,
+	)
 }
 
 func (a *Agent) controllerEndpoint(path string) (string, error) {

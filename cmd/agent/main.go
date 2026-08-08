@@ -28,6 +28,7 @@ func main() {
 	if err := config.Load(*cfgPath, cfg); err != nil {
 		log.Fatalf("加载配置失败: %v", err)
 	}
+	cfg.ConfigPath = *cfgPath
 	// 命令行覆盖
 	if *controller != "" {
 		cfg.ControllerURL = *controller

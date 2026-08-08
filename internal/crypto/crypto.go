@@ -119,3 +119,10 @@ func DeriveAgentCommandKey(psk string) []byte {
 func DeriveAgentCommandAuthKey(psk string) []byte {
 	return sha256Of([]byte("stcontrol-agent-command-auth:v1:" + psk))
 }
+
+// DeriveAgentCredentialRotationKey is used only to wrap a successor Agent
+// credential while the currently active credential is still valid. The
+// successor is not activated until the Agent proves it persisted that secret.
+func DeriveAgentCredentialRotationKey(psk string) []byte {
+	return sha256Of([]byte("stcontrol-agent-credential-rotation:v1:" + psk))
+}

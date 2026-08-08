@@ -13,6 +13,7 @@ import (
 	"sort"
 	"time"
 
+	"stcontrol/internal/config"
 	"stcontrol/internal/protocol"
 )
 
@@ -29,6 +30,17 @@ type agentRuntimeState struct {
 	Completed         map[string]cachedCommandResult `json:"completed"`
 	Transfers         map[string]pendingTransfer     `json:"transfers"`
 	ControlMode       agentControlModeState          `json:"control_mode"`
+	Credential        agentCredentialState           `json:"controller_credential"`
+}
+
+type agentCredentialState struct {
+	CurrentPSK        string    `json:"current_psk"`
+	CurrentVersion    int64     `json:"current_version"`
+	CurrentGeneration int64     `json:"current_generation"`
+	PendingPSK        string    `json:"pending_psk,omitempty"`
+	PendingVersion    int64     `json:"pending_version,omitempty"`
+	PendingGeneration int64     `json:"pending_generation,omitempty"`
+	PendingExpiresAt  time.Time `json:"pending_expires_at,omitempty"`
 }
 
 type pendingTransfer struct {
@@ -83,6 +95,24 @@ func (a *Agent) loadRuntimeState() error {
 	if a.Cfg.ControllerGeneration > a.state.HighestGeneration {
 		a.state.HighestGeneration = a.Cfg.ControllerGeneration
 	}
+	if a.state.Credential.CurrentPSK == "" && a.Cfg.AgentPSK != "" {
+		a.state.Credential.CurrentPSK = a.Cfg.AgentPSK
+		a.state.Credential.CurrentVersion = a.Cfg.CredentialVersion
+		if a.state.Credential.CurrentVersion <= 0 {
+			a.state.Credential.CurrentVersion = 1
+		}
+		a.state.Credential.CurrentGeneration = a.Cfg.ControllerGeneration
+		if a.state.Credential.CurrentGeneration <= 0 {
+			a.state.Credential.CurrentGeneration = 1
+		}
+	}
+	if a.state.Credential.CurrentPSK != "" && a.state.Credential.CurrentVersion <= 0 {
+		return fmt.Errorf("invalid persisted controller credential")
+	}
+	if a.state.Credential.PendingPSK != "" && (a.state.Credential.PendingVersion <= a.state.Credential.CurrentVersion ||
+		a.state.Credential.PendingGeneration <= 0 || a.state.Credential.PendingExpiresAt.IsZero()) {
+		return fmt.Errorf("invalid persisted pending controller credential")
+	}
 	if a.state.ControlMode.Mode == "" {
 		a.state.ControlMode.Mode = protocol.NodeModeManaged
 		a.state.ControlMode.AdapterMode = protocol.NodeModeManaged
@@ -93,6 +123,107 @@ func (a *Agent) loadRuntimeState() error {
 		(a.state.ControlMode.AdapterMode != "" && !validNodeControlMode(a.state.ControlMode.AdapterMode)) {
 		return fmt.Errorf("invalid persisted node control mode")
 	}
+	return a.saveRuntimeStateLocked()
+}
+
+func (a *Agent) controllerCredential() (string, int64) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if a.state.Credential.CurrentPSK == "" && a.Cfg != nil {
+		version := a.Cfg.CredentialVersion
+		if version <= 0 {
+			version = 1
+		}
+		return a.Cfg.AgentPSK, version
+	}
+	return a.state.Credential.CurrentPSK, a.state.Credential.CurrentVersion
+}
+
+func (a *Agent) pendingControllerCredential() agentCredentialState {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.state.Credential
+}
+
+func (a *Agent) persistInitialControllerCredential(psk string, version, generation int64) error {
+	if psk == "" || version <= 0 || generation <= 0 {
+		return fmt.Errorf("invalid initial controller credential")
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.state.Credential = agentCredentialState{
+		CurrentPSK: psk, CurrentVersion: version, CurrentGeneration: generation,
+	}
+	if generation > a.state.HighestGeneration {
+		a.state.HighestGeneration = generation
+	}
+	return a.saveRuntimeStateLocked()
+}
+
+func (a *Agent) persistPendingControllerCredential(psk string, version, generation int64, expiresAt time.Time) error {
+	if psk == "" || version <= 0 || generation <= 0 || !expiresAt.After(time.Now().UTC()) {
+		return fmt.Errorf("invalid pending controller credential")
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if version <= a.state.Credential.CurrentVersion {
+		return fmt.Errorf("controller credential version rollback")
+	}
+	if a.state.Credential.PendingPSK != "" &&
+		(a.state.Credential.PendingVersion != version || a.state.Credential.PendingPSK != psk) {
+		return fmt.Errorf("conflicting pending controller credential")
+	}
+	a.state.Credential.PendingPSK = psk
+	a.state.Credential.PendingVersion = version
+	a.state.Credential.PendingGeneration = generation
+	a.state.Credential.PendingExpiresAt = expiresAt
+	return a.saveRuntimeStateLocked()
+}
+
+func (a *Agent) activatePendingControllerCredential(version, generation int64) error {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	credential := &a.state.Credential
+	if credential.PendingPSK == "" || credential.PendingVersion != version ||
+		credential.PendingGeneration != generation {
+		if credential.CurrentVersion == version && credential.CurrentGeneration == generation {
+			return nil
+		}
+		return fmt.Errorf("pending controller credential mismatch")
+	}
+	if a.Cfg != nil {
+		a.Cfg.AgentPSK = credential.PendingPSK
+		a.Cfg.CredentialVersion = credential.PendingVersion
+		a.Cfg.ControllerGeneration = credential.PendingGeneration
+		if a.Cfg.ConfigPath != "" {
+			if err := config.Save(a.Cfg.ConfigPath, a.Cfg); err != nil {
+				return fmt.Errorf("persist rotated controller credential: %w", err)
+			}
+		}
+	}
+	credential.CurrentPSK = credential.PendingPSK
+	credential.CurrentVersion = credential.PendingVersion
+	credential.CurrentGeneration = credential.PendingGeneration
+	credential.PendingPSK = ""
+	credential.PendingVersion = 0
+	credential.PendingGeneration = 0
+	credential.PendingExpiresAt = time.Time{}
+	if generation > a.state.HighestGeneration {
+		a.state.HighestGeneration = generation
+	}
+	return a.saveRuntimeStateLocked()
+}
+
+func (a *Agent) clearPendingControllerCredential(version int64) error {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if a.state.Credential.PendingVersion != version {
+		return nil
+	}
+	a.state.Credential.PendingPSK = ""
+	a.state.Credential.PendingVersion = 0
+	a.state.Credential.PendingGeneration = 0
+	a.state.Credential.PendingExpiresAt = time.Time{}
 	return a.saveRuntimeStateLocked()
 }
 

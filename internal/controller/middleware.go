@@ -111,12 +111,22 @@ func (s *Server) agentAuthMiddleware(next http.Handler) http.Handler {
 		_ = r.Body.Close()
 		r.Body = io.NopCloser(bytes.NewReader(body))
 
-		psk, err := s.agentPSK(r.Context(), node)
+		credentials, err := s.Store.ListAgentAuthenticationCredentials(r.Context(), node.ID, time.Now().UTC())
 		if err != nil {
 			protocol.WriteError(w, http.StatusServiceUnavailable, "节点认证暂不可用")
 			return
 		}
-		if psk == "" || protocol.VerifyRequest(r, psk, body) != nil {
+		var matched *store.AgentAuthenticationCredential
+		var matchedPSK string
+		for index := range credentials {
+			plaintext, decryptErr := controlcrypto.Decrypt(s.secretKey, string(credentials[index].Ciphertext))
+			if decryptErr == nil && protocol.VerifyRequest(r, string(plaintext), body) == nil {
+				matched = &credentials[index]
+				matchedPSK = string(plaintext)
+				break
+			}
+		}
+		if matched == nil || (matched.Pending && r.URL.Path != "/api/agent/credentials/confirm") {
 			protocol.WriteError(w, http.StatusUnauthorized, "签名校验失败")
 			return
 		}
@@ -140,8 +150,18 @@ func (s *Server) agentAuthMiddleware(next http.Handler) http.Handler {
 		}
 		// 把节点放进上下文
 		ctx := context.WithValue(r.Context(), ctxKey("stcontrol-node"), node)
+		ctx = context.WithValue(ctx, ctxKey("stcontrol-agent-credential-version"), matched.CredentialVersion)
+		ctx = context.WithValue(ctx, ctxKey("stcontrol-agent-credential-pending"), matched.Pending)
+		ctx = context.WithValue(ctx, ctxKey("stcontrol-agent-psk"), matchedPSK)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func currentAgentCredential(r *http.Request) (int64, bool, string) {
+	version, _ := r.Context().Value(ctxKey("stcontrol-agent-credential-version")).(int64)
+	pending, _ := r.Context().Value(ctxKey("stcontrol-agent-credential-pending")).(bool)
+	psk, _ := r.Context().Value(ctxKey("stcontrol-agent-psk")).(string)
+	return version, pending, psk
 }
 
 func (s *Server) agentPSK(ctx context.Context, node *store.Node) (string, error) {

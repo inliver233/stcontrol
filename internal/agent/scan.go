@@ -95,14 +95,14 @@ func (a *Agent) scanExistingUsersFromAdapter(ctx context.Context) ([]protocol.Sc
 			identities = append(identities, protocol.ScanExistingIdentity{
 				Provider: identity.Provider,
 				Fingerprint: controlcrypto.AgentInventoryFingerprint(
-					a.Cfg.AgentPSK, "oauth-subject", identity.Provider, identity.Subject,
+					a.adapterPSK(), "oauth-subject", identity.Provider, identity.Subject,
 				),
 			})
 		}
 		out = append(out, protocol.ScanExistingUser{
 			LocalUserID: user.LocalUserID, Handle: user.Handle, Size: user.SizeBytes,
 			DirectoryFingerprint: controlcrypto.AgentInventoryFingerprint(
-				a.Cfg.AgentPSK, "directory", user.DirectoryFingerprint,
+				a.adapterPSK(), "directory", user.DirectoryFingerprint,
 			),
 			Source: "adapter", AccountKind: inventoryAccountKind(user.HasPassword, len(identities) > 0),
 			Identities: identities, IsAdmin: user.IsAdmin,

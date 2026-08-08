@@ -89,6 +89,8 @@ func (s *Store) PromoteControllerEpoch(ctx context.Context, source string, now t
 		) VALUES ($3,gen_random_uuid(),gen_random_uuid(),$4,'active',$5,$2);
 		UPDATE controller_sessions SET revoked_at=COALESCE(revoked_at,$2) WHERE revoked_at IS NULL;
 		UPDATE control_tickets SET revoked_at=COALESCE(revoked_at,$2) WHERE consumed_at IS NULL AND revoked_at IS NULL;
+		UPDATE agent_credential_rotations SET state='revoked'
+		WHERE state='pending' AND controller_generation=$1;
 		UPDATE nodes SET controller_generation=0 WHERE role IN ('compute','storage')`,
 		current, now, next, source, signingVersion+1); err != nil {
 		return 0, err

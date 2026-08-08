@@ -457,7 +457,8 @@ func (a *Agent) decryptCommand(command protocol.AgentCommand) ([]byte, error) {
 		(envelope.Version != 1 && envelope.Version != 2) || envelope.Ciphertext == "" {
 		return nil, fmt.Errorf("invalid envelope")
 	}
-	plaintext, err := controlcrypto.Decrypt(controlcrypto.DeriveAgentCommandKey(a.Cfg.AgentPSK), envelope.Ciphertext)
+	psk, _ := a.controllerCredential()
+	plaintext, err := controlcrypto.Decrypt(controlcrypto.DeriveAgentCommandKey(psk), envelope.Ciphertext)
 	if err != nil {
 		return nil, err
 	}
@@ -470,7 +471,7 @@ func (a *Agent) decryptCommand(command protocol.AgentCommand) ([]byte, error) {
 		digest := sha256.Sum256(plaintext)
 		got = digest[:]
 	} else {
-		authenticator := hmac.New(sha256.New, controlcrypto.DeriveAgentCommandAuthKey(a.Cfg.AgentPSK))
+		authenticator := hmac.New(sha256.New, controlcrypto.DeriveAgentCommandAuthKey(psk))
 		_, _ = authenticator.Write(plaintext)
 		got = authenticator.Sum(nil)
 	}

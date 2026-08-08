@@ -113,10 +113,28 @@ type NodeControlModeReport struct {
 }
 
 type HeartbeatResponse struct {
-	OK                   bool   `json:"ok"`
-	ControllerGeneration int64  `json:"controller_generation"`
-	DesiredMode          string `json:"desired_mode"`
-	ModeGeneration       int64  `json:"mode_generation"`
+	OK                   bool                          `json:"ok"`
+	ControllerGeneration int64                         `json:"controller_generation"`
+	DesiredMode          string                        `json:"desired_mode"`
+	ModeGeneration       int64                         `json:"mode_generation"`
+	CredentialRotation   *AgentCredentialRotationOffer `json:"credential_rotation,omitempty"`
+}
+
+type AgentCredentialRotationOffer struct {
+	CredentialVersion    int64     `json:"credential_version"`
+	ControllerGeneration int64     `json:"controller_generation"`
+	EncryptedPSK         string    `json:"encrypted_psk"`
+	ExpiresAt            time.Time `json:"expires_at"`
+}
+
+type ConfirmAgentCredentialRequest struct {
+	CredentialVersion int64 `json:"credential_version"`
+}
+
+type ConfirmAgentCredentialResponse struct {
+	OK                   bool  `json:"ok"`
+	CredentialVersion    int64 `json:"credential_version"`
+	ControllerGeneration int64 `json:"controller_generation"`
 }
 
 type ApplyNodeControlModeRequest struct {

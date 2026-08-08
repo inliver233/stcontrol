@@ -146,10 +146,93 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		// heartbeat cannot prove that every other node has recovered.
 		_ = s.refreshControlPlaneGate(ctx)
 	}
+	_, _, currentPSK := currentAgentCredential(r)
+	rotation, err := s.agentCredentialRotationOffer(ctx, node, currentPSK, decision.ControllerGeneration, now)
+	if err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "节点凭据轮换暂不可用")
+		return
+	}
 
 	protocol.WriteJSON(w, http.StatusOK, protocol.HeartbeatResponse{
 		OK: true, ControllerGeneration: decision.ControllerGeneration,
 		DesiredMode: decision.DesiredMode, ModeGeneration: decision.ModeGeneration,
+		CredentialRotation: rotation,
+	})
+}
+
+func (s *Server) agentCredentialRotationOffer(
+	ctx context.Context,
+	node *store.Node,
+	currentPSK string,
+	controllerGeneration int64,
+	now time.Time,
+) (*protocol.AgentCredentialRotationOffer, error) {
+	if node == nil || currentPSK == "" || controllerGeneration <= 0 {
+		return nil, store.ErrAgentCredentialRotation
+	}
+	newPSK, err := crypto.RandomPassword(48)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext, err := crypto.Encrypt(s.secretKey, []byte(newPSK))
+	if err != nil {
+		return nil, err
+	}
+	rotationID, err := newUUID()
+	if err != nil {
+		return nil, err
+	}
+	operationID, err := newUUID()
+	if err != nil {
+		return nil, err
+	}
+	rotation, err := s.Store.EnsureAgentCredentialRotation(ctx, store.EnsureAgentCredentialRotationParams{
+		ID: rotationID, OperationID: operationID, NodeID: node.ID,
+		ProposedCiphertext: []byte(ciphertext), ControllerGeneration: controllerGeneration,
+		Now: now, ExpiresAt: now.Add(24 * time.Hour),
+	})
+	if err != nil || rotation == nil {
+		return nil, err
+	}
+	plaintext, err := crypto.Decrypt(s.secretKey, string(rotation.Ciphertext))
+	if err != nil {
+		return nil, err
+	}
+	wrapped, err := crypto.Encrypt(crypto.DeriveAgentCredentialRotationKey(currentPSK), plaintext)
+	if err != nil {
+		return nil, err
+	}
+	return &protocol.AgentCredentialRotationOffer{
+		CredentialVersion:    rotation.CredentialVersion,
+		ControllerGeneration: rotation.ControllerGeneration,
+		EncryptedPSK:         wrapped, ExpiresAt: rotation.ExpiresAt,
+	}, nil
+}
+
+func (s *Server) handleAgentConfirmCredential(w http.ResponseWriter, r *http.Request) {
+	var req protocol.ConfirmAgentCredentialRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+	decoder.DisallowUnknownFields()
+	matchedVersion, _, _ := currentAgentCredential(r)
+	if decoder.Decode(&req) != nil || req.CredentialVersion <= 0 || req.CredentialVersion != matchedVersion {
+		protocol.WriteError(w, http.StatusBadRequest, "凭据轮换确认无效")
+		return
+	}
+	node := currentNode(r)
+	if node == nil {
+		protocol.WriteError(w, http.StatusUnauthorized, "未知节点")
+		return
+	}
+	generation, err := s.Store.ActivateAgentCredentialRotation(
+		r.Context(), node.ID, req.CredentialVersion, time.Now().UTC(),
+	)
+	if err != nil {
+		protocol.WriteError(w, http.StatusConflict, "凭据轮换已失效，请等待重新协商")
+		return
+	}
+	_ = s.Store.Audit(r.Context(), "agent", "credential-rotated", fmt.Sprintf("node:%d", node.ID), nil)
+	protocol.WriteJSON(w, http.StatusOK, protocol.ConfirmAgentCredentialResponse{
+		OK: true, CredentialVersion: req.CredentialVersion, ControllerGeneration: generation,
 	})
 }
 

@@ -32,6 +32,9 @@ func New(cfg *config.AgentConfig) (*Agent, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("agent config is required")
 	}
+	if cfg.TavernAdapterPSK == "" {
+		cfg.TavernAdapterPSK = cfg.AgentPSK
+	}
 	if cfg.Role == "storage" {
 		if cfg.BackupDir == "" {
 			return nil, fmt.Errorf("storage agent backup directory is required")
@@ -55,6 +58,16 @@ func New(cfg *config.AgentConfig) (*Agent, error) {
 		return nil, fmt.Errorf("load agent runtime state: %w", err)
 	}
 	return agent, nil
+}
+
+func (a *Agent) adapterPSK() string {
+	if a == nil || a.Cfg == nil {
+		return ""
+	}
+	if a.Cfg.TavernAdapterPSK != "" {
+		return a.Cfg.TavernAdapterPSK
+	}
+	return a.Cfg.AgentPSK
 }
 
 // Version 子控版本。

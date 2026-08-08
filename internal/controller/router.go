@@ -57,6 +57,7 @@ func (s *Server) routes(r *chi.Mux) {
 	r.Route("/api/agent", func(r chi.Router) {
 		r.Use(s.agentAuthMiddleware)
 		r.Post("/heartbeat", s.handleAgentHeartbeat)
+		r.Post("/credentials/confirm", s.handleAgentConfirmCredential)
 		r.Post("/commands/lease", s.handleAgentLeaseCommand)
 		r.Post("/commands/{id}/ack", s.handleAgentAckCommand)
 		r.Post("/commands/{id}/result", s.handleAgentFinishCommand)

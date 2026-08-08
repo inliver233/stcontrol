@@ -14,8 +14,15 @@ import (
 // disables the obsolete federated draft so credentials cannot be accepted by
 // two protocols at once.
 func ConfigureTavernAdapter(cfg *config.AgentConfig) error {
+	adapterPSK := ""
+	if cfg != nil {
+		adapterPSK = cfg.TavernAdapterPSK
+		if adapterPSK == "" {
+			adapterPSK = cfg.AgentPSK
+		}
+	}
 	if cfg == nil || cfg.Role != "compute" || cfg.TavernDir == "" || cfg.NodeID <= 0 ||
-		cfg.AgentPSK == "" || cfg.ControllerURL == "" {
+		adapterPSK == "" || cfg.ControllerURL == "" {
 		return fmt.Errorf("complete compute enrollment is required")
 	}
 	configPath := filepath.Join(cfg.TavernDir, "config.yaml")
@@ -36,7 +43,7 @@ func ConfigureTavernAdapter(cfg *config.AgentConfig) error {
 	setYAMLScalar(stcontrol, "enabled", "true", "!!bool")
 	setYAMLScalar(stcontrol, "controllerUrl", cfg.ControllerURL, "!!str")
 	setYAMLScalar(stcontrol, "nodeId", fmt.Sprintf("%d", cfg.NodeID), "!!int")
-	setYAMLScalar(stcontrol, "agentPsk", cfg.AgentPSK, "!!str")
+	setYAMLScalar(stcontrol, "agentPsk", adapterPSK, "!!str")
 	setYAMLScalar(stcontrol, "controllerGeneration", fmt.Sprintf("%d", cfg.ControllerGeneration), "!!int")
 	legacy := ensureYAMLMapping(root, "federated")
 	setYAMLScalar(legacy, "enabled", "false", "!!bool")

@@ -306,7 +306,7 @@ func (a *Agent) postTavernAdapter(
 			req.AddCookie(cookie)
 		}
 	}
-	protocol.SignRequest(req, a.Cfg.NodeID, a.Cfg.AgentPSK, payload)
+	protocol.SignRequest(req, a.Cfg.NodeID, a.adapterPSK(), payload)
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
 		return 0, nil, fmt.Errorf("call node adapter: %w", err)

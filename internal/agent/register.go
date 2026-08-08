@@ -51,8 +51,11 @@ func (a *Agent) RegisterToController(ctx context.Context, token string) error {
 		return err
 	}
 	a.Cfg.NodeID = out.NodeID
+	a.Cfg.TavernAdapterPSK = out.AgentPSK
 	a.Cfg.AgentPSK = out.AgentPSK
 	a.Cfg.CredentialVersion = out.CredentialVersion
 	a.Cfg.ControllerGeneration = out.ControllerGeneration
-	return nil
+	return a.persistInitialControllerCredential(
+		out.AgentPSK, out.CredentialVersion, out.ControllerGeneration,
+	)
 }
