@@ -299,11 +299,11 @@ func (s *Store) ReconcileProtectionStates(
 		INSERT INTO replica_conflict_sources (
 		  conflict_id,node_id,node_name,node_role,snapshot_id,source_kind,replica_state,
 		  is_authoritative,manifest_sha256,file_count,total_bytes,published_at,
-		  legacy_data_version,legacy_checksum,captured_at
+		  legacy_data_version,legacy_checksum,captured_at,evidence_id
 		)
 		SELECT conflict_id,node_id,node_name,node_role,snapshot_id,source_kind,replica_state,
 		  is_authoritative,manifest_sha256,file_count,total_bytes,published_at,
-		  legacy_data_version,legacy_checksum,captured_at
+		  legacy_data_version,legacy_checksum,captured_at,gen_random_uuid()
 		FROM ranked WHERE source_rank=1
 		ON CONFLICT (conflict_id,node_id) DO NOTHING`, now); err != nil {
 		return ProtectionReconcileResult{}, fmt.Errorf("capture replica conflict sources: %w", err)

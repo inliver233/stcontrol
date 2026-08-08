@@ -278,7 +278,7 @@ func (s *Store) CompleteConflictEvidence(ctx context.Context, p CompleteConflict
 		INSERT INTO audit_events (
 		  occurred_at,actor_type,actor_id,action,target_type,target_id,outcome,detail
 		) VALUES ($5,'system',NULL,'conflict-evidence-captured','user',$1::text,'succeeded',
-		  jsonb_build_object('conflict_id',$2,'evidence_id',$3,'file_count',$4))`,
+		  jsonb_build_object('conflict_id',$2::text,'evidence_id',$3::text,'file_count',$4::bigint))`,
 		userID, p.ConflictID, p.EvidenceID, p.FileCount, p.Now); err != nil {
 		return err
 	}

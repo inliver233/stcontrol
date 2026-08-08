@@ -296,7 +296,8 @@ func (s *Store) CreateConflictResolution(
 		  occurred_at,actor_type,actor_id,action,target_type,target_id,operation_id,
 		  controller_generation,input_digest,outcome,detail
 		) VALUES ($8,'user',$1::text,'resolve-replica-conflict','global_user',$1::text,$2,
-		  $3,$4,'scheduled',jsonb_build_object('conflict_id',$5,'base_node_id',$6,'decision_count',$7))`,
+		  $3,$4,'scheduled',jsonb_build_object(
+		    'conflict_id',$5::text,'base_node_id',$6::bigint,'decision_count',$7::bigint))`,
 		p.GlobalUserID, p.OperationID, generation, p.RequestDigest, p.ConflictID,
 		p.BaseNodeID, len(p.Decisions), p.Now); err != nil {
 		return nil, err
@@ -698,14 +699,14 @@ func (s *Store) CompleteConflictResolution(ctx context.Context, p CompleteConfli
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO user_replicas
 		(user_id,node_id,kind,data_version,state,last_sync_at,checksum,size_bytes)
-		VALUES ($1,$2,'primary',1,'ready',$3,$4,$5)
-		ON CONFLICT (user_id,node_id) DO UPDATE SET kind='primary',data_version=user_replicas.data_version+1,
+		VALUES ($1,$2,'home',1,'ready',$3,$4,$5)
+		ON CONFLICT (user_id,node_id) DO UPDATE SET kind='home',data_version=user_replicas.data_version+1,
 		state='ready',last_sync_at=EXCLUDED.last_sync_at,checksum=EXCLUDED.checksum,size_bytes=EXCLUDED.size_bytes`,
 		legacyUserID, baseNodeID, p.Now, manifestHex, p.TotalBytes); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE users SET status='active',home_node_id=$2,
-		data_version=data_version+1,checksum=$3 WHERE id=$1`, legacyUserID, baseNodeID, manifestHex); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET status='active',home_node_id=$2
+		WHERE id=$1`, legacyUserID, baseNodeID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE global_users SET status='active',updated_at=$2 WHERE id=$1`, userID, p.Now); err != nil {
@@ -746,8 +747,8 @@ func (s *Store) CompleteConflictResolution(ctx context.Context, p CompleteConfli
 		occurred_at,actor_type,actor_id,action,target_type,target_id,operation_id,
 		controller_generation,outcome,detail
 		) VALUES ($8,'system',NULL,'resolve-replica-conflict','global_user',$1::text,$2,$3,
-		'succeeded',jsonb_build_object('conflict_id',$4,'base_node_id',$5,
-		'result_snapshot_id',$6,'preserved_source_count',$7))`, userID, p.OperationID,
+		'succeeded',jsonb_build_object('conflict_id',$4::text,'base_node_id',$5::bigint,
+		'result_snapshot_id',$6::text,'preserved_source_count',$7::bigint))`, userID, p.OperationID,
 		generation, p.ConflictID, baseNodeID, p.ResultSnapshotID, preservedSourceCount, p.Now); err != nil {
 		return err
 	}
@@ -874,7 +875,7 @@ func (s *Store) RestartConflictResolution(
 		occurred_at,actor_type,actor_id,action,target_type,target_id,operation_id,
 		controller_generation,outcome,detail
 		) VALUES ($6,'user',$1::text,'retry-conflict-resolution','global_user',$1::text,$2,$3,
-		'scheduled',jsonb_build_object('conflict_id',$4,'base_node_id',$5))`,
+		'scheduled',jsonb_build_object('conflict_id',$4::text,'base_node_id',$5::bigint))`,
 		userID, operationID, generation, conflictID, baseNodeID, now); err != nil {
 		return nil, err
 	}
