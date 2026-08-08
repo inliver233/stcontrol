@@ -13,8 +13,7 @@ import (
 // dimension is safe. Busy nodes remain selectable but sort below open nodes;
 // only durable full/unknown states close allocation.
 func (s *Server) nodeRegistrable(n *store.Node) bool {
-	if n.Role != "compute" || n.ConnectivityState != "online" ||
-		n.OperationalState != "active" || n.CompatibilityState != "compatible" ||
+	if n.Role != "compute" || !nodeReadyForManagedOperation(n) ||
 		(n.CapacityState != "open" && n.CapacityState != "busy") || !n.AllowRegister {
 		return false
 	}
@@ -33,7 +32,7 @@ func (s *Server) nodeStatusLabel(n *store.Node) string {
 		return "故障"
 	case n.Role == "storage":
 		return "备份"
-	case n.ConnectivityState != "online" || n.OperationalState != "active" || n.CompatibilityState != "compatible":
+	case !nodeReadyForManagedOperation(n):
 		return "维护"
 	case !n.AllowRegister:
 		return "满载"
@@ -109,7 +108,8 @@ func availableNodeRank(node availableNode) int {
 
 func nodeReadyForManagedOperation(node *store.Node) bool {
 	return node != nil && node.ConnectivityState == "online" &&
-		node.OperationalState == "active" && node.CompatibilityState == "compatible"
+		node.OperationalState == "active" && node.CompatibilityState == "compatible" &&
+		node.ControlMode == "managed" && node.DesiredControlMode == "managed"
 }
 
 func nodeAcceptsNewData(node *store.Node) bool {

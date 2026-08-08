@@ -40,6 +40,10 @@ type Node struct {
 	Status                       string          `json:"status"`
 	ConnectivityState            string          `json:"connectivity_state"`
 	OperationalState             string          `json:"operational_state"`
+	ControlMode                  string          `json:"control_mode"`
+	ControlModeGeneration        int64           `json:"control_mode_generation"`
+	DesiredControlMode           string          `json:"desired_control_mode"`
+	DesiredModeGeneration        int64           `json:"desired_mode_generation"`
 	CapacityState                string          `json:"capacity_state"`
 	CapacityReasonCode           sql.NullString  `json:"capacity_reason_code"`
 	CapacityChangedAt            sql.NullTime    `json:"capacity_changed_at"`

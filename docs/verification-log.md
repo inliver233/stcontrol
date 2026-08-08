@@ -322,3 +322,13 @@
 - 在项目内下载官方 `go1.26.5.linux-amd64.tar.gz`，SHA-256 为 `5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053`，并由 WSL Ubuntu-E 执行 Linux-only HTTP 数据面测试。首轮真实运行发现首次副本的最终父目录尚不存在时错误地对该不存在路径查询磁盘空间；修复为对与最终路径同文件系统且已存在的 task root 查询。修复后完整 tar.zst 经 HTTP 接收、manifest/逐文件校验、元数据写入和原子发布成功，同 capability 重放被拒绝。
 - `STCONTROL_TEST_POSTGRES_DSN=... go test -count=1 -coverprofile=coverage/tls_data_plane.coverprofile ./...`、`go vet ./...`、Linux amd64 CGO0 build、Linux WSL 定向 E2E、`git diff --check` 和 Docker Compose 静态解析通过；总覆盖率 44.2%（Agent 54.1%、Controller 25.2%、Store 56.8%）。
 - 尚未完成且未冒充完成：真实受信 CA 的跨机 TLS/NAT、断网/磁盘满/掉电和双 Agent 进程故障矩阵、全仓日志敏感样本扫描及 80% 覆盖率门禁仍是主流程验收缺口。
+
+## 2026-08-08：节点生命周期确定性门禁加固批次
+
+- `TransitionNodeLifecycle` 的幂等重放不再只比较目标状态，而是绑定 operation ID、节点、目标状态、机器 reason code 和管理员；跨节点或修改载荷复用 operation 明确失败关闭。新转换先以共享锁取得 active controller generation，再锁节点并把精确 generation 写入事件，避免没有活动主控时更新节点却漏写审计事件。
+- reason code 只允许 `^[a-z][a-z0-9_]{0,63}$`，数据库以 `NOT VALID` check 保留历史审计但约束所有新写入；Controller 与 Store 双层校验，拒绝自由文本、大小写和超长输入。
+- 最终退役只允许 reported/desired control mode 均为 managed，并检查 legacy home/副本、规范化 `replica_copies`、节点账号、非终态 workflow/backup job、写租约、独立模式对账和 relay transfer。维护/排空不再清除 operator 的 `allow_register/is_backup_target` 配置；注册创建、公开推荐、备份/修复目标改为同时要求 reported/desired managed，配置意图与运行准入分离。
+- 排空完成后的最终退役在同一个 serializable 事务内关闭注册/备份与节点状态，并撤销 Agent 凭据、pending 凭据轮换、未消费 enrollment、在途固定命令、管理员关联、控制票据/遗留票据及 orphan prepared transfer capability。真实 PostgreSQL 首轮测试发现 lib/pq 不允许带参数的多命令 prepared statement，随后把级联改为同一事务中的逐条参数化语句并通过真实运行，避免把 sqlmock 成功误当生产可执行。
+- 新增真实 PostgreSQL 矩阵验证维护/排空保留 operator 配置、精确重放成功、跨节点/改 reason 重放拒绝、active node account/规范化 ready 副本/independent-draining 阻止退役，以及排空后所有凭据/票据/能力原子撤销并可精确重放最终结果。
+- `STCONTROL_TEST_POSTGRES_DSN=... go test -count=1 -coverprofile=coverage/node_lifecycle_hardening.coverprofile ./...` 通过；总覆盖率 44.3%（Agent 54.1%、Controller 25.4%、Store 56.9%）。`go vet ./...`、Linux amd64 CGO0 build、web production build、29 个 embedded migration 并发应用/checksum 校验和 `git diff --check` 通过。
+- 尚未完成且未冒充完成：本批次只加固最终退役安全边界，没有把“进入 draining”冒充自动迁移。持久化 retirement operation/items、逐用户迁移与验证、retiring/decommissioned 进度、失败节点转普通恢复、升级失败和静默数据损坏矩阵仍是 R19 后续；总覆盖率也仍低于 80%。

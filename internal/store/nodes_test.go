@@ -109,7 +109,8 @@ func TestGetNodeByIDReadsIndependentHealthDimensions(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "name", "role", "base_url", "transfer_url", "region",
 			"cpu_pct", "mem_pct", "disk_pct", "agent_version", "tavern_version", "last_seen_at", "status",
-			"connectivity_state", "operational_state", "capacity_state", "capacity_reason_code",
+			"connectivity_state", "operational_state", "control_mode", "control_mode_generation",
+			"desired_control_mode", "desired_mode_generation", "capacity_state", "capacity_reason_code",
 			"capacity_changed_at", "capacity_cooldown_until", "compatibility_state", "compatibility_reason_code",
 			"compatibility_fingerprint", "compatibility_reported_at", "metrics_observed_at",
 			"cpu_window_avg", "cpu_window_peak", "mem_window_avg", "mem_window_peak",
@@ -120,7 +121,8 @@ func TestGetNodeByIDReadsIndependentHealthDimensions(t *testing.T) {
 		}).AddRow(
 			int64(12), "node", "compute", "https://node.example", "", "hk",
 			10.0, 20.0, 30.0, "agent", "tavern", now, "online",
-			"online", "active", "busy", "cpu_busy", now, nil, "compatible", nil,
+			"online", "active", "managed", int64(4), "managed", int64(4),
+			"busy", "cpu_busy", now, nil, "compatible", nil,
 			strings.Repeat("a", 64), now, now, 51.0, 62.0, 20.0, 25.0, 30.0, 35.0,
 			int64(200<<30), int64(100<<30), int64(180<<30), int64(20<<30), 3, 2, "directory_fallback",
 			true, false, "open", int64(4), now.Add(time.Minute), now, nil, now,
@@ -128,7 +130,8 @@ func TestGetNodeByIDReadsIndependentHealthDimensions(t *testing.T) {
 	node, err := st.GetNodeByID(context.Background(), 12)
 	if err != nil || node == nil || node.ConnectivityState != "online" ||
 		node.OperationalState != "active" || node.CapacityState != "busy" ||
-		node.CompatibilityState != "compatible" || node.CPUWindowAvg.Float64 != 51 {
+		node.CompatibilityState != "compatible" || node.ControlMode != "managed" ||
+		node.DesiredModeGeneration != 4 || node.CPUWindowAvg.Float64 != 51 {
 		t.Fatalf("node=%+v err=%v", node, err)
 	}
 	assertMockExpectations(t, mock)
@@ -203,18 +206,27 @@ func TestTransitionNodeLifecycleRetiresOnlyUnreferencedNode(t *testing.T) {
 		AdminID: 5, Now: now,
 	}
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT to_state FROM node_lifecycle_events`).WithArgs(p.OperationID).
+	mock.ExpectQuery(`SELECT node_id,to_state,reason_code`).WithArgs(p.OperationID).
 		WillReturnError(sql.ErrNoRows)
-	mock.ExpectQuery(`SELECT operational_state FROM nodes`).WithArgs(p.NodeID).
-		WillReturnRows(sqlmock.NewRows([]string{"operational_state"}).AddRow("maintenance"))
+	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
+		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(7)))
+	mock.ExpectQuery(`SELECT operational_state,control_mode,desired_control_mode`).WithArgs(p.NodeID).
+		WillReturnRows(sqlmock.NewRows([]string{"operational_state", "control_mode", "desired_control_mode"}).
+			AddRow("maintenance", "managed", "managed"))
 	mock.ExpectQuery(`SELECT EXISTS`).WithArgs(p.NodeID).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectExec(`UPDATE nodes SET operational_state`).WithArgs(p.NodeID, p.ToState).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`(?s)UPDATE agent_credentials.*DELETE FROM enrollment_tokens.*UPDATE agent_commands`).
-		WithArgs(p.NodeID, now).WillReturnResult(sqlmock.NewResult(0, 4))
+	mock.ExpectExec(`UPDATE agent_credentials`).WithArgs(p.NodeID, now).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE agent_credential_rotations`).WithArgs(p.NodeID).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`DELETE FROM enrollment_tokens`).WithArgs(p.NodeID).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE agent_commands`).WithArgs(p.NodeID, now).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE admin_node_links`).WithArgs(p.NodeID, now).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE control_tickets`).WithArgs(p.NodeID, now).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE tickets`).WithArgs(p.NodeID, now).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE snapshot_transfer_capabilities`).WithArgs(p.NodeID).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO node_lifecycle_events`).WithArgs(
-		p.OperationID, p.NodeID, "maintenance", p.ToState, p.ReasonCode, p.AdminID, now,
+		p.OperationID, p.NodeID, "maintenance", p.ToState, p.ReasonCode, p.AdminID, int64(7), now,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	state, err := st.TransitionNodeLifecycle(context.Background(), p)
@@ -233,10 +245,13 @@ func TestTransitionNodeLifecycleBlocksRetirementWithDependencies(t *testing.T) {
 		NodeID:      12, ToState: "retired", ReasonCode: "operator_retired", AdminID: 5,
 	}
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT to_state FROM node_lifecycle_events`).WithArgs(p.OperationID).
+	mock.ExpectQuery(`SELECT node_id,to_state,reason_code`).WithArgs(p.OperationID).
 		WillReturnError(sql.ErrNoRows)
-	mock.ExpectQuery(`SELECT operational_state FROM nodes`).WithArgs(p.NodeID).
-		WillReturnRows(sqlmock.NewRows([]string{"operational_state"}).AddRow("draining"))
+	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
+		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(7)))
+	mock.ExpectQuery(`SELECT operational_state,control_mode,desired_control_mode`).WithArgs(p.NodeID).
+		WillReturnRows(sqlmock.NewRows([]string{"operational_state", "control_mode", "desired_control_mode"}).
+			AddRow("draining", "managed", "managed"))
 	mock.ExpectQuery(`SELECT EXISTS`).WithArgs(p.NodeID).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectRollback()
@@ -256,8 +271,9 @@ func TestTransitionNodeLifecycleReplaysOnlyMatchingOperation(t *testing.T) {
 		NodeID:      12, ToState: "draining", ReasonCode: "operator_draining", AdminID: 5,
 	}
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT to_state FROM node_lifecycle_events`).WithArgs(p.OperationID).
-		WillReturnRows(sqlmock.NewRows([]string{"to_state"}).AddRow("draining"))
+	mock.ExpectQuery(`SELECT node_id,to_state,reason_code`).WithArgs(p.OperationID).
+		WillReturnRows(sqlmock.NewRows([]string{"node_id", "to_state", "reason_code", "actor_admin_id"}).
+			AddRow(p.NodeID, "draining", p.ReasonCode, p.AdminID))
 	mock.ExpectCommit()
 	state, err := st.TransitionNodeLifecycle(context.Background(), p)
 	if err != nil || state != "draining" {
@@ -267,8 +283,9 @@ func TestTransitionNodeLifecycleReplaysOnlyMatchingOperation(t *testing.T) {
 	p.OperationID = "44444444-4444-4444-8444-444444444444"
 	p.ToState = "retired"
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT to_state FROM node_lifecycle_events`).WithArgs(p.OperationID).
-		WillReturnRows(sqlmock.NewRows([]string{"to_state"}).AddRow("draining"))
+	mock.ExpectQuery(`SELECT node_id,to_state,reason_code`).WithArgs(p.OperationID).
+		WillReturnRows(sqlmock.NewRows([]string{"node_id", "to_state", "reason_code", "actor_admin_id"}).
+			AddRow(p.NodeID, "draining", "different_reason", p.AdminID))
 	mock.ExpectRollback()
 	state, err = st.TransitionNodeLifecycle(context.Background(), p)
 	if state != "" || !errors.Is(err, ErrNodeLifecycleBlocked) {
@@ -286,14 +303,50 @@ func TestTransitionNodeLifecycleRejectsInvalidTransitionBeforeMutation(t *testin
 		NodeID:      12, ToState: "retired", ReasonCode: "skip_drain", AdminID: 5,
 	}
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT to_state FROM node_lifecycle_events`).WithArgs(p.OperationID).
+	mock.ExpectQuery(`SELECT node_id,to_state,reason_code`).WithArgs(p.OperationID).
 		WillReturnError(sql.ErrNoRows)
-	mock.ExpectQuery(`SELECT operational_state FROM nodes`).WithArgs(p.NodeID).
-		WillReturnRows(sqlmock.NewRows([]string{"operational_state"}).AddRow("active"))
+	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
+		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(7)))
+	mock.ExpectQuery(`SELECT operational_state,control_mode,desired_control_mode`).WithArgs(p.NodeID).
+		WillReturnRows(sqlmock.NewRows([]string{"operational_state", "control_mode", "desired_control_mode"}).
+			AddRow("active", "managed", "managed"))
 	mock.ExpectRollback()
 	_, err := st.TransitionNodeLifecycle(context.Background(), p)
 	if !errors.Is(err, ErrNodeLifecycleBlocked) {
 		t.Fatalf("error=%v", err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestTransitionNodeLifecycleRejectsFreeTextReasonAndIndependentRetirement(t *testing.T) {
+	t.Parallel()
+	if ValidMachineReasonCode("operator retired") || ValidMachineReasonCode("UPPER_CASE") ||
+		ValidMachineReasonCode(strings.Repeat("a", 65)) || !ValidMachineReasonCode("operator_retired_2") {
+		t.Fatal("machine reason code validation mismatch")
+	}
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	if _, err := st.TransitionNodeLifecycle(context.Background(), TransitionNodeLifecycleParams{
+		OperationID: "66666666-6666-4666-8666-666666666666", NodeID: 12,
+		ToState: "draining", ReasonCode: "human readable", AdminID: 5,
+	}); !errors.Is(err, ErrNodeLifecycleBlocked) {
+		t.Fatalf("free-text reason error=%v", err)
+	}
+	p := TransitionNodeLifecycleParams{
+		OperationID: "77777777-7777-4777-8777-777777777777", NodeID: 12,
+		ToState: "retired", ReasonCode: "operator_retired", AdminID: 5,
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT node_id,to_state,reason_code`).WithArgs(p.OperationID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
+		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(7)))
+	mock.ExpectQuery(`SELECT operational_state,control_mode,desired_control_mode`).WithArgs(p.NodeID).
+		WillReturnRows(sqlmock.NewRows([]string{"operational_state", "control_mode", "desired_control_mode"}).
+			AddRow("draining", "independent-draining", "managed"))
+	mock.ExpectRollback()
+	if _, err := st.TransitionNodeLifecycle(context.Background(), p); !errors.Is(err, ErrNodeLifecycleBlocked) {
+		t.Fatalf("independent retirement error=%v", err)
 	}
 	assertMockExpectations(t, mock)
 }

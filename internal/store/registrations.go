@@ -129,22 +129,27 @@ func (s *Store) CreateRegistrationWorkflow(
 		return RegistrationWorkflow{}, err
 	}
 
-	var role, nodeStatus, policyState string
+	var role, nodeStatus, connectivityState, operationalState, compatibilityState string
+	var controlMode, desiredControlMode, policyState string
 	var allowRegister bool
 	var policyVersion int64
 	var policyExpiresAt sql.NullTime
 	err = tx.QueryRowContext(ctx, `
-		SELECT role,status,allow_register,registration_policy_state,
+		SELECT role,status,connectivity_state,operational_state,compatibility_state,
+		  control_mode,desired_control_mode,allow_register,registration_policy_state,
 		  registration_policy_version,registration_policy_expires_at
 		FROM nodes WHERE id=$1 FOR SHARE`, p.NodeID).
-		Scan(&role, &nodeStatus, &allowRegister, &policyState, &policyVersion, &policyExpiresAt)
+		Scan(&role, &nodeStatus, &connectivityState, &operationalState, &compatibilityState,
+			&controlMode, &desiredControlMode, &allowRegister, &policyState, &policyVersion, &policyExpiresAt)
 	if err == sql.ErrNoRows {
 		return RegistrationWorkflow{}, ErrRegistrationNodeUnavailable
 	}
 	if err != nil {
 		return RegistrationWorkflow{}, err
 	}
-	if role != "compute" || nodeStatus != "online" || !allowRegister ||
+	if role != "compute" || nodeStatus != "online" || connectivityState != "online" ||
+		operationalState != "active" || compatibilityState != "compatible" ||
+		controlMode != "managed" || desiredControlMode != "managed" || !allowRegister ||
 		(policyState != "open" && policyState != "invitation_required") ||
 		policyVersion != p.PolicyVersion || !policyExpiresAt.Valid || !policyExpiresAt.Time.After(p.Now) {
 		return RegistrationWorkflow{}, ErrRegistrationNodeUnavailable

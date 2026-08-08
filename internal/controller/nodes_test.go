@@ -20,6 +20,7 @@ func TestNodeRegistrableRequiresFreshNodeOwnedPolicy(t *testing.T) {
 	}}}
 	node := &store.Node{
 		Role: "compute", ConnectivityState: "online", OperationalState: "active",
+		ControlMode: "managed", DesiredControlMode: "managed",
 		CapacityState: "open", CompatibilityState: "compatible", AllowRegister: true,
 		RegistrationPolicyState: "open", RegistrationPolicyVersion: 4,
 		RegistrationPolicyExpiresAt: sql.NullTime{Time: time.Now().UTC().Add(time.Minute), Valid: true},
@@ -36,6 +37,11 @@ func TestNodeRegistrableRequiresFreshNodeOwnedPolicy(t *testing.T) {
 		t.Fatal("durably full node was accepted")
 	}
 	node.CapacityState = "open"
+	node.ControlMode = "independent"
+	if server.nodeRegistrable(node) {
+		t.Fatal("independent node was accepted for managed registration")
+	}
+	node.ControlMode = "managed"
 	node.RegistrationPolicyState = "error"
 	if server.nodeRegistrable(node) {
 		t.Fatal("policy read error was accepted")
@@ -79,6 +85,7 @@ func TestNodeStatusLabelsUseOnlyProductHealthStates(t *testing.T) {
 	server := &Server{}
 	node := &store.Node{
 		Role: "compute", ConnectivityState: "online", OperationalState: "active",
+		ControlMode: "managed", DesiredControlMode: "managed",
 		CapacityState: "open", CompatibilityState: "compatible", AllowRegister: true,
 		RegistrationPolicyState:     "open",
 		RegistrationPolicyExpiresAt: sql.NullTime{Time: time.Now().UTC().Add(time.Minute), Valid: true},

@@ -54,6 +54,10 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 		assertConcurrentHandoffRedemption(t, stores[0], userID, nodeA)
 	})
 
+	t.Run("node lifecycle binds replay and retires only after durable drain", func(t *testing.T) {
+		assertPostgresNodeLifecycleHardening(t, stores[0], nodeA)
+	})
+
 	t.Run("ten-thousand account inventory is durable and page bounded", func(t *testing.T) {
 		assertPostgresAccountInventoryScale(t, stores[0], nodeA)
 	})
@@ -286,6 +290,236 @@ func assertPostgresAccountInventoryScale(t *testing.T, st *Store, nodeID int64) 
 		t.Fatalf("persisted inventory candidates=%d err=%v", persisted, err)
 	}
 	t.Logf("persisted and paged %d inventory candidates in %s", persisted, time.Since(started))
+}
+
+func assertPostgresNodeLifecycleHardening(t *testing.T, st *Store, peerNodeID int64) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	nodeID := insertIntegrationNode(t, st, "lifecycle-node")
+	otherNodeID := insertIntegrationNode(t, st, "lifecycle-other")
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE nodes SET allow_register=true,is_backup_target=true WHERE id=$1`, nodeID); err != nil {
+		t.Fatalf("configure lifecycle node: %v", err)
+	}
+	var adminID int64
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO admins (uuid,username,password_hash,status)
+		VALUES ('71000000-0000-4000-8000-000000000001','lifecycle-admin','test-hash','active')
+		RETURNING id`).Scan(&adminID); err != nil {
+		t.Fatalf("insert lifecycle administrator: %v", err)
+	}
+
+	maintenance := TransitionNodeLifecycleParams{
+		OperationID: "71000000-0000-4000-8000-000000000002",
+		NodeID:      nodeID, ToState: "maintenance", ReasonCode: "operator_maintenance",
+		AdminID: adminID, Now: now,
+	}
+	if state, err := st.TransitionNodeLifecycle(ctx, maintenance); err != nil || state != "maintenance" {
+		t.Fatalf("enter maintenance: state=%q err=%v", state, err)
+	}
+	if state, err := st.TransitionNodeLifecycle(ctx, maintenance); err != nil || state != "maintenance" {
+		t.Fatalf("exact lifecycle replay: state=%q err=%v", state, err)
+	}
+	collision := maintenance
+	collision.NodeID = otherNodeID
+	if _, err := st.TransitionNodeLifecycle(ctx, collision); !errors.Is(err, ErrNodeLifecycleBlocked) {
+		t.Fatalf("cross-node operation replay error=%v", err)
+	}
+	collision = maintenance
+	collision.ReasonCode = "different_reason"
+	if _, err := st.TransitionNodeLifecycle(ctx, collision); !errors.Is(err, ErrNodeLifecycleBlocked) {
+		t.Fatalf("changed lifecycle payload replay error=%v", err)
+	}
+	var state string
+	var allowRegister, backupTarget bool
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT operational_state,allow_register,is_backup_target FROM nodes WHERE id=$1`, nodeID).
+		Scan(&state, &allowRegister, &backupTarget); err != nil || state != "maintenance" ||
+		!allowRegister || !backupTarget {
+		t.Fatalf("maintenance preserved operator settings: state=%q allow=%v backup=%v err=%v",
+			state, allowRegister, backupTarget, err)
+	}
+
+	draining := TransitionNodeLifecycleParams{
+		OperationID: "71000000-0000-4000-8000-000000000003",
+		NodeID:      nodeID, ToState: "draining", ReasonCode: "operator_draining",
+		AdminID: adminID, Now: now.Add(time.Second),
+	}
+	if state, err := st.TransitionNodeLifecycle(ctx, draining); err != nil || state != "draining" {
+		t.Fatalf("enter draining: state=%q err=%v", state, err)
+	}
+	userID := insertIntegrationGlobalUser(t, st, "lifecycle-user")
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO node_accounts (user_id,node_id,local_handle,status)
+		VALUES ($1,$2,'lifecycle-user','active')`, userID, nodeID); err != nil {
+		t.Fatalf("insert lifecycle account dependency: %v", err)
+	}
+	retire := TransitionNodeLifecycleParams{
+		OperationID: "71000000-0000-4000-8000-000000000004",
+		NodeID:      nodeID, ToState: "retired", ReasonCode: "operator_retired",
+		AdminID: adminID, Now: now.Add(2 * time.Second),
+	}
+	if _, err := st.TransitionNodeLifecycle(ctx, retire); !errors.Is(err, ErrNodeLifecycleBlocked) {
+		t.Fatalf("retirement with active node account error=%v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `DELETE FROM node_accounts WHERE user_id=$1 AND node_id=$2`, userID, nodeID); err != nil {
+		t.Fatalf("remove lifecycle account dependency: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO replica_copies (
+		  id,user_id,node_id,replica_kind,state,origin,is_authoritative,compatibility_state
+		) VALUES ('71000000-0000-4000-8000-000000000005',$1,$2,'archive','ready','configured',false,'compatible')`,
+		userID, nodeID); err != nil {
+		t.Fatalf("insert normalized replica dependency: %v", err)
+	}
+	retire.OperationID = "71000000-0000-4000-8000-000000000006"
+	if _, err := st.TransitionNodeLifecycle(ctx, retire); !errors.Is(err, ErrNodeLifecycleBlocked) {
+		t.Fatalf("retirement with normalized replica error=%v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `DELETE FROM replica_copies WHERE id='71000000-0000-4000-8000-000000000005'`); err != nil {
+		t.Fatalf("remove normalized replica dependency: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE nodes SET control_mode='independent-draining' WHERE id=$1`, nodeID); err != nil {
+		t.Fatalf("set independent drain mode: %v", err)
+	}
+	retire.OperationID = "71000000-0000-4000-8000-000000000007"
+	if _, err := st.TransitionNodeLifecycle(ctx, retire); !errors.Is(err, ErrNodeLifecycleBlocked) {
+		t.Fatalf("retirement during independent drain error=%v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET control_mode='managed' WHERE id=$1`, nodeID); err != nil {
+		t.Fatalf("restore managed mode: %v", err)
+	}
+
+	generation, err := st.GetActiveControllerGeneration(ctx)
+	if err != nil {
+		t.Fatalf("read lifecycle generation: %v", err)
+	}
+	credentialSecret := []byte("encrypted-agent-secret")
+	payloadDigest := sha256.Sum256([]byte("lifecycle-command"))
+	tokenDigest := sha256.Sum256([]byte("lifecycle-enrollment"))
+	capabilityDigest := sha256.Sum256([]byte("lifecycle-capability"))
+	manifestDigest := sha256.Sum256([]byte("lifecycle-manifest"))
+	legacyUsername := fmt.Sprintf("lifecycle-legacy-%d", nodeID)
+	var legacyUserID int64
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO users (username,display_name,auth_provider,status)
+		VALUES ($1,'Lifecycle Legacy','password','active') RETURNING id`, legacyUsername).
+		Scan(&legacyUserID); err != nil {
+		t.Fatalf("insert lifecycle legacy user: %v", err)
+	}
+	setupTx, err := st.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin lifecycle fact setup: %v", err)
+	}
+	defer func() { _ = setupTx.Rollback() }()
+	setupExec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := setupTx.ExecContext(ctx, query, args...); err != nil {
+			t.Fatalf("insert lifecycle revocation fact: %v", err)
+		}
+	}
+	setupExec(`INSERT INTO agent_credentials (
+		id,node_id,credential_version,credential_type,secret_ciphertext,controller_generation
+	) VALUES ('71000000-0000-4000-8000-000000000008',$1,1,'hmac',$2,$3)`,
+		nodeID, credentialSecret, generation)
+	setupExec(`INSERT INTO agent_credential_rotations (
+		id,operation_id,node_id,credential_version,secret_ciphertext,controller_generation,state,expires_at,created_at
+	) VALUES ('71000000-0000-4000-8000-000000000009','71000000-0000-4000-8000-000000000010',$1,2,$2,$3,'pending',$4,$5)`,
+		nodeID, credentialSecret, generation, now.Add(time.Hour), now)
+	setupExec(`INSERT INTO enrollment_tokens (
+		id,operation_id,token_hash,expected_role,expected_node_id,expires_at,created_at
+	) VALUES ('71000000-0000-4000-8000-000000000011','71000000-0000-4000-8000-000000000012',$1,'compute',$2,$3,$4)`,
+		tokenDigest[:], nodeID, now.Add(time.Hour), now)
+	setupExec(`INSERT INTO agent_commands (
+		id,operation_id,node_id,command_type,payload,payload_sha256,state,controller_generation,expires_at,created_at,updated_at
+	) VALUES ('71000000-0000-4000-8000-000000000013','71000000-0000-4000-8000-000000000014',$1,'health_probe','{}'::jsonb,$2,'queued',$3,$4,$5,$5)`,
+		nodeID, payloadDigest[:], generation, now.Add(time.Hour), now)
+	setupExec(`INSERT INTO admin_node_links (admin_id,node_id,local_handle,state,last_verified_at)
+		VALUES ($1,$2,'lifecycle-admin','verified',$3)`, adminID, nodeID, now)
+	setupExec(`INSERT INTO control_tickets (
+		jti,operation_id,secret_hash,ticket_type,issuer,audience,subject,admin_id,target_node_id,key_id,
+		controller_generation,issued_at,not_before,expires_at
+	) VALUES ('71000000-0000-4000-8000-000000000015','71000000-0000-4000-8000-000000000021',$6,
+		'node_admin','controller','node','lifecycle-admin',$1,$2,'k1',$3,$4,$4,$5)`,
+		adminID, nodeID, generation, now, now.Add(time.Hour), payloadDigest[:])
+	setupExec(`INSERT INTO tickets (jti,user_id,node_id,expires_at)
+		VALUES ('lifecycle-legacy-ticket',$1,$2,$3)`, legacyUserID, nodeID, now.Add(time.Hour))
+	setupExec(`INSERT INTO workflows (
+		id,operation_id,workflow_type,state,user_id,source_node_id,target_node_id,
+		activity_epoch,controller_generation,created_at,updated_at,finished_at
+	) VALUES ('71000000-0000-4000-8000-000000000016','71000000-0000-4000-8000-000000000017',
+		'snapshot','succeeded',$1,$2,$3,1,$4,$5,$5,$5)`, userID, peerNodeID, nodeID, generation, now)
+	setupExec(`INSERT INTO snapshot_manifests (
+		id,workflow_id,user_id,source_node_id,activity_epoch,format_version,
+		manifest_sha256,file_count,total_bytes,state,created_at
+	) VALUES ('71000000-0000-4000-8000-000000000018','71000000-0000-4000-8000-000000000016',
+		$1,$2,1,1,$3,0,0,'immutable',$4)`, userID, peerNodeID, manifestDigest[:], now)
+	setupExec(`INSERT INTO snapshot_transfer_capabilities (
+		id,workflow_id,snapshot_id,source_node_id,target_node_id,token_hash,state,
+		controller_generation,expires_at,created_at
+	) VALUES ('71000000-0000-4000-8000-000000000019','71000000-0000-4000-8000-000000000016',
+		'71000000-0000-4000-8000-000000000018',$1,$2,$3,'prepared',$4,$5,$6)`,
+		peerNodeID, nodeID, capabilityDigest[:], generation, now.Add(time.Hour), now)
+	if err := setupTx.Commit(); err != nil {
+		t.Fatalf("commit lifecycle fact setup: %v", err)
+	}
+	retire.OperationID = "71000000-0000-4000-8000-000000000020"
+	retire.Now = now.Add(3 * time.Second)
+	if state, err := st.TransitionNodeLifecycle(ctx, retire); err != nil || state != "retired" {
+		t.Fatalf("retire drained node: state=%q err=%v", state, err)
+	}
+	if state, err := st.TransitionNodeLifecycle(ctx, retire); err != nil || state != "retired" {
+		t.Fatalf("replay retired transition: state=%q err=%v", state, err)
+	}
+
+	var status, rotationState, commandState, linkState, linkError, capabilityState string
+	var credentialRevoked, ticketRevoked sql.NullTime
+	var legacyExpiry time.Time
+	var enrollmentCount int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT operational_state,status,allow_register,is_backup_target FROM nodes WHERE id=$1`, nodeID).
+		Scan(&state, &status, &allowRegister, &backupTarget); err != nil || state != "retired" ||
+		status != "offline" || allowRegister || backupTarget {
+		t.Fatalf("retired node facts: state=%q status=%q allow=%v backup=%v err=%v",
+			state, status, allowRegister, backupTarget, err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `SELECT revoked_at FROM agent_credentials WHERE node_id=$1`, nodeID).
+		Scan(&credentialRevoked); err != nil || !credentialRevoked.Valid {
+		t.Fatalf("agent credential revocation=%v err=%v", credentialRevoked, err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `SELECT state FROM agent_credential_rotations WHERE node_id=$1`, nodeID).
+		Scan(&rotationState); err != nil || rotationState != "revoked" {
+		t.Fatalf("credential rotation state=%q err=%v", rotationState, err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `SELECT count(*) FROM enrollment_tokens WHERE expected_node_id=$1`, nodeID).
+		Scan(&enrollmentCount); err != nil || enrollmentCount != 0 {
+		t.Fatalf("enrollment count=%d err=%v", enrollmentCount, err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `SELECT state FROM agent_commands WHERE node_id=$1`, nodeID).
+		Scan(&commandState); err != nil || commandState != "expired" {
+		t.Fatalf("agent command state=%q err=%v", commandState, err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT state,last_error_code FROM admin_node_links WHERE admin_id=$1 AND node_id=$2`, adminID, nodeID).
+		Scan(&linkState, &linkError); err != nil || linkState != "revoked" || linkError != "node_retired" {
+		t.Fatalf("admin link state=%q error=%q err=%v", linkState, linkError, err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `SELECT revoked_at FROM control_tickets WHERE target_node_id=$1`, nodeID).
+		Scan(&ticketRevoked); err != nil || !ticketRevoked.Valid {
+		t.Fatalf("control ticket revocation=%v err=%v", ticketRevoked, err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `SELECT expires_at FROM tickets WHERE node_id=$1`, nodeID).
+		Scan(&legacyExpiry); err != nil || legacyExpiry.After(retire.Now) {
+		t.Fatalf("legacy ticket expiry=%v err=%v", legacyExpiry, err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT state FROM snapshot_transfer_capabilities WHERE id='71000000-0000-4000-8000-000000000019'`).
+		Scan(&capabilityState); err != nil || capabilityState != "revoked" {
+		t.Fatalf("transfer capability state=%q err=%v", capabilityState, err)
+	}
 }
 
 func assertConcurrentSingleWriter(

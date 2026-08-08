@@ -34,11 +34,13 @@ func TestCreateRegistrationWorkflowReservesHandleUnderFreshSelectedNodePolicy(t 
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "operation_id", "state", "local_handle", "result_user_id", "request_digest",
 		}))
-	mock.ExpectQuery(`SELECT role,status,allow_register`).WithArgs(int64(12)).
+	mock.ExpectQuery(`SELECT role,status,connectivity_state,operational_state`).WithArgs(int64(12)).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"role", "status", "allow_register", "registration_policy_state",
+			"role", "status", "connectivity_state", "operational_state", "compatibility_state",
+			"control_mode", "desired_control_mode", "allow_register", "registration_policy_state",
 			"registration_policy_version", "registration_policy_expires_at",
-		}).AddRow("compute", "online", true, "invitation_required", int64(7), now.Add(time.Minute)))
+		}).AddRow("compute", "online", "online", "active", "compatible", "managed", "managed",
+			true, "invitation_required", int64(7), now.Add(time.Minute)))
 	mock.ExpectQuery(`SELECT 1 FROM users`).WithArgs("alice").
 		WillReturnRows(sqlmock.NewRows([]string{"one"}))
 	mock.ExpectQuery(`INSERT INTO workflows`).WithArgs(p.WorkflowID, p.OperationID, int64(12), now).
@@ -54,6 +56,31 @@ func TestCreateRegistrationWorkflowReservesHandleUnderFreshSelectedNodePolicy(t 
 	workflow, err := st.CreateRegistrationWorkflow(context.Background(), p)
 	if err != nil || workflow.State != "scheduled" || workflow.LocalHandle != "alice" || workflow.Replayed {
 		t.Fatalf("workflow=%+v err=%v", workflow, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestCreateRegistrationWorkflowRejectsNonManagedNodeWithoutErasingPolicy(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 8, 1, 2, 0, 0, time.UTC)
+	p := registrationParams(now)
+	mock.ExpectBegin()
+	mock.ExpectQuery(`FROM workflows workflow`).WithArgs(p.OperationID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation_id", "state", "local_handle", "result_user_id", "request_digest",
+		}))
+	mock.ExpectQuery(`SELECT role,status,connectivity_state,operational_state`).WithArgs(int64(12)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"role", "status", "connectivity_state", "operational_state", "compatibility_state",
+			"control_mode", "desired_control_mode", "allow_register", "registration_policy_state",
+			"registration_policy_version", "registration_policy_expires_at",
+		}).AddRow("compute", "online", "online", "maintenance", "compatible", "managed", "managed",
+			true, "open", int64(7), now.Add(time.Minute)))
+	mock.ExpectRollback()
+	if _, err := st.CreateRegistrationWorkflow(context.Background(), p); !errors.Is(err, ErrRegistrationNodeUnavailable) {
+		t.Fatalf("maintenance registration error=%v", err)
 	}
 	assertMockExpectations(t, mock)
 }

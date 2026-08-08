@@ -5,10 +5,20 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 )
 
 var ErrNodeLifecycleBlocked = errors.New("node lifecycle transition blocked")
+
+var machineReasonCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// ValidMachineReasonCode accepts only bounded, language-neutral identifiers.
+// Human-readable explanations belong in the UI; durable state transitions keep
+// stable codes that can be filtered and audited without recording free text.
+func ValidMachineReasonCode(value string) bool {
+	return machineReasonCodePattern.MatchString(value)
+}
 
 type TransitionNodeLifecycleParams struct {
 	OperationID string
@@ -20,7 +30,7 @@ type TransitionNodeLifecycleParams struct {
 }
 
 func (s *Store) TransitionNodeLifecycle(ctx context.Context, p TransitionNodeLifecycleParams) (string, error) {
-	if p.OperationID == "" || p.NodeID <= 0 || p.AdminID <= 0 || len(p.ReasonCode) == 0 || len(p.ReasonCode) > 128 {
+	if !validUUIDText(p.OperationID) || p.NodeID <= 0 || p.AdminID <= 0 || !ValidMachineReasonCode(p.ReasonCode) {
 		return "", ErrNodeLifecycleBlocked
 	}
 	if p.Now.IsZero() {
@@ -39,10 +49,15 @@ func (s *Store) TransitionNodeLifecycle(ctx context.Context, p TransitionNodeLif
 		return "", err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var replayState string
-	err = tx.QueryRowContext(ctx, `SELECT to_state FROM node_lifecycle_events WHERE operation_id=$1`, p.OperationID).Scan(&replayState)
+	var replayState, replayReason string
+	var replayNodeID, replayAdminID int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT node_id,to_state,reason_code,COALESCE(actor_admin_id,0)
+		FROM node_lifecycle_events WHERE operation_id=$1`, p.OperationID).
+		Scan(&replayNodeID, &replayState, &replayReason, &replayAdminID)
 	if err == nil {
-		if replayState != p.ToState {
+		if replayNodeID != p.NodeID || replayState != p.ToState ||
+			replayReason != p.ReasonCode || replayAdminID != p.AdminID {
 			return "", ErrNodeLifecycleBlocked
 		}
 		return replayState, tx.Commit()
@@ -50,20 +65,58 @@ func (s *Store) TransitionNodeLifecycle(ctx context.Context, p TransitionNodeLif
 	if err != sql.ErrNoRows {
 		return "", err
 	}
-	var fromState string
-	if err := tx.QueryRowContext(ctx, `SELECT operational_state FROM nodes WHERE id=$1 FOR UPDATE`, p.NodeID).Scan(&fromState); err != nil {
+	var activeGeneration int64
+	if err := tx.QueryRowContext(ctx, `SELECT generation FROM controller_epochs WHERE state='active' FOR SHARE`).
+		Scan(&activeGeneration); err != nil {
+		if err == sql.ErrNoRows {
+			return "", ErrNoActiveController
+		}
+		return "", err
+	}
+	var fromState, controlMode, desiredControlMode string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT operational_state,control_mode,desired_control_mode
+		FROM nodes WHERE id=$1 FOR UPDATE`, p.NodeID).
+		Scan(&fromState, &controlMode, &desiredControlMode); err != nil {
 		return "", err
 	}
 	if !allowed[fromState][p.ToState] {
 		return "", ErrNodeLifecycleBlocked
 	}
 	if p.ToState == "retired" {
+		if controlMode != "managed" || desiredControlMode != "managed" {
+			return "", ErrNodeLifecycleBlocked
+		}
 		var dependent bool
 		if err := tx.QueryRowContext(ctx, `
 			SELECT EXISTS (
 			  SELECT 1 FROM users WHERE home_node_id=$1 AND status='active'
 			  UNION ALL
-			  SELECT 1 FROM user_replicas WHERE node_id=$1 AND state IN ('ready','receiving','verifying')
+			  SELECT 1 FROM user_replicas
+			  WHERE node_id=$1 AND state NOT IN ('empty','stale','error')
+			  UNION ALL
+			  SELECT 1 FROM replica_copies
+			  WHERE node_id=$1 AND state NOT IN ('empty','stale','corrupt','deleting','error')
+			  UNION ALL
+			  SELECT 1 FROM node_accounts
+			  WHERE node_id=$1 AND status IN ('pending','active','conflict')
+			  UNION ALL
+			  SELECT 1 FROM workflows
+			  WHERE (source_node_id=$1 OR target_node_id=$1)
+			    AND state NOT IN ('cancelled','failed','succeeded')
+			  UNION ALL
+			  SELECT 1 FROM backup_jobs
+			  WHERE (src_node_id=$1 OR dst_node_id=$1) AND status IN ('pending','running')
+			  UNION ALL
+			  SELECT 1 FROM user_activity_leases
+			  WHERE writer_node_id=$1 AND state<>'ended'
+			  UNION ALL
+			  SELECT 1 FROM independent_user_reconciliations
+			  WHERE node_id=$1 AND state NOT IN ('succeeded','superseded','failed')
+			  UNION ALL
+			  SELECT 1 FROM relay_transfers
+			  WHERE (source_node_id=$1 OR target_node_id=$1)
+			    AND state NOT IN ('consumed','expired','failed')
 			)`, p.NodeID).Scan(&dependent); err != nil {
 			return "", err
 		}
@@ -73,26 +126,44 @@ func (s *Store) TransitionNodeLifecycle(ctx context.Context, p TransitionNodeLif
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE nodes SET operational_state=$2,
-		  allow_register=CASE WHEN $2 IN ('active','degraded') THEN allow_register ELSE false END,
-		  is_backup_target=CASE WHEN $2 IN ('active','degraded') THEN is_backup_target ELSE false END,
+		  allow_register=CASE WHEN $2='retired' THEN false ELSE allow_register END,
+		  is_backup_target=CASE WHEN $2='retired' THEN false ELSE is_backup_target END,
 		  status=CASE WHEN $2='retired' THEN 'offline' ELSE status END
 		WHERE id=$1`, p.NodeID, p.ToState); err != nil {
 		return "", err
 	}
 	if p.ToState == "retired" {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE agent_credentials SET revoked_at=COALESCE(revoked_at,$2) WHERE node_id=$1;
-			DELETE FROM enrollment_tokens WHERE expected_node_id=$1 AND consumed_at IS NULL;
-			UPDATE agent_commands SET state='expired',updated_at=$2
-			WHERE node_id=$1 AND state IN ('queued','leased','acked','running')`, p.NodeID, p.Now); err != nil {
-			return "", err
+		statements := []struct {
+			query string
+			args  []any
+		}{
+			{`UPDATE agent_credentials SET revoked_at=COALESCE(revoked_at,$2) WHERE node_id=$1`, []any{p.NodeID, p.Now}},
+			{`UPDATE agent_credential_rotations SET state='revoked' WHERE node_id=$1 AND state='pending'`, []any{p.NodeID}},
+			{`DELETE FROM enrollment_tokens WHERE expected_node_id=$1 AND consumed_at IS NULL`, []any{p.NodeID}},
+			{`UPDATE agent_commands SET state='expired',updated_at=$2
+			 WHERE node_id=$1 AND state IN ('queued','leased','acked','running')`,
+				[]any{p.NodeID, p.Now}},
+			{`UPDATE admin_node_links SET state='revoked',revoked_at=COALESCE(revoked_at,$2),
+			   updated_at=$2,last_error_code='node_retired'
+			 WHERE node_id=$1 AND state<>'revoked'`, []any{p.NodeID, p.Now}},
+			{`UPDATE control_tickets SET revoked_at=COALESCE(revoked_at,$2)
+			 WHERE target_node_id=$1 AND consumed_at IS NULL`, []any{p.NodeID, p.Now}},
+			{`UPDATE tickets SET expires_at=LEAST(expires_at,$2)
+			 WHERE node_id=$1 AND used_at IS NULL`, []any{p.NodeID, p.Now}},
+			{`UPDATE snapshot_transfer_capabilities SET state='revoked'
+			 WHERE (source_node_id=$1 OR target_node_id=$1) AND state='prepared'`, []any{p.NodeID}},
+		}
+		for _, statement := range statements {
+			if _, err := tx.ExecContext(ctx, statement.query, statement.args...); err != nil {
+				return "", err
+			}
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO node_lifecycle_events (
 		  operation_id,node_id,from_state,to_state,reason_code,actor_admin_id,controller_generation,created_at
-		) SELECT $1,$2,$3,$4,$5,$6,generation,$7 FROM controller_epochs WHERE state='active'`,
-		p.OperationID, p.NodeID, fromState, p.ToState, p.ReasonCode, p.AdminID, p.Now); err != nil {
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		p.OperationID, p.NodeID, fromState, p.ToState, p.ReasonCode, p.AdminID, activeGeneration, p.Now); err != nil {
 		return "", err
 	}
 	return p.ToState, tx.Commit()
@@ -101,7 +172,8 @@ func (s *Store) TransitionNodeLifecycle(ctx context.Context, p TransitionNodeLif
 const nodeSelectColumns = `
   id,name,role,base_url,transfer_url,region,
   cpu_pct,mem_pct,disk_pct,agent_version,tavern_version,last_seen_at,status,
-  connectivity_state,operational_state,capacity_state,capacity_reason_code,
+  connectivity_state,operational_state,control_mode,control_mode_generation,
+  desired_control_mode,desired_mode_generation,capacity_state,capacity_reason_code,
   capacity_changed_at,capacity_cooldown_until,compatibility_state,compatibility_reason_code,
   compatibility_fingerprint,compatibility_reported_at,metrics_observed_at,
   cpu_window_avg,cpu_window_peak,mem_window_avg,mem_window_peak,
@@ -119,7 +191,8 @@ func scanNode(scanner nodeScanner, n *Node) error {
 	return scanner.Scan(
 		&n.ID, &n.Name, &n.Role, &n.BaseURL, &n.TransferURL, &n.Region,
 		&n.CPUPct, &n.MemPct, &n.DiskPct, &n.AgentVersion, &n.TavernVersion, &n.LastSeenAt, &n.Status,
-		&n.ConnectivityState, &n.OperationalState, &n.CapacityState, &n.CapacityReasonCode,
+		&n.ConnectivityState, &n.OperationalState, &n.ControlMode, &n.ControlModeGeneration,
+		&n.DesiredControlMode, &n.DesiredModeGeneration, &n.CapacityState, &n.CapacityReasonCode,
 		&n.CapacityChangedAt, &n.CapacityCooldownUntil, &n.CompatibilityState, &n.CompatibilityReasonCode,
 		&n.CompatibilityFingerprint, &n.CompatibilityReportedAt, &n.MetricsObservedAt,
 		&n.CPUWindowAvg, &n.CPUWindowPeak, &n.MemWindowAvg, &n.MemWindowPeak,

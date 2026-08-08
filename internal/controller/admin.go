@@ -104,7 +104,7 @@ func (s *Server) handleAdminTransitionNodeLifecycle(w http.ResponseWriter, r *ht
 	if err != nil || decoder.Decode(&req) != nil || !isUUID(req.OperationID) ||
 		(req.State != "active" && req.State != "maintenance" && req.State != "draining" &&
 			req.State != "degraded" && req.State != "failed" && req.State != "retired") ||
-		len(req.ReasonCode) == 0 || len(req.ReasonCode) > 128 ||
+		!store.ValidMachineReasonCode(req.ReasonCode) ||
 		((req.State == "failed" || req.State == "retired") && !req.AcknowledgeRisk) {
 		protocol.WriteError(w, http.StatusBadRequest, "节点生命周期请求无效")
 		return
