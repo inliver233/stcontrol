@@ -3,6 +3,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -15,13 +16,16 @@ import (
 
 // Server 总控服务。
 type Server struct {
-	Cfg               *config.ControllerConfig
-	Store             *store.Store
-	secretKey         []byte // 用户凭据 AES 密钥
-	workflowWorkerID  string
-	snapshotSlots     chan struct{}
-	registrationSlots chan struct{}
-	passwordSyncMu    sync.Mutex
+	Cfg                  *config.ControllerConfig
+	Store                *store.Store
+	secretKey            []byte // 用户凭据 AES 密钥
+	workflowWorkerID     string
+	snapshotSlots        chan struct{}
+	registrationSlots    chan struct{}
+	passwordSyncMu       sync.Mutex
+	controlPlaneMu       sync.RWMutex
+	newOperationsBlocked bool
+	controlPlaneReason   string
 
 	// 节点上用户在线状态（离线备份调度用）
 	actMu    sync.Mutex
@@ -95,6 +99,9 @@ func (s *Server) Handler() http.Handler {
 
 // Run 启动后台任务（节点离线检测、备份调度）+ HTTP 服务。
 func (s *Server) Run(ctx context.Context) error {
+	if err := s.refreshControlPlaneGate(ctx); err != nil {
+		return fmt.Errorf("initialize control-plane operation gate: %w", err)
+	}
 	go s.nodeWatchdog(ctx)
 	go s.backupScheduler(ctx)
 	go s.sessionJanitor(ctx)

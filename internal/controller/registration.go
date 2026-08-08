@@ -38,6 +38,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusForbidden, "请求来源无效")
 		return
 	}
+	if !s.requireNewOperations(w) {
+		return
+	}
 	var req registerRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	decoder.DisallowUnknownFields()

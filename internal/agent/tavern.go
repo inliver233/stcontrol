@@ -35,7 +35,7 @@ type adapterHealth struct {
 
 var requiredAdapterCapabilities = []string{
 	"account_restore", "activity_leases", "login_handoff", "node_admin_handoff", "node_admin_verify", "password_update", "registration_policy",
-	"snapshot_boundary", "user_provision", "write_gate",
+	"snapshot_boundary", "user_provision", "write_gate", "control_mode",
 }
 
 func (a *Agent) verifyNodeAdmin(

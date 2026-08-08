@@ -41,6 +41,12 @@ func (a *Agent) StartHeartbeat(ctx context.Context) {
 
 // sendHeartbeat 采集并上报一次心跳。
 func (a *Agent) sendHeartbeat(ctx context.Context) {
+	// Retry the local mode application before reporting facts. A persisted mode
+	// transition therefore survives either process restarting midway through
+	// the Controller/adapter handshake.
+	if err := a.syncTavernControlMode(ctx); err != nil && ctx.Err() == nil {
+		log.Printf("节点控制模式尚未应用: %v", err)
+	}
 	probedInfo, _ := ProbeTavern(a.Cfg.TavernDir)
 	var info protocol.NodeInfo
 	if probedInfo != nil {
@@ -104,10 +110,50 @@ func (a *Agent) sendHeartbeat(ctx context.Context) {
 		TransferURL:        a.Cfg.TransferPublicURL,
 		RegistrationPolicy: registrationPolicy,
 		Users:              users,
+		ControlMode:        a.controlModeReport(),
 	}
-	if err := a.callController(ctx, http.MethodPost, "/api/agent/heartbeat", reqBody, nil); err != nil {
+	var response protocol.HeartbeatResponse
+	if err := a.callController(ctx, http.MethodPost, "/api/agent/heartbeat", reqBody, &response); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		healthProbeFailed := !a.controllerHealthAvailable(ctx)
+		if stateErr := a.recordControllerFailure(time.Now().UTC(), healthProbeFailed); stateErr != nil {
+			log.Printf("持久化总控失联状态失败: %v", stateErr)
+		}
+		if modeErr := a.syncTavernControlMode(ctx); modeErr != nil {
+			log.Printf("应用总控失联模式失败: %v", modeErr)
+		}
 		log.Printf("心跳上报失败: %v", err)
+		return
 	}
+	if err := a.recordControllerSuccess(time.Now().UTC(), response); err != nil {
+		log.Printf("心跳响应被世代门禁拒绝: %v", err)
+		return
+	}
+	if err := a.syncTavernControlMode(ctx); err != nil {
+		log.Printf("应用总控恢复模式失败: %v", err)
+	}
+}
+
+func (a *Agent) controllerHealthAvailable(ctx context.Context) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	endpoint, err := a.controllerEndpoint("/api/health")
+	if err != nil {
+		return false
+	}
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
 func (a *Agent) capacityMetricsPath() string {

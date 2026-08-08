@@ -104,7 +104,9 @@ curl -sSL https://<总控>/install.sh | bash -s -- \
 
 ### 4. 酒馆侧改造（一次性）
 
-酒馆侧需要默认关闭的 federation control adapter，提供登录短码落地、受控/独立模式守卫、账号 hash/salt 供应、恢复账号供应、真实会话活动和用户级写门/排空。内部能力仅允许 Agent 从 loopback 调用，并使用节点 Agent 凭据签名。健康端点使用协议版本 1，并至少报告 `account_restore`、`activity_leases`、`login_handoff`、`password_update`、`registration_policy`、`snapshot_boundary`、`user_provision`、`write_gate`；缺版本、能力或适配器时计算节点兼容性失败关闭。未挂载该 adapter 的计算节点不会降级调用公开注册/改密接口。
+酒馆侧需要默认关闭的 federation control adapter，提供登录短码落地、受控/独立模式守卫、账号 hash/salt 供应、恢复账号供应、真实会话活动和用户级写门/排空。内部能力仅允许 Agent 从 loopback 调用，并使用节点 Agent 凭据签名。健康端点使用协议版本 1，并至少报告 `account_restore`、`activity_leases`、`control_mode`、`login_handoff`、`password_update`、`registration_policy`、`snapshot_boundary`、`user_provision`、`write_gate`；缺版本、能力或适配器时计算节点兼容性失败关闭。未挂载该 adapter 的计算节点不会降级调用公开注册/改密接口。
+
+Agent 将控制模式和模式世代写入 `data_dir/runtime-state.json`。默认在连续失联 45 秒后暂停节点的新登录与受管命令；只有签名心跳与独立健康探针同时持续失败 15 分钟且达到最少失败次数，计算节点才进入 `independent`。总控恢复后必须先进入 `independent-draining`；酒馆 adapter 报告灾难会话和待同步用户都归零后才恢复 `managed`。这些阈值可通过 `agent.yaml` 的 `disaster.unreachable_after_sec`、`disaster.independent_after_sec` 和 `disaster.min_failed_heartbeats` 保守调大。
 
 ## 核心流程
 

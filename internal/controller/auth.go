@@ -19,6 +19,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusForbidden, "请求来源无效")
 		return
 	}
+	if !s.requireNewOperations(w) {
+		return
+	}
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")

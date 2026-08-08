@@ -28,6 +28,9 @@ const (
 // handleOAuthBegin 发起 OAuth 跳转。query: node_id（注册目标节点，可选）。
 func (s *Server) handleOAuthBegin(w http.ResponseWriter, r *http.Request) {
 	setHandoffNoStoreHeaders(w)
+	if !s.requireNewOperations(w) {
+		return
+	}
 	provider := providerOf(r)
 	cfg, ok := s.oauthProviderConfig(provider)
 	if !ok || !cfg.Enabled {
@@ -71,6 +74,9 @@ func (s *Server) handleOAuthBegin(w http.ResponseWriter, r *http.Request) {
 // handleOAuthCallback OAuth 回调：换 token → 取用户信息 → 找/建用户 → 登录或引导选节点。
 func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	setHandoffNoStoreHeaders(w)
+	if !s.requireNewOperations(w) {
+		return
+	}
 	provider := providerOf(r)
 	cfg, ok := s.oauthProviderConfig(provider)
 	if !ok || !cfg.Enabled {
@@ -200,6 +206,9 @@ type completeOAuthRequest struct {
 // Identity attributes never transit the browser.
 func (s *Server) handleOAuthComplete(w http.ResponseWriter, r *http.Request) {
 	setHandoffNoStoreHeaders(w)
+	if !s.requireNewOperations(w) {
+		return
+	}
 	if !s.validMutationOrigin(r) {
 		protocol.WriteError(w, http.StatusForbidden, "请求来源无效")
 		return

@@ -16,6 +16,9 @@ import (
 // scheduleOfflineBackups 扫描所有用户副本, 找出"已离线且数据有变化、配置了备份目标"的用户, 触发备份。
 // 触发条件: 家节点在线 + 用户在节点上 isOnline=false 且 lastActivity 超过保护期 + 当前无 running 备份。
 func (s *Server) scheduleOfflineBackups(ctx context.Context) {
+	if s.checkNewOperations() != nil {
+		return
+	}
 	grace := time.Duration(s.Cfg.Backup.OfflineGraceMin) * time.Minute
 	nowMs := time.Now().UnixMilli()
 
@@ -55,6 +58,9 @@ func (s *Server) scheduleOfflineBackups(ctx context.Context) {
 // TriggerUserBackup 为某用户在家节点触发一次备份到配置的备份目标。
 // 目标选择: 优先该用户已配置的热备/存储副本; 否则系统默认存储节点。
 func (s *Server) TriggerUserBackup(ctx context.Context, userID, srcNodeID int64, trigger string) error {
+	if err := s.checkNewOperations(); err != nil {
+		return err
+	}
 	user, err := s.Store.GetUserByID(ctx, userID)
 	if err != nil || user == nil {
 		return err

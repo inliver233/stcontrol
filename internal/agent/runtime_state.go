@@ -28,6 +28,7 @@ type agentRuntimeState struct {
 	HighestGeneration int64                          `json:"highest_generation"`
 	Completed         map[string]cachedCommandResult `json:"completed"`
 	Transfers         map[string]pendingTransfer     `json:"transfers"`
+	ControlMode       agentControlModeState          `json:"control_mode"`
 }
 
 type pendingTransfer struct {
@@ -81,6 +82,16 @@ func (a *Agent) loadRuntimeState() error {
 	}
 	if a.Cfg.ControllerGeneration > a.state.HighestGeneration {
 		a.state.HighestGeneration = a.Cfg.ControllerGeneration
+	}
+	if a.state.ControlMode.Mode == "" {
+		a.state.ControlMode.Mode = protocol.NodeModeManaged
+		a.state.ControlMode.AdapterMode = protocol.NodeModeManaged
+		a.state.ControlMode.ModeGeneration = 1
+		a.state.ControlMode.ChangedAt = time.Now().UTC()
+	}
+	if a.state.ControlMode.ModeGeneration <= 0 || !validNodeControlMode(a.state.ControlMode.Mode) ||
+		(a.state.ControlMode.AdapterMode != "" && !validNodeControlMode(a.state.ControlMode.AdapterMode)) {
+		return fmt.Errorf("invalid persisted node control mode")
 	}
 	return a.saveRuntimeStateLocked()
 }

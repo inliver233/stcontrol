@@ -80,6 +80,10 @@ backup_dir: $INSTALL_DIR/backups
 disk_quota_bytes: 0
 heartbeat_sec: 15
 data_dir: $INSTALL_DIR/data
+disaster:
+  unreachable_after_sec: 45
+  independent_after_sec: 900
+  min_failed_heartbeats: 4
 EOF
 fi
 

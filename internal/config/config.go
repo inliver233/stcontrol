@@ -85,20 +85,31 @@ type AdminConfig struct {
 
 // AgentConfig 子控配置。
 type AgentConfig struct {
-	ControllerURL        string `yaml:"controller_url"` // 总控地址
-	Listen               string `yaml:"listen"`         // 子控监听 127.0.0.1:9100
-	Role                 string `yaml:"role"`           // compute|storage
-	NodeID               int64  `yaml:"node_id"`        // 注册后写入
-	AgentPSK             string `yaml:"agent_psk"`      // 注册后写入
-	CredentialVersion    int64  `yaml:"credential_version"`
-	ControllerGeneration int64  `yaml:"controller_generation"`
-	TavernDir            string `yaml:"tavern_dir"`          // 酒馆安装目录(含 config.yaml/data)
-	TavernURL            string `yaml:"tavern_url"`          // 酒馆本地地址 http://127.0.0.1:8000
-	TransferPublicURL    string `yaml:"transfer_public_url"` // 可选 HTTPS 直连数据面地址
-	BackupDir            string `yaml:"backup_dir"`          // 存储节点备份存放目录
-	DiskQuotaBytes       int64  `yaml:"disk_quota_bytes"`    // 0 表示使用数据分区总容量
-	HeartbeatSec         int    `yaml:"heartbeat_sec"`       // 默认15
-	DataDir              string `yaml:"data_dir"`            // 子控自身数据目录(状态/临时)
+	ControllerURL        string              `yaml:"controller_url"` // 总控地址
+	Listen               string              `yaml:"listen"`         // 子控监听 127.0.0.1:9100
+	Role                 string              `yaml:"role"`           // compute|storage
+	NodeID               int64               `yaml:"node_id"`        // 注册后写入
+	AgentPSK             string              `yaml:"agent_psk"`      // 注册后写入
+	CredentialVersion    int64               `yaml:"credential_version"`
+	ControllerGeneration int64               `yaml:"controller_generation"`
+	TavernDir            string              `yaml:"tavern_dir"`          // 酒馆安装目录(含 config.yaml/data)
+	TavernURL            string              `yaml:"tavern_url"`          // 酒馆本地地址 http://127.0.0.1:8000
+	TransferPublicURL    string              `yaml:"transfer_public_url"` // 可选 HTTPS 直连数据面地址
+	BackupDir            string              `yaml:"backup_dir"`          // 存储节点备份存放目录
+	DiskQuotaBytes       int64               `yaml:"disk_quota_bytes"`    // 0 表示使用数据分区总容量
+	HeartbeatSec         int                 `yaml:"heartbeat_sec"`       // 默认15
+	DataDir              string              `yaml:"data_dir"`            // 子控自身数据目录(状态/临时)
+	Disaster             AgentDisasterPolicy `yaml:"disaster"`
+}
+
+// AgentDisasterPolicy controls the conservative controller-loss state
+// machine. Independent mode needs both a sustained heartbeat outage and a
+// sustained failure of the controller health probe; a single flaky request
+// can therefore never open native logins.
+type AgentDisasterPolicy struct {
+	UnreachableAfterSec int `yaml:"unreachable_after_sec"`
+	IndependentAfterSec int `yaml:"independent_after_sec"`
+	MinFailedHeartbeats int `yaml:"min_failed_heartbeats"`
 }
 
 // Default 总控默认配置。
@@ -134,6 +145,11 @@ func DefaultAgent() *AgentConfig {
 		HeartbeatSec: 15,
 		DataDir:      "./agent-data",
 		BackupDir:    "./agent-data/backups",
+		Disaster: AgentDisasterPolicy{
+			UnreachableAfterSec: 45,
+			IndependentAfterSec: 15 * 60,
+			MinFailedHeartbeats: 4,
+		},
 	}
 }
 

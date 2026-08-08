@@ -43,6 +43,9 @@ type loginHandoffResponse struct {
 // to the selected node in a POST body. No credential is placed in a URL.
 func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 	setHandoffNoStoreHeaders(w)
+	if !s.requireNewOperations(w) {
+		return
+	}
 	var req loginHandoffRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	decoder.DisallowUnknownFields()

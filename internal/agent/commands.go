@@ -39,6 +39,16 @@ type safeCommandResult struct {
 func (a *Agent) StartCommandLoop(ctx context.Context) {
 	backoff := time.Second
 	for ctx.Err() == nil {
+		if !a.managedCommandsAllowed() {
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
+		}
 		if err := a.pollAndRunCommand(ctx); err != nil {
 			log.Printf("命令通道暂不可用: %v", err)
 			timer := time.NewTimer(backoff)
@@ -58,6 +68,9 @@ func (a *Agent) StartCommandLoop(ctx context.Context) {
 }
 
 func (a *Agent) pollAndRunCommand(ctx context.Context) error {
+	if !a.managedCommandsAllowed() {
+		return fmt.Errorf("managed commands paused by node control mode")
+	}
 	workerID, highestGeneration := a.commandIdentity()
 	status, headers, data, err := a.doControllerRequest(ctx, http.MethodPost, "/api/agent/commands/lease", protocol.LeaseCommandRequest{
 		WorkerID: workerID, HighestGeneration: highestGeneration,

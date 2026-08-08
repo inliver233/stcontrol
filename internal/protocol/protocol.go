@@ -75,6 +75,55 @@ type HeartbeatRequest struct {
 	TransferURL        string                   `json:"transfer_url,omitempty"`
 	RegistrationPolicy RegistrationPolicyReport `json:"registration_policy"`
 	Users              []UserStatus             `json:"users,omitempty"`
+	ControlMode        NodeControlModeReport    `json:"control_mode"`
+}
+
+const (
+	NodeModeManaged               = "managed"
+	NodeModeControllerUnreachable = "controller-unreachable"
+	NodeModeIndependent           = "independent"
+	NodeModeIndependentDraining   = "independent-draining"
+)
+
+// NodeControlModeReport is the Agent's durable, generation-fenced view of the
+// local access mode. Session counts are supplied by the loopback adapter and
+// let the Controller keep recovery in independent-draining until every
+// disaster session has logged out and its user data has been reconciled.
+type NodeControlModeReport struct {
+	Mode                        string    `json:"mode"`
+	ModeGeneration              int64     `json:"mode_generation"`
+	ControllerGeneration        int64     `json:"controller_generation"`
+	ReasonCode                  string    `json:"reason_code"`
+	ConsecutiveHeartbeatFails   int       `json:"consecutive_heartbeat_failures"`
+	ConsecutiveHealthProbeFails int       `json:"consecutive_health_probe_failures"`
+	OutageStartedAt             time.Time `json:"outage_started_at,omitempty"`
+	LastControllerSuccessAt     time.Time `json:"last_controller_success_at,omitempty"`
+	IndependentSince            time.Time `json:"independent_since,omitempty"`
+	ActiveIndependentSessions   int       `json:"active_independent_sessions"`
+	PendingUserSyncs            int       `json:"pending_user_syncs"`
+}
+
+type HeartbeatResponse struct {
+	OK                   bool   `json:"ok"`
+	ControllerGeneration int64  `json:"controller_generation"`
+	DesiredMode          string `json:"desired_mode"`
+	ModeGeneration       int64  `json:"mode_generation"`
+}
+
+type ApplyNodeControlModeRequest struct {
+	Mode                 string    `json:"mode"`
+	ModeGeneration       int64     `json:"mode_generation"`
+	ControllerGeneration int64     `json:"controller_generation"`
+	ReasonCode           string    `json:"reason_code"`
+	ChangedAt            time.Time `json:"changed_at"`
+}
+
+type ApplyNodeControlModeResponse struct {
+	OK                        bool   `json:"ok"`
+	AppliedMode               string `json:"applied_mode"`
+	ModeGeneration            int64  `json:"mode_generation"`
+	ActiveIndependentSessions int    `json:"active_independent_sessions"`
+	PendingUserSyncs          int    `json:"pending_user_syncs"`
 }
 
 type NodeCompatibilityReport struct {

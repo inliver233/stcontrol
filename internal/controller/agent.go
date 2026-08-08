@@ -107,13 +107,18 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	now := time.Now().UTC()
+	modeFact, err := normalizeNodeControlMode(req.ControlMode, now)
+	if err != nil {
+		protocol.WriteError(w, http.StatusBadRequest, "节点控制模式报告无效")
+		return
+	}
 	transferURL, err := validateAgentTransferURL(req.TransferURL)
 	if err != nil {
 		protocol.WriteError(w, http.StatusBadRequest, "数据面地址无效")
 		return
 	}
 
-	now := time.Now().UTC()
 	policy := normalizeRegistrationPolicy(req.RegistrationPolicy, now)
 	if policy.State == "error" && policy.Version < node.RegistrationPolicyVersion {
 		policy.Version = node.RegistrationPolicyVersion
@@ -123,11 +128,53 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusInternalServerError, "更新心跳失败")
 		return
 	}
+	decision, err := s.Store.ReconcileNodeControlMode(ctx, node.ID, modeFact)
+	if err != nil {
+		protocol.WriteError(w, http.StatusConflict, "节点控制模式世代冲突")
+		return
+	}
 
 	// 处理用户在线状态 → 供离线备份调度参考
 	s.trackUserActivity(node.ID, req.Users)
+	if modeFact.Mode != protocol.NodeModeManaged || decision.DesiredMode != protocol.NodeModeManaged {
+		s.setControlPlaneGate(true, "node_reconciliation_required")
+	} else if blocked, _ := s.controlPlaneGate(); blocked {
+		// Only a database-wide reconciliation may reopen the gate; one managed
+		// heartbeat cannot prove that every other node has recovered.
+		_ = s.refreshControlPlaneGate(ctx)
+	}
 
-	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	protocol.WriteJSON(w, http.StatusOK, protocol.HeartbeatResponse{
+		OK: true, ControllerGeneration: decision.ControllerGeneration,
+		DesiredMode: decision.DesiredMode, ModeGeneration: decision.ModeGeneration,
+	})
+}
+
+func normalizeNodeControlMode(report protocol.NodeControlModeReport, now time.Time) (store.NodeControlModeFact, error) {
+	fact := store.NodeControlModeFact{
+		Mode: report.Mode, ModeGeneration: report.ModeGeneration,
+		ControllerGeneration: report.ControllerGeneration, ReasonCode: report.ReasonCode,
+		ConsecutiveHeartbeatFails:   report.ConsecutiveHeartbeatFails,
+		ConsecutiveHealthProbeFails: report.ConsecutiveHealthProbeFails,
+		OutageStartedAt:             report.OutageStartedAt, LastControllerSuccessAt: report.LastControllerSuccessAt,
+		IndependentSince:          report.IndependentSince,
+		ActiveIndependentSessions: report.ActiveIndependentSessions,
+		PendingUserSyncs:          report.PendingUserSyncs, ObservedAt: now,
+	}
+	if report.Mode != protocol.NodeModeManaged && report.Mode != protocol.NodeModeControllerUnreachable &&
+		report.Mode != protocol.NodeModeIndependent && report.Mode != protocol.NodeModeIndependentDraining {
+		return store.NodeControlModeFact{}, fmt.Errorf("invalid node control mode")
+	}
+	if report.ModeGeneration <= 0 || report.ControllerGeneration <= 0 ||
+		report.ConsecutiveHeartbeatFails < 0 || report.ConsecutiveHealthProbeFails < 0 ||
+		report.ActiveIndependentSessions < 0 || report.PendingUserSyncs < 0 ||
+		len(report.ReasonCode) > 128 || strings.ContainsAny(report.ReasonCode, "\r\n") {
+		return store.NodeControlModeFact{}, fmt.Errorf("invalid node control mode evidence")
+	}
+	if report.Mode == protocol.NodeModeIndependent && report.IndependentSince.IsZero() {
+		return store.NodeControlModeFact{}, fmt.Errorf("independent mode is missing activation time")
+	}
+	return fact, nil
 }
 
 func normalizeHeartbeatFacts(
