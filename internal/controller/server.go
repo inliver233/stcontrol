@@ -27,6 +27,7 @@ type Server struct {
 	workflowWorkerID      string
 	snapshotSlots         chan struct{}
 	replicaIntegritySlots chan struct{}
+	nodeRetirementSlots   chan struct{}
 	registrationSlots     chan struct{}
 	passwordSyncMu        sync.Mutex
 	controlPlaneMu        sync.RWMutex
@@ -65,6 +66,7 @@ func New(cfg *config.ControllerConfig, st *store.Store, secretKey []byte) *Serve
 		workflowWorkerID:      workerID,
 		snapshotSlots:         make(chan struct{}, 4),
 		replicaIntegritySlots: make(chan struct{}, 2),
+		nodeRetirementSlots:   make(chan struct{}, 2),
 		registrationSlots:     make(chan struct{}, 8),
 		activity:              make(map[int64]map[string]protocol.UserStatus),
 		oauthHTTP: &http.Client{
@@ -147,6 +149,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.passwordSyncReconciler(ctx)
 	go s.registrationWorkflowReconciler(ctx)
 	go s.independentReconciliationReconciler(ctx)
+	go s.nodeRetirementReconciler(ctx)
 
 	controlServer := newControlHTTPServer(s.Cfg, s.Handler())
 	servers := []*http.Server{controlServer}

@@ -337,9 +337,19 @@
 
 - 新增 `0030_node_retirement_workflows.sql`，运营状态图加入 `retiring/decommissioned`；`node_retirement_operations` 持久保存原 lifecycle operation、节点、管理员、机器 reason、controller generation、调度/租约/退避/终态，且每节点最多一个开放退役；`node_retirement_items` 按用户保存 source/target、责任类型、workflow、状态、重试和完成事实。
 - `active/degraded/maintenance -> draining` 与节点状态、lifecycle event、retirement operation/items 在同一个 serializable 事务提交。清单从 legacy home、副本、规范化 replica、node account 交叉生成，每用户只产生一个最高优先级责任：authoritative home 优先，其次 storage archive、compute redundant replica、最后 account metadata。相同 operation 精确重放不重复入队；切回 maintenance/active 原子取消 operation 并把未完成 item 标为 superseded，不回滚已安全完成的迁移事实。
-- 生命周期禁止 `draining -> retired` 跳步；后续执行器必须先进入 retiring、逐项完成并验证，再进入 decommissioned，之后管理员才能做兼容性的最终 retired 标记。空节点也会留下 state=verifying 的 durable operation，而不是因为“没有用户”绕过可审计流程。
+- 生命周期禁止 `draining -> retired` 跳步；本批只建立由后续执行器消费的 durable 清单，要求先进入 retiring、逐项完成并验证，再进入 decommissioned，之后管理员才能做兼容性的最终 retired 标记。空节点也会留下 state=verifying 的 durable operation，而不是因为“没有用户”绕过可审计流程。
 - 登录 handoff 在取得候选 lease 后再次读取节点的 connectivity/compatibility/reported+desired control mode 和 operational state。新 lease 只允许 active；已有 writer 可在 draining/retiring 返回原节点。新分配若撞上排空会让 lease operation 和票据一起回滚。真实 PostgreSQL 验证排空节点没有残留 writer 行。
 - 管理 API 新增 `/api/admin/nodes/{id}/retirement`，只返回 bounded progress 计数和机器错误码；节点页每 15 秒刷新完成/等待离线/阻塞/失败计数，显示 retiring/decommissioned 产品状态，并按后端合法图收窄排空、隔离和最终退役按钮。
 - 真实 PostgreSQL 验证 authoritative home 只捕获一个 item、精确 drain 重放不重复、暂停后 operation=cancelled/item=superseded、空清单进入 verifying，以及新登录 lease 全事务回滚。30 个 embedded migration 由并发 Store 完整应用并核对 checksum。
 - `STCONTROL_TEST_POSTGRES_DSN=... go test -count=1 -coverprofile=coverage/node_retirement_foundation.coverprofile ./...`、`go vet ./...`、Linux amd64 CGO0 build、web production build 和 `git diff --check` 通过；总覆盖率 44.4%（Agent 54.1%、Controller 25.4%、Store 57.2%）。
 - 尚未完成且未冒充完成：这一批只建立可重启的清单/准入/进度基础；后台 claim/lease、账号供应、不可变快照、权威 home 原子迁移、storage archive 重建和最终 decommission verifier 将在下一批实现，因此 R19 仍为 `部分`。
+
+## 2026-08-09：节点退役执行器与原子迁移批次
+
+- Controller 新增最多 2 路并发的节点退役 reconciler；每次执行使用唯一 lease owner，并以 operation lease、controller generation 和退避时间领取任务，进程重启或 lease 过期后可由同代 Controller 接续，竞争 worker、同 owner 重入和旧执行器延迟释放均不能夺取或清除新 lease。用户在线时只记录 bounded 机器状态并等待，不强制踢线。
+- compute 退役按稳定排序选择受管、健康且兼容的 compute 目标；storage 退役从当前健康 compute home 重建到纯 storage 目标。目标账号先通过既有固定命令供应，目标容量、handle 冲突、角色、控制模式和兼容性均失败关闭，不向 Agent 下发任意 shell。
+- retirement item 与既有 durable snapshot workflow/backup job 原子绑定；共享快照 worker 产生 manifest/hash 已验证且原子发布的 immutable hot copy 后，才允许在同一 serializable 事务中切换 active/authoritative home、结束旧 writer lease、撤销旧票据并陈旧化源副本。storage archive 只有在新 copy ready 后才陈旧化旧 copy；重复完成请求必须逐项核对已提交事实。
+- 最终 verifier 要求所有 item 终态且节点已无 home、规范化/遗留副本、账号、非终态 workflow、写租约、independent-draining 和 relay transfer 依赖，随后原子进入 decommissioned/offline 并撤销 Agent 凭据、轮换、enrollment、固定命令、管理员关联、控制票据及 prepared capability。空节点同样经过 claim、retiring、verify、decommission 流程。
+- 真实 PostgreSQL 覆盖空节点 claim/同 owner 重入拒绝/竞争租约/释放重领/最终化、陈旧 generation 拒绝、compute 账号供应、满容量目标零 artifact 拒绝、完整快照阶段推进、权威 home 原子迁移与精确重放，以及 storage archive 替换和最终化；10,000-item 清单也在真实数据库运行。
+- `STCONTROL_TEST_POSTGRES_DSN=... go test -count=1 -coverprofile=coverage/node_retirement_executor.coverprofile ./...`、`go vet ./...`、Linux amd64 CGO0 build、web production build、30 个 embedded migration 并发应用/checksum 校验和 `git diff --check` 通过；总覆盖率 44.6%（Agent 54.1%、Controller 25.1%、Store 57.6%）。
+- 尚未完成且未冒充完成：物理节点清理/最终兼容性 retired 标记、跨 generation 自动接管、升级失败隔离、权威数据静默损坏恢复、双进程/掉电/磁盘满矩阵和 80% 覆盖率门禁仍是后续验收缺口，因此 R19/R22 保持 `部分`。

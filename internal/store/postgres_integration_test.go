@@ -58,6 +58,10 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 		assertPostgresNodeLifecycleHardening(t, stores[0], nodeA)
 	})
 
+	t.Run("node retirement executor persists and atomically promotes home", func(t *testing.T) {
+		assertPostgresNodeRetirementExecutor(t, stores[0])
+	})
+
 	t.Run("ten-thousand account inventory is durable and page bounded", func(t *testing.T) {
 		assertPostgresAccountInventoryScale(t, stores[0], nodeA)
 	})
@@ -290,6 +294,380 @@ func assertPostgresAccountInventoryScale(t *testing.T, st *Store, nodeID int64) 
 		t.Fatalf("persisted inventory candidates=%d err=%v", persisted, err)
 	}
 	t.Logf("persisted and paged %d inventory candidates in %s", persisted, time.Since(started))
+}
+
+func assertPostgresNodeRetirementExecutor(t *testing.T, st *Store) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	var adminID int64
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO admins (uuid,username,password_hash,status)
+		VALUES ('72000000-0000-4000-8000-000000000001','retirement-admin','test-hash','active')
+		RETURNING id`).Scan(&adminID); err != nil {
+		t.Fatalf("insert retirement administrator: %v", err)
+	}
+
+	emptyNodeID := insertIntegrationNode(t, st, "retirement-empty")
+	emptyDrain := TransitionNodeLifecycleParams{
+		OperationID: "72000000-0000-4000-8000-000000000002", NodeID: emptyNodeID,
+		ToState: "draining", ReasonCode: "operator_draining", AdminID: adminID, Now: now,
+	}
+	if state, err := st.TransitionNodeLifecycle(ctx, emptyDrain); err != nil || state != "draining" {
+		t.Fatalf("start empty retirement: state=%q err=%v", state, err)
+	}
+	emptyStatus, err := st.GetNodeRetirementStatus(ctx, emptyNodeID)
+	if err != nil || emptyStatus == nil || emptyStatus.State != "verifying" || emptyStatus.TotalItems != 0 {
+		t.Fatalf("empty retirement status=%+v err=%v", emptyStatus, err)
+	}
+	workerID := "72000000-0000-4000-8000-000000000003"
+	claimed, err := st.ClaimNodeRetirement(
+		ctx, emptyStatus.ID, workerID, "72000000-0000-4000-8000-000000000004",
+		now.Add(time.Second), 2*time.Minute,
+	)
+	if err != nil || !claimed {
+		t.Fatalf("claim empty retirement: claimed=%v err=%v", claimed, err)
+	}
+	reentrantClaim, err := st.ClaimNodeRetirement(
+		ctx, emptyStatus.ID, workerID, "72000000-0000-4000-8000-000000000025",
+		now.Add(1250*time.Millisecond), 2*time.Minute,
+	)
+	if err != nil || reentrantClaim {
+		t.Fatalf("reentrant retirement claim=%v err=%v", reentrantClaim, err)
+	}
+	competingClaim, err := st.ClaimNodeRetirement(
+		ctx, emptyStatus.ID, "72000000-0000-4000-8000-000000000023",
+		"72000000-0000-4000-8000-000000000024", now.Add(1500*time.Millisecond), 2*time.Minute,
+	)
+	if err != nil || competingClaim {
+		t.Fatalf("competing retirement claim=%v err=%v", competingClaim, err)
+	}
+	if err := st.ReleaseNodeRetirement(ctx, emptyStatus.ID, workerID); err != nil {
+		t.Fatalf("release empty retirement: %v", err)
+	}
+	claimed, err = st.ClaimNodeRetirement(
+		ctx, emptyStatus.ID, workerID, "72000000-0000-4000-8000-000000000005",
+		now.Add(2*time.Second), 2*time.Minute,
+	)
+	if err != nil || !claimed {
+		t.Fatalf("reclaim empty retirement: claimed=%v err=%v", claimed, err)
+	}
+	finalized, err := st.FinalizeNodeRetirement(
+		ctx, emptyStatus.ID, "72000000-0000-4000-8000-000000000006", now.Add(3*time.Second),
+	)
+	if err != nil || !finalized {
+		t.Fatalf("finalize empty retirement: finalized=%v err=%v", finalized, err)
+	}
+	finalized, err = st.FinalizeNodeRetirement(
+		ctx, emptyStatus.ID, "72000000-0000-4000-8000-000000000006", now.Add(3*time.Second),
+	)
+	if err != nil || !finalized {
+		t.Fatalf("replay empty retirement: finalized=%v err=%v", finalized, err)
+	}
+	var emptyNodeState, emptyOperationState string
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT node.operational_state,operation.state
+		FROM nodes node JOIN node_retirement_operations operation ON operation.node_id=node.id
+		WHERE node.id=$1`, emptyNodeID).Scan(&emptyNodeState, &emptyOperationState); err != nil ||
+		emptyNodeState != "decommissioned" || emptyOperationState != "decommissioned" {
+		t.Fatalf("empty final state node=%q operation=%q err=%v", emptyNodeState, emptyOperationState, err)
+	}
+
+	sourceNodeID := insertIntegrationNode(t, st, "retirement-source")
+	targetNodeID := insertIntegrationNode(t, st, "retirement-target")
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE nodes SET transfer_url='https://retirement.example/transfer'
+		WHERE id IN ($1,$2)`, sourceNodeID, targetNodeID); err != nil {
+		t.Fatalf("configure retirement data plane: %v", err)
+	}
+	var legacyUserID, globalUserID int64
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO users (username,display_name,auth_provider,home_node_id,status)
+		VALUES ('retirement-user','Retirement User','password',$1,'active') RETURNING id`, sourceNodeID).
+		Scan(&legacyUserID); err != nil {
+		t.Fatalf("insert retirement legacy user: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		INSERT INTO global_users (uuid,legacy_user_id,display_name,status)
+		VALUES ('72000000-0000-4000-8000-000000000007',$1,'Retirement User','active') RETURNING id`,
+		legacyUserID).Scan(&globalUserID); err != nil {
+		t.Fatalf("insert retirement global user: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO node_accounts (
+		  user_id,node_id,local_handle,local_user_id,status,password_material_version,
+		  password_hash,password_salt
+		) VALUES ($1,$2,'retirement-user','source-user','active',3,'retirement-node-hash','retirement-node-salt')`,
+		globalUserID, sourceNodeID); err != nil {
+		t.Fatalf("insert retirement node accounts: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO user_replicas (user_id,node_id,kind,state)
+		VALUES ($1,$2,'home','ready'),($1,$3,'hot_standby','empty')`,
+		legacyUserID, sourceNodeID, targetNodeID); err != nil {
+		t.Fatalf("insert retirement legacy replicas: %v", err)
+	}
+	homeDrain := TransitionNodeLifecycleParams{
+		OperationID: "72000000-0000-4000-8000-000000000008", NodeID: sourceNodeID,
+		ToState: "draining", ReasonCode: "operator_draining", AdminID: adminID, Now: now.Add(4 * time.Second),
+	}
+	if state, err := st.TransitionNodeLifecycle(ctx, homeDrain); err != nil || state != "draining" {
+		t.Fatalf("start home retirement: state=%q err=%v", state, err)
+	}
+	homeStatus, err := st.GetNodeRetirementStatus(ctx, sourceNodeID)
+	if err != nil || homeStatus == nil || homeStatus.TotalItems != 1 || homeStatus.PendingItems != 1 {
+		t.Fatalf("home retirement status=%+v err=%v", homeStatus, err)
+	}
+	claimed, err = st.ClaimNodeRetirement(
+		ctx, homeStatus.ID, workerID, "72000000-0000-4000-8000-000000000009",
+		now.Add(5*time.Second), 2*time.Minute,
+	)
+	if err != nil || !claimed {
+		t.Fatalf("claim home retirement: claimed=%v err=%v", claimed, err)
+	}
+	item, err := st.GetNextNodeRetirementItem(ctx, homeStatus.ID, now.Add(5*time.Second))
+	if err != nil || item == nil || item.ItemKind != "authoritative_home" || item.UserBusy {
+		t.Fatalf("home retirement item=%+v err=%v", item, err)
+	}
+	capabilityHash := sha256.Sum256([]byte("retirement-capability"))
+	workflowID := "72000000-0000-4000-8000-000000000010"
+	snapshotID := "72000000-0000-4000-8000-000000000012"
+	homeSnapshotParams := CreateSnapshotWorkflowParams{
+		WorkflowID: workflowID, OperationID: "72000000-0000-4000-8000-000000000011",
+		SnapshotID: snapshotID, CapabilityID: "72000000-0000-4000-8000-000000000013",
+		CapabilityHash: capabilityHash[:], LegacyUserID: legacyUserID, GlobalUserID: globalUserID,
+		SourceNodeID: sourceNodeID, TargetNodeID: targetNodeID, DestinationKind: "hot_standby",
+		RetirementItemID: item.ID, RetirementTrigger: "node_retirement",
+		CapabilityExpires: now.Add(time.Hour), Now: now.Add(6 * time.Second),
+	}
+	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET capacity_state='full' WHERE id=$1`, targetNodeID); err != nil {
+		t.Fatalf("saturate retirement target: %v", err)
+	}
+	if _, err := st.CreateSnapshotWorkflow(ctx, homeSnapshotParams); !errors.Is(err, ErrNodeRetirementState) {
+		t.Fatalf("full retirement target error=%v", err)
+	}
+	var rejectedWorkflowCount, rejectedJobCount int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT (SELECT count(*) FROM workflows WHERE id=$1),
+		  (SELECT count(*) FROM backup_jobs WHERE trigger='node_retirement' AND user_id=$2)`,
+		workflowID, legacyUserID).Scan(&rejectedWorkflowCount, &rejectedJobCount); err != nil ||
+		rejectedWorkflowCount != 0 || rejectedJobCount != 0 {
+		t.Fatalf("rejected target artifacts workflows=%d jobs=%d err=%v",
+			rejectedWorkflowCount, rejectedJobCount, err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET capacity_state='open' WHERE id=$1`, targetNodeID); err != nil {
+		t.Fatalf("restore retirement target capacity: %v", err)
+	}
+	workflow, err := st.CreateSnapshotWorkflow(ctx, homeSnapshotParams)
+	if err != nil || workflow.WorkflowID != workflowID {
+		t.Fatalf("create retirement snapshot workflow=%+v err=%v", workflow, err)
+	}
+	provision, err := st.GetWorkflowTargetAccountProvision(ctx, workflowID)
+	if err != nil || provision == nil || provision.Status != "pending" || provision.TargetNodeID != targetNodeID ||
+		provision.AccountVersion != 1 || provision.PasswordHash != "retirement-node-hash" ||
+		provision.PasswordSalt != "retirement-node-salt" {
+		t.Fatalf("retirement target provision=%+v err=%v", provision, err)
+	}
+	if err := st.CompleteWorkflowTargetAccountProvision(
+		ctx, workflowID, provision.AccountVersion, "target-user", now.Add(6500*time.Millisecond),
+	); err != nil {
+		t.Fatalf("activate retirement target account: %v", err)
+	}
+	provision, err = st.GetWorkflowTargetAccountProvision(ctx, workflowID)
+	if err != nil || provision == nil || provision.Status != "active" || provision.LocalUserID != "target-user" {
+		t.Fatalf("active retirement target provision=%+v err=%v", provision, err)
+	}
+	if err := st.SetSnapshotWorkflowState(ctx, workflowID, "scheduled", "quiescing", now.Add(7*time.Second)); err != nil {
+		t.Fatalf("quiesce retirement snapshot: %v", err)
+	}
+	for index, progress := range []struct {
+		state  string
+		nodeID int64
+	}{
+		{state: "drained", nodeID: sourceNodeID},
+		{state: "snapshotting", nodeID: sourceNodeID},
+		{state: "transferring", nodeID: sourceNodeID},
+		{state: "verifying", nodeID: targetNodeID},
+		{state: "publishing", nodeID: targetNodeID},
+	} {
+		if err := st.SetSnapshotWorkflowProgress(
+			ctx, workflowID, snapshotID, progress.nodeID, progress.state,
+			now.Add(time.Duration(8+index)*time.Second),
+		); err != nil {
+			t.Fatalf("advance retirement snapshot to %s: %v", progress.state, err)
+		}
+	}
+	manifestHash := sha256.Sum256([]byte("retirement-manifest"))
+	archiveHash := sha256.Sum256([]byte("retirement-archive"))
+	if _, err := st.CompleteSnapshotWorkflow(ctx, CompleteSnapshotWorkflowParams{
+		WorkflowID: workflowID, SnapshotID: snapshotID, CapabilityHash: capabilityHash[:],
+		TargetNodeID: targetNodeID, ReplicaKind: "hot_standby", ReplicaOrigin: "migration",
+		ManifestSHA256: manifestHash[:], ArchiveSHA256: archiveHash[:], FileCount: 3, TotalBytes: 1024,
+		Now: now.Add(14 * time.Second),
+	}); err != nil {
+		t.Fatalf("publish retirement snapshot: %v", err)
+	}
+	if err := st.CompleteNodeRetirementHomeMigration(ctx, item.ID, workflowID, now.Add(15*time.Second)); err != nil {
+		t.Fatalf("promote retirement target: %v", err)
+	}
+	if err := st.CompleteNodeRetirementHomeMigration(ctx, item.ID, workflowID, now.Add(15*time.Second)); err != nil {
+		t.Fatalf("replay retirement promotion: %v", err)
+	}
+	var homeNodeID int64
+	var sourceReplicaState, targetReplicaKind, targetReplicaState, copyKind, copyOrigin string
+	var authoritative bool
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT legacy.home_node_id,source_replica.state,target_replica.kind,target_replica.state,
+		  copy.replica_kind,copy.origin,copy.is_authoritative
+		FROM users legacy
+		JOIN user_replicas source_replica ON source_replica.user_id=legacy.id AND source_replica.node_id=$2
+		JOIN user_replicas target_replica ON target_replica.user_id=legacy.id AND target_replica.node_id=$3
+		JOIN replica_copies copy ON copy.user_id=$4 AND copy.node_id=$3
+		WHERE legacy.id=$1`, legacyUserID, sourceNodeID, targetNodeID, globalUserID).Scan(
+		&homeNodeID, &sourceReplicaState, &targetReplicaKind, &targetReplicaState,
+		&copyKind, &copyOrigin, &authoritative,
+	); err != nil || homeNodeID != targetNodeID || sourceReplicaState != "stale" ||
+		targetReplicaKind != "home" || targetReplicaState != "ready" || copyKind != "active" ||
+		copyOrigin != "migration" || !authoritative {
+		t.Fatalf("promoted home=%d source=%q target=%q/%q copy=%q/%q authoritative=%v err=%v",
+			homeNodeID, sourceReplicaState, targetReplicaKind, targetReplicaState,
+			copyKind, copyOrigin, authoritative, err)
+	}
+	if next, err := st.GetNextNodeRetirementItem(ctx, homeStatus.ID, now.Add(16*time.Second)); err != nil || next != nil {
+		t.Fatalf("completed retirement next=%+v err=%v", next, err)
+	}
+	finalized, err = st.FinalizeNodeRetirement(
+		ctx, homeStatus.ID, "72000000-0000-4000-8000-000000000014", now.Add(17*time.Second),
+	)
+	if err != nil || !finalized {
+		t.Fatalf("finalize home retirement: finalized=%v err=%v", finalized, err)
+	}
+	homeStatus, err = st.GetNodeRetirementStatus(ctx, sourceNodeID)
+	if err != nil || homeStatus.State != "decommissioned" || homeStatus.CompletedItems != 1 {
+		t.Fatalf("completed home retirement status=%+v err=%v", homeStatus, err)
+	}
+
+	retiringStorageID := insertIntegrationNode(t, st, "retirement-storage-old")
+	replacementStorageID := insertIntegrationNode(t, st, "retirement-storage-new")
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE nodes SET role='storage',is_backup_target=true,
+		  transfer_url='https://retirement-storage.example/transfer'
+		WHERE id IN ($1,$2)`, retiringStorageID, replacementStorageID); err != nil {
+		t.Fatalf("configure retirement storage nodes: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO replica_copies (
+		  id,user_id,node_id,snapshot_id,replica_kind,state,origin,is_authoritative,
+		  compatibility_state,published_at,verified_at,created_at,updated_at
+		) VALUES (
+		  '72000000-0000-4000-8000-000000000015',$1,$2,$3,'archive','ready','configured',false,
+		  'compatible',$4,$4,$4,$4
+		)`, globalUserID, retiringStorageID, snapshotID, now.Add(18*time.Second)); err != nil {
+		t.Fatalf("insert retiring archive copy: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO user_replicas (user_id,node_id,kind,state)
+		VALUES ($1,$2,'archive','ready'),($1,$3,'archive','empty')`,
+		legacyUserID, retiringStorageID, replacementStorageID); err != nil {
+		t.Fatalf("insert retiring archive read models: %v", err)
+	}
+	storageDrain := TransitionNodeLifecycleParams{
+		OperationID: "72000000-0000-4000-8000-000000000016", NodeID: retiringStorageID,
+		ToState: "draining", ReasonCode: "operator_draining", AdminID: adminID, Now: now.Add(19 * time.Second),
+	}
+	if state, err := st.TransitionNodeLifecycle(ctx, storageDrain); err != nil || state != "draining" {
+		t.Fatalf("start storage retirement: state=%q err=%v", state, err)
+	}
+	storageStatus, err := st.GetNodeRetirementStatus(ctx, retiringStorageID)
+	if err != nil || storageStatus == nil || storageStatus.TotalItems != 1 || storageStatus.PendingItems != 1 {
+		t.Fatalf("storage retirement status=%+v err=%v", storageStatus, err)
+	}
+	claimed, err = st.ClaimNodeRetirement(
+		ctx, storageStatus.ID, workerID, "72000000-0000-4000-8000-000000000017",
+		now.Add(20*time.Second), 2*time.Minute,
+	)
+	if err != nil || !claimed {
+		t.Fatalf("claim storage retirement: claimed=%v err=%v", claimed, err)
+	}
+	storageItem, err := st.GetNextNodeRetirementItem(ctx, storageStatus.ID, now.Add(20*time.Second))
+	if err != nil || storageItem == nil || storageItem.ItemKind != "archive_replica" ||
+		storageItem.HomeNodeID != targetNodeID || storageItem.UserBusy {
+		t.Fatalf("storage retirement item=%+v err=%v", storageItem, err)
+	}
+	storageCapabilityHash := sha256.Sum256([]byte("storage-retirement-capability"))
+	storageWorkflowID := "72000000-0000-4000-8000-000000000018"
+	storageSnapshotID := "72000000-0000-4000-8000-000000000020"
+	storageWorkflow, err := st.CreateSnapshotWorkflow(ctx, CreateSnapshotWorkflowParams{
+		WorkflowID: storageWorkflowID, OperationID: "72000000-0000-4000-8000-000000000019",
+		SnapshotID: storageSnapshotID, CapabilityID: "72000000-0000-4000-8000-000000000021",
+		CapabilityHash: storageCapabilityHash[:], LegacyUserID: legacyUserID, GlobalUserID: globalUserID,
+		SourceNodeID: targetNodeID, TargetNodeID: replacementStorageID, DestinationKind: "archive",
+		RetirementItemID: storageItem.ID, RetirementTrigger: "node_retirement_storage",
+		CapabilityExpires: now.Add(time.Hour), Now: now.Add(21 * time.Second),
+	})
+	if err != nil || storageWorkflow.WorkflowID != storageWorkflowID {
+		t.Fatalf("create storage retirement workflow=%+v err=%v", storageWorkflow, err)
+	}
+	if err := st.SetSnapshotWorkflowState(
+		ctx, storageWorkflowID, "scheduled", "quiescing", now.Add(22*time.Second),
+	); err != nil {
+		t.Fatalf("quiesce storage retirement snapshot: %v", err)
+	}
+	for index, progress := range []struct {
+		state  string
+		nodeID int64
+	}{
+		{state: "drained", nodeID: targetNodeID},
+		{state: "snapshotting", nodeID: targetNodeID},
+		{state: "transferring", nodeID: targetNodeID},
+		{state: "verifying", nodeID: replacementStorageID},
+		{state: "publishing", nodeID: replacementStorageID},
+	} {
+		if err := st.SetSnapshotWorkflowProgress(
+			ctx, storageWorkflowID, storageSnapshotID, progress.nodeID, progress.state,
+			now.Add(time.Duration(23+index)*time.Second),
+		); err != nil {
+			t.Fatalf("advance storage retirement snapshot to %s: %v", progress.state, err)
+		}
+	}
+	storageManifestHash := sha256.Sum256([]byte("storage-retirement-manifest"))
+	storageArchiveHash := sha256.Sum256([]byte("storage-retirement-archive"))
+	if _, err := st.CompleteSnapshotWorkflow(ctx, CompleteSnapshotWorkflowParams{
+		WorkflowID: storageWorkflowID, SnapshotID: storageSnapshotID,
+		CapabilityHash: storageCapabilityHash[:], TargetNodeID: replacementStorageID,
+		ReplicaKind: "archive", ReplicaOrigin: "migration",
+		ManifestSHA256: storageManifestHash[:], ArchiveSHA256: storageArchiveHash[:],
+		FileCount: 4, TotalBytes: 2048, Now: now.Add(29 * time.Second),
+	}); err != nil {
+		t.Fatalf("publish storage retirement snapshot: %v", err)
+	}
+	if err := st.CompleteNodeRetirementReplicaItem(ctx, storageItem.ID, now.Add(30*time.Second)); err != nil {
+		t.Fatalf("complete storage retirement item: %v", err)
+	}
+	if err := st.CompleteNodeRetirementReplicaItem(ctx, storageItem.ID, now.Add(30*time.Second)); err != nil {
+		t.Fatalf("replay storage retirement item: %v", err)
+	}
+	finalized, err = st.FinalizeNodeRetirement(
+		ctx, storageStatus.ID, "72000000-0000-4000-8000-000000000022", now.Add(31*time.Second),
+	)
+	if err != nil || !finalized {
+		t.Fatalf("finalize storage retirement: finalized=%v err=%v", finalized, err)
+	}
+	var oldArchiveState, newArchiveState, newArchiveOrigin, storageNodeState string
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT old_copy.state,new_copy.state,new_copy.origin,node.operational_state
+		FROM replica_copies old_copy
+		JOIN replica_copies new_copy ON new_copy.user_id=old_copy.user_id AND new_copy.node_id=$3
+		JOIN nodes node ON node.id=old_copy.node_id
+		WHERE old_copy.user_id=$1 AND old_copy.node_id=$2`,
+		globalUserID, retiringStorageID, replacementStorageID).Scan(
+		&oldArchiveState, &newArchiveState, &newArchiveOrigin, &storageNodeState,
+	); err != nil || oldArchiveState != "stale" || newArchiveState != "ready" ||
+		newArchiveOrigin != "migration" || storageNodeState != "decommissioned" {
+		t.Fatalf("storage copies old=%q new=%q origin=%q node=%q err=%v",
+			oldArchiveState, newArchiveState, newArchiveOrigin, storageNodeState, err)
+	}
 }
 
 func assertPostgresNodeLifecycleHardening(t *testing.T, st *Store, peerNodeID int64) {

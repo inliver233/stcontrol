@@ -90,36 +90,7 @@ func (s *Store) TransitionNodeLifecycle(ctx context.Context, p TransitionNodeLif
 			return "", ErrNodeLifecycleBlocked
 		}
 		var dependent bool
-		if err := tx.QueryRowContext(ctx, `
-			SELECT EXISTS (
-			  SELECT 1 FROM users WHERE home_node_id=$1 AND status='active'
-			  UNION ALL
-			  SELECT 1 FROM user_replicas
-			  WHERE node_id=$1 AND state NOT IN ('empty','stale','error')
-			  UNION ALL
-			  SELECT 1 FROM replica_copies
-			  WHERE node_id=$1 AND state NOT IN ('empty','stale','corrupt','deleting','error')
-			  UNION ALL
-			  SELECT 1 FROM node_accounts
-			  WHERE node_id=$1 AND status IN ('pending','active','conflict')
-			  UNION ALL
-			  SELECT 1 FROM workflows
-			  WHERE (source_node_id=$1 OR target_node_id=$1)
-			    AND state NOT IN ('cancelled','failed','succeeded')
-			  UNION ALL
-			  SELECT 1 FROM backup_jobs
-			  WHERE (src_node_id=$1 OR dst_node_id=$1) AND status IN ('pending','running')
-			  UNION ALL
-			  SELECT 1 FROM user_activity_leases
-			  WHERE writer_node_id=$1 AND state<>'ended'
-			  UNION ALL
-			  SELECT 1 FROM independent_user_reconciliations
-			  WHERE node_id=$1 AND state NOT IN ('succeeded','superseded','failed')
-			  UNION ALL
-			  SELECT 1 FROM relay_transfers
-			  WHERE (source_node_id=$1 OR target_node_id=$1)
-			    AND state NOT IN ('consumed','expired','failed')
-			)`, p.NodeID).Scan(&dependent); err != nil {
+		if err := tx.QueryRowContext(ctx, nodeRetirementDependencyQuery, p.NodeID).Scan(&dependent); err != nil {
 			return "", err
 		}
 		if dependent {
@@ -145,30 +116,8 @@ func (s *Store) TransitionNodeLifecycle(ctx context.Context, p TransitionNodeLif
 		}
 	}
 	if p.ToState == "decommissioned" || p.ToState == "retired" {
-		statements := []struct {
-			query string
-			args  []any
-		}{
-			{`UPDATE agent_credentials SET revoked_at=COALESCE(revoked_at,$2) WHERE node_id=$1`, []any{p.NodeID, p.Now}},
-			{`UPDATE agent_credential_rotations SET state='revoked' WHERE node_id=$1 AND state='pending'`, []any{p.NodeID}},
-			{`DELETE FROM enrollment_tokens WHERE expected_node_id=$1 AND consumed_at IS NULL`, []any{p.NodeID}},
-			{`UPDATE agent_commands SET state='expired',updated_at=$2
-			 WHERE node_id=$1 AND state IN ('queued','leased','acked','running')`,
-				[]any{p.NodeID, p.Now}},
-			{`UPDATE admin_node_links SET state='revoked',revoked_at=COALESCE(revoked_at,$2),
-			   updated_at=$2,last_error_code='node_retired'
-			 WHERE node_id=$1 AND state<>'revoked'`, []any{p.NodeID, p.Now}},
-			{`UPDATE control_tickets SET revoked_at=COALESCE(revoked_at,$2)
-			 WHERE target_node_id=$1 AND consumed_at IS NULL`, []any{p.NodeID, p.Now}},
-			{`UPDATE tickets SET expires_at=LEAST(expires_at,$2)
-			 WHERE node_id=$1 AND used_at IS NULL`, []any{p.NodeID, p.Now}},
-			{`UPDATE snapshot_transfer_capabilities SET state='revoked'
-			 WHERE (source_node_id=$1 OR target_node_id=$1) AND state='prepared'`, []any{p.NodeID}},
-		}
-		for _, statement := range statements {
-			if _, err := tx.ExecContext(ctx, statement.query, statement.args...); err != nil {
-				return "", err
-			}
+		if err := revokeNodeAccessLocked(ctx, tx, p.NodeID, p.Now); err != nil {
+			return "", err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `

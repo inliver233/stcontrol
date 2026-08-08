@@ -32,6 +32,11 @@ func TestSnapshotReplicaOriginSeparatesAutomaticStorageRepair(t *testing.T) {
 	if got := snapshotReplicaOrigin("offline"); got != "configured" {
 		t.Fatalf("offline origin=%q", got)
 	}
+	for _, trigger := range []string{"node_retirement", "node_retirement_storage"} {
+		if got := snapshotReplicaOrigin(trigger); got != "migration" {
+			t.Fatalf("retirement trigger=%q origin=%q", trigger, got)
+		}
+	}
 }
 
 func TestChooseStorageRepairTargetUsesHealthyPureStorage(t *testing.T) {

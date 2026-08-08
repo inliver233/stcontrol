@@ -37,7 +37,7 @@ func TestCreateSnapshotWorkflowPersistsFactsBeforeMutation(t *testing.T) {
 		WithArgs(p.WorkflowID, p.OperationID, int64(70), int64(8), int64(9), int64(1), int64(3), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	for _, step := range []string{"quiesce", "snapshot", "prepare_target", "transfer", "verify", "publish", "cleanup"} {
-		mock.ExpectExec(`INSERT INTO workflow_steps`).WithArgs(p.WorkflowID, step, now).
+		mock.ExpectExec(`INSERT INTO workflow_steps`).WithArgs(p.WorkflowID, step, "pending", now).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 	mock.ExpectExec(`INSERT INTO snapshot_manifests`).

@@ -295,6 +295,29 @@ func TestCompleteRestoreAccountProvisionActivatesExactVersion(t *testing.T) {
 	assertMockExpectations(t, mock)
 }
 
+func TestGetWorkflowTargetAccountProvisionReturnsOnlyHashedIdentityMaterial(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	workflowID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	mock.ExpectQuery(`SELECT workflow.id::text,workflow.user_id`).WithArgs(workflowID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"workflow_id", "user_id", "target_node_id", "handle", "display_name", "status",
+			"local_user_id", "account_version", "password_hash", "password_salt",
+			"oauth_provider", "oauth_subject",
+		}).AddRow(
+			workflowID, int64(70), int64(9), "alice", "Alice", "pending", "", int64(3),
+			"node-scrypt-hash", "node-salt", "", "",
+		))
+	provision, err := st.GetWorkflowTargetAccountProvision(context.Background(), workflowID)
+	if err != nil || provision == nil || provision.Status != "pending" || provision.AccountVersion != 3 ||
+		provision.PasswordHash != "node-scrypt-hash" || provision.PasswordSalt != "node-salt" ||
+		provision.OAuthProvider != "" || provision.OAuthSubject != "" {
+		t.Fatalf("provision=%+v err=%v", provision, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
 func TestFailRestoreWorkflowLeavesNoLoginEligiblePartialReplica(t *testing.T) {
 	t.Parallel()
 	st, mock, closeDB := newMockStore(t)

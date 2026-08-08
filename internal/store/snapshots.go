@@ -28,6 +28,8 @@ type CreateSnapshotWorkflowParams struct {
 	DestinationKind             string
 	IndependentReconciliationID string
 	IndependentMarker           string
+	RetirementItemID            string
+	RetirementTrigger           string
 	CapabilityExpires           time.Time
 	Now                         time.Time
 }
@@ -62,10 +64,15 @@ type SnapshotWorkflowExecution struct {
 }
 
 func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWorkflowParams) (SnapshotWorkflow, error) {
+	retirementSnapshot := p.RetirementItemID != "" || p.RetirementTrigger != ""
 	if p.WorkflowID == "" || p.OperationID == "" || p.SnapshotID == "" || p.CapabilityID == "" ||
-		len(p.CapabilityHash) != 32 || p.LegacyBackupJobID <= 0 || p.LegacyUserID <= 0 ||
+		len(p.CapabilityHash) != 32 || (!retirementSnapshot && p.LegacyBackupJobID <= 0) || p.LegacyUserID <= 0 ||
 		p.GlobalUserID <= 0 || p.SourceNodeID <= 0 || p.TargetNodeID <= 0 || p.SourceNodeID == p.TargetNodeID ||
 		(p.DestinationKind != "archive" && p.DestinationKind != "hot_standby") {
+		return SnapshotWorkflow{}, ErrInvalidSnapshotWorkflow
+	}
+	if retirementSnapshot && (!validUUIDText(p.RetirementItemID) || p.LegacyBackupJobID != 0 ||
+		(p.RetirementTrigger != "node_retirement" && p.RetirementTrigger != "node_retirement_storage")) {
 		return SnapshotWorkflow{}, ErrInvalidSnapshotWorkflow
 	}
 	independentReconciliation := p.IndependentReconciliationID != "" || p.IndependentMarker != ""
@@ -97,6 +104,65 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 			return SnapshotWorkflow{}, ErrNoActiveController
 		}
 		return SnapshotWorkflow{}, err
+	}
+	legacyBackupJobID := p.LegacyBackupJobID
+	if retirementSnapshot {
+		var retirementNodeID, itemUserID, itemLegacyUserID, currentHomeNodeID, retirementGeneration int64
+		var itemKind, itemState, operationState string
+		err := tx.QueryRowContext(ctx, `
+			SELECT operation.node_id,operation.state,item.user_id,COALESCE(item.legacy_user_id,0),
+			  item.item_kind,item.state,COALESCE(legacy.home_node_id,0),operation.controller_generation
+			FROM node_retirement_items item
+			JOIN node_retirement_operations operation ON operation.id=item.retirement_id
+			LEFT JOIN users legacy ON legacy.id=item.legacy_user_id
+			WHERE item.id=$1 AND item.workflow_id IS NULL
+			FOR UPDATE OF item,operation`, p.RetirementItemID).Scan(
+			&retirementNodeID, &operationState, &itemUserID, &itemLegacyUserID, &itemKind, &itemState,
+			&currentHomeNodeID, &retirementGeneration,
+		)
+		if err != nil {
+			return SnapshotWorkflow{}, err
+		}
+		if itemUserID != p.GlobalUserID || itemLegacyUserID != p.LegacyUserID || operationState != "migrating" ||
+			retirementGeneration != generation ||
+			(itemState != "pending" && itemState != "waiting_offline" && itemState != "retry_wait" && itemState != "provisioning") ||
+			(itemKind == "authoritative_home" && (retirementNodeID != p.SourceNodeID || p.DestinationKind != "hot_standby")) ||
+			(itemKind == "archive_replica" && (retirementNodeID == p.SourceNodeID || currentHomeNodeID != p.SourceNodeID ||
+				retirementNodeID == p.TargetNodeID || p.DestinationKind != "archive")) ||
+			(itemKind != "authoritative_home" && itemKind != "archive_replica") {
+			return SnapshotWorkflow{}, ErrNodeRetirementState
+		}
+		var sourceEligible, targetEligible bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT source.role='compute'
+			    AND source.connectivity_state='online'
+			    AND source.compatibility_state='compatible'
+			    AND source.control_mode='managed' AND source.desired_control_mode='managed'
+			    AND source.operational_state=CASE WHEN $3='authoritative_home' THEN 'retiring' ELSE 'active' END,
+			  target.role=CASE WHEN $3='authoritative_home' THEN 'compute' ELSE 'storage' END
+			    AND target.connectivity_state='online' AND target.operational_state='active'
+			    AND target.compatibility_state='compatible'
+			    AND target.control_mode='managed' AND target.desired_control_mode='managed'
+			    AND target.capacity_state IN ('open','busy')
+			    AND COALESCE(target.transfer_url,'')<>''
+			    AND ($3='authoritative_home' OR target.is_backup_target)
+			FROM nodes source CROSS JOIN nodes target
+			WHERE source.id=$1 AND target.id=$2
+			FOR SHARE OF source,target`, p.SourceNodeID, p.TargetNodeID, itemKind).Scan(
+			&sourceEligible, &targetEligible,
+		); err != nil {
+			return SnapshotWorkflow{}, err
+		}
+		if !sourceEligible || !targetEligible {
+			return SnapshotWorkflow{}, ErrNodeRetirementState
+		}
+		if err := tx.QueryRowContext(ctx, `
+			INSERT INTO backup_jobs (user_id,src_node_id,dst_node_id,trigger,status,created_at)
+			VALUES ($1,$2,$3,$4,'pending',$5) RETURNING id`,
+			p.LegacyUserID, p.SourceNodeID, p.TargetNodeID, p.RetirementTrigger, p.Now).
+			Scan(&legacyBackupJobID); err != nil {
+			return SnapshotWorkflow{}, err
+		}
 	}
 	if independentReconciliation {
 		var reconciliationUserID, reconciliationNodeID, reconciliationGeneration int64
@@ -166,10 +232,35 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 		activityEpoch, generation, p.Now); err != nil {
 		return SnapshotWorkflow{}, fmt.Errorf("create snapshot workflow: %w", err)
 	}
-	for _, step := range []string{"quiesce", "snapshot", "prepare_target", "transfer", "verify", "publish", "cleanup"} {
+	accountProvisionRequired := false
+	if p.DestinationKind == "hot_standby" {
+		var handle string
+		if err := tx.QueryRowContext(ctx, `
+			SELECT legacy.username FROM global_users global_user
+			JOIN users legacy ON legacy.id=global_user.legacy_user_id
+			WHERE global_user.id=$1 AND legacy.id=$2 FOR SHARE OF legacy`,
+			p.GlobalUserID, p.LegacyUserID).Scan(&handle); err != nil {
+			return SnapshotWorkflow{}, ErrInvalidSnapshotWorkflow
+		}
+		accountProvisionRequired, err = prepareWorkflowTargetAccount(
+			ctx, tx, p.WorkflowID, p.GlobalUserID, p.TargetNodeID, handle, p.Now,
+		)
+		if err != nil {
+			return SnapshotWorkflow{}, err
+		}
+	}
+	steps := []string{"quiesce", "snapshot", "prepare_target", "transfer", "verify", "publish", "cleanup"}
+	if p.DestinationKind == "hot_standby" {
+		steps = append([]string{"provision_account"}, steps...)
+	}
+	for _, step := range steps {
+		stepState := "pending"
+		if step == "provision_account" && !accountProvisionRequired {
+			stepState = "succeeded"
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO workflow_steps (workflow_id, step_name, state, updated_at)
-			VALUES ($1,$2,'pending',$3)`, p.WorkflowID, step, p.Now); err != nil {
+			VALUES ($1,$2,$3,$4)`, p.WorkflowID, step, stepState, p.Now); err != nil {
 			return SnapshotWorkflow{}, err
 		}
 	}
@@ -193,7 +284,7 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 	result, err := tx.ExecContext(ctx, `
 		UPDATE backup_jobs SET workflow_id=$2, snapshot_id=$3, activity_epoch=$4
 		WHERE id=$1 AND user_id=$5 AND src_node_id=$6 AND dst_node_id=$7`,
-		p.LegacyBackupJobID, p.WorkflowID, p.SnapshotID, activityEpoch,
+		legacyBackupJobID, p.WorkflowID, p.SnapshotID, activityEpoch,
 		p.LegacyUserID, p.SourceNodeID, p.TargetNodeID)
 	if err != nil {
 		return SnapshotWorkflow{}, err
@@ -225,6 +316,23 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 				return SnapshotWorkflow{}, err
 			}
 			return SnapshotWorkflow{}, ErrIndependentReconciliationState
+		}
+	}
+	if retirementSnapshot {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE node_retirement_items SET target_node_id=$2,workflow_id=$3,
+			  state='snapshotting',next_attempt_at=NULL,error_code=NULL,updated_at=$4
+			WHERE id=$1 AND workflow_id IS NULL
+			  AND state IN ('pending','waiting_offline','retry_wait','provisioning')`,
+			p.RetirementItemID, p.TargetNodeID, p.WorkflowID, p.Now)
+		if err != nil {
+			return SnapshotWorkflow{}, err
+		}
+		if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+			if err != nil {
+				return SnapshotWorkflow{}, err
+			}
+			return SnapshotWorkflow{}, ErrNodeRetirementState
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -595,7 +703,8 @@ type CompleteSnapshotWorkflowParams struct {
 func (s *Store) CompleteSnapshotWorkflow(ctx context.Context, p CompleteSnapshotWorkflowParams) (int64, error) {
 	if p.WorkflowID == "" || p.SnapshotID == "" || len(p.CapabilityHash) != 32 || p.TargetNodeID <= 0 ||
 		(p.ReplicaKind != "archive" && p.ReplicaKind != "hot_standby") || len(p.ManifestSHA256) != 32 ||
-		(p.ReplicaOrigin != "configured" && p.ReplicaOrigin != "temporary_failure_protection") ||
+		(p.ReplicaOrigin != "configured" && p.ReplicaOrigin != "temporary_failure_protection" &&
+			p.ReplicaOrigin != "migration") ||
 		len(p.ArchiveSHA256) != 32 || p.FileCount < 0 || p.TotalBytes < 0 {
 		return 0, ErrInvalidSnapshotWorkflow
 	}

@@ -263,7 +263,7 @@ func (s *Store) CreateRestoreWorkflow(
 		p.TargetNodeID, execution.ActivityEpoch, generation, p.Now); err != nil {
 		return nil, err
 	}
-	accountProvisionRequired, err := prepareRestoreTargetAccount(
+	accountProvisionRequired, err := prepareWorkflowTargetAccount(
 		ctx, tx, p.WorkflowID, p.GlobalUserID, p.TargetNodeID, execution.Handle, p.Now,
 	)
 	if err != nil {
@@ -351,7 +351,7 @@ func (s *Store) CreateRestoreWorkflow(
 	return &execution, nil
 }
 
-func prepareRestoreTargetAccount(
+func prepareWorkflowTargetAccount(
 	ctx context.Context,
 	tx *sql.Tx,
 	workflowID string,
@@ -425,6 +425,58 @@ func prepareRestoreTargetAccount(
 		return false, err
 	}
 	return true, nil
+}
+
+type WorkflowTargetAccountProvision struct {
+	WorkflowID     string
+	GlobalUserID   int64
+	TargetNodeID   int64
+	Handle         string
+	DisplayName    string
+	Status         string
+	LocalUserID    string
+	AccountVersion int64
+	PasswordHash   string
+	PasswordSalt   string
+	OAuthProvider  string
+	OAuthSubject   string
+}
+
+func (s *Store) GetWorkflowTargetAccountProvision(
+	ctx context.Context,
+	workflowID string,
+) (*WorkflowTargetAccountProvision, error) {
+	if !validUUIDText(workflowID) {
+		return nil, ErrInvalidRestoreWorkflow
+	}
+	var provision WorkflowTargetAccountProvision
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT workflow.id::text,workflow.user_id,workflow.target_node_id,
+		  legacy.username,global_user.display_name,account.status,
+		  COALESCE(account.local_user_id,''),account.account_version,
+		  COALESCE(account.password_hash,''),COALESCE(account.password_salt,''),
+		  CASE WHEN account.password_hash IS NOT NULL THEN ''
+		    WHEN account.oauth_subjects ? 'discord' THEN 'discord'
+		    WHEN account.oauth_subjects ? 'linuxdo' THEN 'linuxdo' ELSE '' END,
+		  CASE WHEN account.password_hash IS NOT NULL THEN ''
+		    WHEN account.oauth_subjects ? 'discord' THEN account.oauth_subjects->>'discord'
+		    WHEN account.oauth_subjects ? 'linuxdo' THEN account.oauth_subjects->>'linuxdo' ELSE '' END
+		FROM workflows workflow
+		JOIN global_users global_user ON global_user.id=workflow.user_id
+		JOIN users legacy ON legacy.id=global_user.legacy_user_id
+		JOIN nodes target ON target.id=workflow.target_node_id AND target.role='compute'
+		JOIN node_accounts account ON account.user_id=workflow.user_id
+		  AND account.node_id=workflow.target_node_id
+		WHERE workflow.id=$1 AND workflow.workflow_type IN ('restore','snapshot')`, workflowID).Scan(
+		&provision.WorkflowID, &provision.GlobalUserID, &provision.TargetNodeID,
+		&provision.Handle, &provision.DisplayName, &provision.Status, &provision.LocalUserID,
+		&provision.AccountVersion, &provision.PasswordHash, &provision.PasswordSalt,
+		&provision.OAuthProvider, &provision.OAuthSubject,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return &provision, err
 }
 
 func getRestoreOperation(
@@ -545,6 +597,16 @@ func (s *Store) CompleteRestoreAccountProvision(
 	localUserID string,
 	now time.Time,
 ) error {
+	return s.CompleteWorkflowTargetAccountProvision(ctx, workflowID, accountVersion, localUserID, now)
+}
+
+func (s *Store) CompleteWorkflowTargetAccountProvision(
+	ctx context.Context,
+	workflowID string,
+	accountVersion int64,
+	localUserID string,
+	now time.Time,
+) error {
 	if workflowID == "" || accountVersion <= 0 || localUserID == "" {
 		return ErrInvalidRestoreWorkflow
 	}
@@ -566,7 +628,7 @@ func (s *Store) CompleteRestoreAccountProvision(
 		FROM workflows workflow
 		JOIN node_accounts account ON account.user_id=workflow.user_id
 		  AND account.node_id=workflow.target_node_id
-		WHERE workflow.id=$1 AND workflow.workflow_type='restore'
+		WHERE workflow.id=$1 AND workflow.workflow_type IN ('restore','snapshot')
 		FOR UPDATE OF workflow,account`, workflowID).Scan(
 		&userID, &targetNodeID, &workflowState, &accountStatus, &currentVersion, &currentLocalUserID,
 	)

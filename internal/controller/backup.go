@@ -170,6 +170,24 @@ func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string)
 	if err != nil || target == nil || target.TransferURL == "" {
 		return s.retrySnapshotWorkflow(ctx, execution, "target_unavailable", "目标数据面不可用", err)
 	}
+	if execution.DestinationKind == "hot_standby" {
+		account, err := s.Store.GetWorkflowTargetAccountProvision(ctx, execution.WorkflowID)
+		if err != nil || account == nil {
+			return s.retrySnapshotWorkflow(ctx, execution, "target_account_unavailable", "目标账号准备事实不可用", err)
+		}
+		if account.Status == "pending" {
+			if err := s.provisionSnapshotTargetAccount(ctx, execution, account, target); err != nil {
+				return s.retrySnapshotWorkflow(ctx, execution, "target_account_provision_failed", "目标账号供应未完成", err)
+			}
+			account, err = s.Store.GetWorkflowTargetAccountProvision(ctx, execution.WorkflowID)
+			if err != nil || account == nil {
+				return s.retrySnapshotWorkflow(ctx, execution, "target_account_unavailable", "目标账号供应回执不可用", err)
+			}
+		}
+		if account.Status != "active" {
+			return s.retrySnapshotWorkflow(ctx, execution, "target_account_not_active", "目标账号尚未就绪", nil)
+		}
+	}
 	if execution.State == "scheduled" {
 		if err := s.Store.SetSnapshotWorkflowState(ctx, execution.WorkflowID, "scheduled", "quiescing", time.Now().UTC()); err != nil {
 			return err
@@ -295,7 +313,38 @@ func snapshotReplicaOrigin(trigger string) string {
 	if trigger == "storage_repair" {
 		return "temporary_failure_protection"
 	}
+	if trigger == "node_retirement" || trigger == "node_retirement_storage" {
+		return "migration"
+	}
 	return "configured"
+}
+
+func (s *Server) provisionSnapshotTargetAccount(
+	ctx context.Context,
+	execution *store.SnapshotWorkflowExecution,
+	account *store.WorkflowTargetAccountProvision,
+	target *store.Node,
+) error {
+	request := protocol.RestoreUserAccountRequest{
+		WorkflowID: account.WorkflowID, GlobalUserID: account.GlobalUserID,
+		Handle: account.Handle, Name: account.DisplayName, AccountVersion: account.AccountVersion,
+		PasswordHash: account.PasswordHash, PasswordSalt: account.PasswordSalt,
+		OAuthProvider: account.OAuthProvider, OAuthSubject: account.OAuthSubject,
+	}
+	result, err := s.runAgentCommandWithOperation(
+		ctx, target, "restore_user_account", request,
+		deriveWorkflowOperationID(account.WorkflowID, fmt.Sprintf("snapshot-account:%d:%d", account.AccountVersion, execution.Attempt)),
+		90*time.Second,
+	)
+	if err != nil || result.LocalUserID == "" {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("snapshot target account identity missing")
+	}
+	return s.Store.CompleteWorkflowTargetAccountProvision(
+		ctx, account.WorkflowID, account.AccountVersion, result.LocalUserID, time.Now().UTC(),
+	)
 }
 
 func (s *Server) rotateSnapshotExecutionCapability(ctx context.Context, execution *store.SnapshotWorkflowExecution) error {
