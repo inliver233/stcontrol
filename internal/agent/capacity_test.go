@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"stcontrol/internal/config"
@@ -35,6 +36,7 @@ func TestCompatibilityReportRequiresCompleteAdapterContract(t *testing.T) {
 				}
 				_ = json.NewEncoder(w).Encode(adapterHealth{
 					OK: true, ProtocolVersion: 1, TavernVersion: "v1", Capabilities: test.capabilities,
+					IntegrationFingerprint: strings.Repeat("a", 64),
 				})
 			}))
 			defer server.Close()
@@ -89,7 +91,7 @@ func TestManagedStorageCapacityCountsOnlyRegularFileBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &Agent{Cfg: &config.AgentConfig{Role: "storage", BackupDir: root}}
-	users, size, source, err := agent.managedCapacityFacts()
+	users, size, source, err := agent.managedCapacityFacts(context.Background())
 	if err != nil || users != nil || size != 7 || source != "agent" {
 		t.Fatalf("users=%+v size=%d source=%q err=%v", users, size, source, err)
 	}

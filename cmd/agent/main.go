@@ -21,6 +21,7 @@ func main() {
 	role := flag.String("role", "", "节点角色 compute|storage(覆盖配置)")
 	tavernDir := flag.String("tavern-dir", "", "酒馆安装目录(覆盖配置)")
 	register := flag.Bool("register", false, "执行注册后退出")
+	configureTavern := flag.Bool("configure-tavern", false, "把已注册节点身份安全写入酒馆 stcontrol adapter 配置")
 	flag.Parse()
 
 	cfg := config.DefaultAgent()
@@ -61,10 +62,22 @@ func main() {
 		if err := config.Save(*cfgPath, cfg); err != nil {
 			log.Fatalf("保存配置失败: %v", err)
 		}
+		if cfg.Role == "compute" {
+			if err := agent.ConfigureTavernAdapter(cfg); err != nil {
+				log.Fatalf("配置酒馆 stcontrol adapter 失败: %v", err)
+			}
+		}
 		log.Printf("注册成功! node_id=%d 已写入 %s", cfg.NodeID, *cfgPath)
 		if *register {
 			return
 		}
+	}
+	if *configureTavern {
+		if err := agent.ConfigureTavernAdapter(cfg); err != nil {
+			log.Fatalf("配置酒馆 stcontrol adapter 失败: %v", err)
+		}
+		log.Printf("酒馆 stcontrol adapter 配置已更新")
+		return
 	}
 
 	if cfg.NodeID == 0 || cfg.AgentPSK == "" {

@@ -23,6 +23,7 @@ type Agent struct {
 	httpClient   *http.Client
 	commandSlots chan struct{}
 	stateMu      sync.Mutex
+	auditMu      sync.Mutex
 	state        agentRuntimeState
 }
 

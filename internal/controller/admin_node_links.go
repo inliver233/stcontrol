@@ -187,7 +187,7 @@ func (s *Server) handleCreateAdminHandoff(w http.ResponseWriter, r *http.Request
 	secret = deriveAdminHandoffSecret(s.secretKey, handoff.JTI)
 	code := handoff.JTI + "." + base64.RawURLEncoding.EncodeToString(secret)
 	protocol.WriteJSON(w, http.StatusOK, adminHandoffResponse{
-		OK: true, PostURL: strings.TrimRight(handoff.NodeBaseURL, "/") + "/federated-admin-login",
+		OK: true, PostURL: strings.TrimRight(handoff.NodeBaseURL, "/") + "/api/users/me?stcontrol_handoff=admin",
 		FieldName: loginHandoffField, Code: code, ExpiresAt: handoff.ExpiresAt, TargetNodeID: nodeID,
 	})
 }

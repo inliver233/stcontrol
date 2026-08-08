@@ -27,10 +27,16 @@ type adapterRegistrationPolicy struct {
 }
 
 type adapterHealth struct {
-	OK              bool     `json:"ok"`
-	ProtocolVersion int      `json:"protocol_version"`
-	TavernVersion   string   `json:"tavern_version"`
-	Capabilities    []string `json:"capabilities"`
+	OK                     bool     `json:"ok"`
+	ProtocolVersion        int      `json:"protocol_version"`
+	TavernVersion          string   `json:"tavern_version"`
+	Capabilities           []string `json:"capabilities"`
+	IntegrationFingerprint string   `json:"integration_fingerprint"`
+}
+
+type adapterSessionResponse struct {
+	OK    bool                  `json:"ok"`
+	Users []protocol.UserStatus `json:"users"`
 }
 
 var requiredAdapterCapabilities = []string{
@@ -69,8 +75,28 @@ func (a *Agent) checkNodeAdmin(
 // collectUserStatuses is replaced by the authenticated adapter's session
 // telemetry when managed-mode integration is enabled. Disk activity remains a
 // conservative fallback during upgrade.
-func (a *Agent) collectUserStatuses() []protocol.UserStatus {
-	return a.scanUserActivityFromDisk()
+func (a *Agent) collectUserStatuses(ctx context.Context) ([]protocol.UserStatus, error) {
+	var response adapterSessionResponse
+	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/sessions", struct{}{}, &response); err != nil {
+		return nil, err
+	}
+	if !response.OK || len(response.Users) > protocol.MaxAccountInventoryUsers {
+		return nil, fmt.Errorf("invalid adapter session telemetry")
+	}
+	seen := make(map[string]struct{}, len(response.Users))
+	for _, user := range response.Users {
+		if !safeInventoryString(user.Handle, 128) || !validUUID(user.SessionID) || user.ActivityEpoch < 0 ||
+			user.ControllerGeneration < 0 || user.LastActivity < 0 || user.LastPageHeartbeat < 0 ||
+			user.LastRequest < 0 || user.InFlightReads < 0 || user.InFlightWrites < 0 ||
+			(user.LoginMode != protocol.NodeModeManaged && user.LoginMode != protocol.NodeModeIndependent) {
+			return nil, fmt.Errorf("invalid adapter session telemetry")
+		}
+		if _, exists := seen[user.SessionID]; exists {
+			return nil, fmt.Errorf("duplicate adapter session telemetry")
+		}
+		seen[user.SessionID] = struct{}{}
+	}
+	return response.Users, nil
 }
 
 func (a *Agent) provisionUser(ctx context.Context, req *protocol.ProvisionUserRequest) (*protocol.ProvisionUserResponse, error) {
@@ -160,8 +186,10 @@ func (a *Agent) compatibilityReport(ctx context.Context, info protocol.NodeInfo)
 	capabilities := append([]string(nil), health.Capabilities...)
 	sort.Strings(capabilities)
 	report.Fingerprint = compatibilityFingerprint(append(base,
-		fmt.Sprintf("protocol:%d", health.ProtocolVersion), strings.Join(capabilities, ","))...)
+		fmt.Sprintf("protocol:%d", health.ProtocolVersion), strings.Join(capabilities, ","),
+		health.IntegrationFingerprint)...)
 	if !health.OK || health.ProtocolVersion != 1 || !safeInventoryString(health.TavernVersion, 128) ||
+		!validInventoryDigest(health.IntegrationFingerprint) ||
 		(info.TavernVersion != "" && health.TavernVersion != "" && info.TavernVersion != health.TavernVersion) {
 		report.State = "incompatible"
 		report.ErrorCode = "version_unsupported"
@@ -217,24 +245,26 @@ func (a *Agent) callTavernAdapter(ctx context.Context, path string, body any, ou
 	if err != nil {
 		return err
 	}
-	base.Path = strings.TrimRight(base.Path, "/") + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base.String(), bytes.NewReader(payload))
+	status, responseBody, err := a.postTavernAdapter(ctx, base, path, payload, "", nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	protocol.SignRequest(req, a.Cfg.NodeID, a.Cfg.AgentPSK, payload)
-	resp, err := a.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("call node adapter: %w", err)
+	// The upstream application protects every anonymous POST. Bootstrap its
+	// cookie-backed CSRF token only when that middleware actually rejected the
+	// first request; standalone adapter tests and deployments with CSRF disabled
+	// incur no extra round trip.
+	if status == http.StatusForbidden && bytes.Contains(bytes.ToLower(responseBody), []byte("csrf")) {
+		token, cookies, csrfErr := a.fetchTavernCSRF(ctx, base)
+		if csrfErr != nil {
+			return csrfErr
+		}
+		status, responseBody, err = a.postTavernAdapter(ctx, base, path, payload, token, cookies)
+		if err != nil {
+			return err
+		}
 	}
-	defer resp.Body.Close()
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, tavernAdapterBodyLimit))
-	if err != nil {
-		return fmt.Errorf("read node adapter response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("node adapter returned status %d", resp.StatusCode)
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("node adapter returned status %d", status)
 	}
 	if out != nil && len(responseBody) != 0 {
 		if err := json.Unmarshal(responseBody, out); err != nil {
@@ -242,4 +272,66 @@ func (a *Agent) callTavernAdapter(ctx context.Context, path string, body any, ou
 		}
 	}
 	return nil
+}
+
+func (a *Agent) postTavernAdapter(
+	ctx context.Context,
+	base *url.URL,
+	path string,
+	payload []byte,
+	csrfToken string,
+	cookies []*http.Cookie,
+) (int, []byte, error) {
+	target := *base
+	target.Path = strings.TrimRight(target.Path, "/") + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(payload))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if csrfToken != "" {
+		req.Header.Set("X-CSRF-Token", csrfToken)
+		for _, cookie := range cookies {
+			req.AddCookie(cookie)
+		}
+	}
+	protocol.SignRequest(req, a.Cfg.NodeID, a.Cfg.AgentPSK, payload)
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("call node adapter: %w", err)
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, tavernAdapterBodyLimit+1))
+	if err != nil {
+		return 0, nil, fmt.Errorf("read node adapter response: %w", err)
+	}
+	if len(responseBody) > tavernAdapterBodyLimit {
+		return 0, nil, fmt.Errorf("node adapter response too large")
+	}
+	return resp.StatusCode, responseBody, nil
+}
+
+func (a *Agent) fetchTavernCSRF(ctx context.Context, base *url.URL) (string, []*http.Cookie, error) {
+	target := *base
+	target.Path = strings.TrimRight(target.Path, "/") + "/csrf-token"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return "", nil, err
+	}
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("fetch node adapter csrf token: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4097))
+	if err != nil || len(body) > 4096 || resp.StatusCode != http.StatusOK {
+		return "", nil, fmt.Errorf("fetch node adapter csrf token failed")
+	}
+	var result struct {
+		Token string `json:"token"`
+	}
+	if json.Unmarshal(body, &result) != nil || result.Token == "" || len(result.Token) > 256 || len(resp.Cookies()) == 0 {
+		return "", nil, fmt.Errorf("invalid node adapter csrf response")
+	}
+	return result.Token, resp.Cookies(), nil
 }

@@ -169,3 +169,70 @@ func TestRegistrationPolicyFailsClosedWhenAdapterCannotBeRead(t *testing.T) {
 		t.Fatalf("report=%+v", report)
 	}
 }
+
+func TestTavernAdapterBootstrapsCSRFAndResignsRetry(t *testing.T) {
+	t.Parallel()
+	const psk = "csrf-agent-secret"
+	postCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/csrf-token":
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: "opaque"})
+			http.SetCookie(w, &http.Cookie{Name: "session.sig", Value: "signed"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "csrf-value"})
+		case r.Method == http.MethodPost:
+			postCount++
+			body, _ := io.ReadAll(r.Body)
+			if postCount == 1 {
+				http.Error(w, "Invalid CSRF token", http.StatusForbidden)
+				return
+			}
+			if r.Header.Get("X-CSRF-Token") != "csrf-value" {
+				t.Errorf("csrf header=%q", r.Header.Get("X-CSRF-Token"))
+			}
+			if _, err := r.Cookie("session"); err != nil {
+				t.Errorf("session cookie missing: %v", err)
+			}
+			if err := protocol.VerifyRequest(r, psk, body); err != nil {
+				t.Errorf("retry signature: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	agent, err := New(&config.AgentConfig{TavernURL: server.URL, AgentPSK: psk, NodeID: 4, DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		OK bool `json:"ok"`
+	}
+	if err := agent.callTavernAdapter(context.Background(), "/api/stcontrol/internal/health", map[string]string{
+		"escaped": "<script>&\u2028",
+	}, &result); err != nil || !result.OK || postCount != 2 {
+		t.Fatalf("result=%+v postCount=%d err=%v", result, postCount, err)
+	}
+}
+
+func TestCollectUserStatusesUsesExactAdapterSessions(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(adapterSessionResponse{OK: true, Users: []protocol.UserStatus{{
+			Handle: "alice", SessionID: "11111111-1111-4111-8111-111111111111",
+			ActivityEpoch: 7, ControllerGeneration: 3, LoginMode: protocol.NodeModeManaged,
+			IsOnline: true, LastActivity: 1000, LastPageHeartbeat: 900, LastRequest: 1000,
+			InFlightReads: 1,
+		}}})
+	}))
+	defer server.Close()
+	agent, err := New(&config.AgentConfig{TavernURL: server.URL, AgentPSK: "secret", NodeID: 4, DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	users, err := agent.collectUserStatuses(context.Background())
+	if err != nil || len(users) != 1 || users[0].ActivityEpoch != 7 || users[0].InFlightReads != 1 {
+		t.Fatalf("users=%+v err=%v", users, err)
+	}
+}

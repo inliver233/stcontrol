@@ -149,7 +149,10 @@ func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 	// reproduces the same code without ever storing its bearer secret.
 	secret = deriveLoginHandoffSecret(s.secretKey, handoff.JTI)
 	code := handoff.JTI + "." + base64.RawURLEncoding.EncodeToString(secret)
-	postURL := strings.TrimRight(handoff.NodeBaseURL, "/") + "/federated-login"
+	// SillyTavern's existing anonymous CSRF exemption is limited to
+	// /api/users/me. The kind is non-secret; the opaque one-use credential
+	// remains only in the POST body.
+	postURL := strings.TrimRight(handoff.NodeBaseURL, "/") + "/api/users/me?stcontrol_handoff=user"
 	protocol.WriteJSON(w, http.StatusOK, loginHandoffResponse{
 		OK:             true,
 		PostURL:        postURL,

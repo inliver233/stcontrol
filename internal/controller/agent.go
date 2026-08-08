@@ -135,7 +135,10 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 处理用户在线状态 → 供离线备份调度参考
-	s.trackUserActivity(node.ID, req.Users)
+	if err := s.trackUserActivity(ctx, node.ID, req.Users, now); err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "更新用户活动租约失败")
+		return
+	}
 	if modeFact.Mode != protocol.NodeModeManaged || decision.DesiredMode != protocol.NodeModeManaged {
 		s.setControlPlaneGate(true, "node_reconciliation_required")
 	} else if blocked, _ := s.controlPlaneGate(); blocked {
@@ -309,8 +312,59 @@ func normalizeRegistrationPolicy(
 // ---------- 离线备份调度辅助 ----------
 
 // trackUserActivity 记录节点上用户的在线状态（内存态, 供调度器用）。
-func (s *Server) trackUserActivity(nodeID int64, users []protocol.UserStatus) {
-	// 简化: 存入内存 map, 调度器读取。
+func (s *Server) trackUserActivity(
+	ctx context.Context,
+	nodeID int64,
+	users []protocol.UserStatus,
+	now time.Time,
+) error {
+	const leaseTTL = 15 * time.Minute
+	aggregated := make(map[string]protocol.UserStatus)
+	for _, u := range users {
+		if u.Handle == "" || len(u.Handle) > 128 || u.LastActivity < 0 || u.LastPageHeartbeat < 0 ||
+			u.LastRequest < 0 || u.InFlightReads < 0 || u.InFlightWrites < 0 {
+			continue
+		}
+		pageAt, pageOK := reportedActivityTime(u.LastPageHeartbeat, now)
+		requestAt, requestOK := reportedActivityTime(u.LastRequest, now)
+		online := !u.Ended && (u.InFlightReads > 0 || u.InFlightWrites > 0 ||
+			(pageOK && now.Sub(pageAt) <= leaseTTL) || (requestOK && now.Sub(requestAt) <= leaseTTL))
+		current := aggregated[u.Handle]
+		current.Handle = u.Handle
+		current.IsOnline = current.IsOnline || online
+		if u.LastActivity > current.LastActivity {
+			current.LastActivity = u.LastActivity
+		}
+		current.InFlightReads += u.InFlightReads
+		current.InFlightWrites += u.InFlightWrites
+		aggregated[u.Handle] = current
+
+		if u.LoginMode != protocol.NodeModeManaged || !isUUID(u.SessionID) || u.ActivityEpoch <= 0 ||
+			u.ControllerGeneration <= 0 {
+			continue
+		}
+		user, err := s.Store.GetUserByUsername(ctx, u.Handle)
+		if err != nil || user == nil || user.GlobalID <= 0 {
+			continue
+		}
+		if u.Ended {
+			if _, err := s.Store.EndActivityLease(ctx, user.GlobalID, nodeID, u.SessionID,
+				u.ActivityEpoch, u.ControllerGeneration, now); err != nil {
+				return fmt.Errorf("end activity lease for %s: %w", u.Handle, err)
+			}
+			continue
+		}
+		if _, err := s.Store.UpdateActivityLeaseTelemetry(ctx, store.ActivityLeaseTelemetry{
+			UserID: user.GlobalID, WriterNodeID: nodeID, SessionID: u.SessionID,
+			ActivityEpoch: u.ActivityEpoch, ControllerGeneration: u.ControllerGeneration,
+			LastPageHeartbeatAt: pageAt, LastRequestAt: requestAt,
+			InFlightReads: u.InFlightReads, InFlightWrites: u.InFlightWrites,
+			Online: online, Now: now, TTL: leaseTTL,
+		}); err != nil {
+			return fmt.Errorf("update activity telemetry for %s: %w", u.Handle, err)
+		}
+	}
+
 	s.actMu.Lock()
 	defer s.actMu.Unlock()
 	if s.activity == nil {
@@ -321,9 +375,21 @@ func (s *Server) trackUserActivity(nodeID int64, users []protocol.UserStatus) {
 		m = make(map[string]protocol.UserStatus)
 		s.activity[nodeID] = m
 	}
-	for _, u := range users {
+	for _, u := range aggregated {
 		m[u.Handle] = u
 	}
+	return nil
+}
+
+func reportedActivityTime(value int64, now time.Time) (time.Time, bool) {
+	if value <= 0 {
+		return time.Time{}, false
+	}
+	reported := time.UnixMilli(value).UTC()
+	if reported.After(now.Add(time.Minute)) {
+		return time.Time{}, false
+	}
+	return reported, true
 }
 
 // ---------- 后台任务 ----------

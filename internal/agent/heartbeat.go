@@ -69,7 +69,7 @@ func (a *Agent) sendHeartbeat(ctx context.Context) {
 	}()
 	go func() {
 		defer wait.Done()
-		users, allocatedBytes, telemetrySource, allocationErr = a.managedCapacityFacts()
+		users, allocatedBytes, telemetrySource, allocationErr = a.managedCapacityFacts(ctx)
 	}()
 	go func() {
 		defer wait.Done()
@@ -163,13 +163,17 @@ func (a *Agent) capacityMetricsPath() string {
 	return a.dataRoot()
 }
 
-func (a *Agent) managedCapacityFacts() ([]protocol.UserStatus, int64, string, error) {
+func (a *Agent) managedCapacityFacts(ctx context.Context) ([]protocol.UserStatus, int64, string, error) {
 	if a.Cfg.Role == "storage" {
 		size, err := directorySize(a.Cfg.BackupDir)
 		return nil, size, "agent", err
 	}
-	users, size, err := a.scanUserActivityAndSize()
-	return users, size, "directory_fallback", err
+	fallback, size, sizeErr := a.scanUserActivityAndSize()
+	users, adapterErr := a.collectUserStatuses(ctx)
+	if adapterErr == nil {
+		return users, size, "adapter", sizeErr
+	}
+	return fallback, size, "directory_fallback", sizeErr
 }
 
 // callController 向总控发起签名请求。respOut 若非 nil 则解析 JSON 响应。

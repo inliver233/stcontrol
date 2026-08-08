@@ -51,6 +51,23 @@ type AcquireActivityLeaseResult struct {
 	Existing bool
 }
 
+// ActivityLeaseTelemetry is an authenticated observation from the exact
+// node-local browser session that owns a writer lease.
+type ActivityLeaseTelemetry struct {
+	UserID               int64
+	WriterNodeID         int64
+	SessionID            string
+	ActivityEpoch        int64
+	ControllerGeneration int64
+	LastPageHeartbeatAt  time.Time
+	LastRequestAt        time.Time
+	InFlightReads        int
+	InFlightWrites       int
+	Online               bool
+	Now                  time.Time
+	TTL                  time.Duration
+}
+
 // AcquireActivityLease atomically establishes the only active writer for a
 // global user. It locks the global user row so simultaneous first acquisitions
 // cannot both observe an absent lease, and records the result under a stable
@@ -195,6 +212,42 @@ func (s *Store) RenewActivityLease(
 		WHERE user_id=$1 AND writer_node_id=$2 AND session_id=$3
 		  AND activity_epoch=$4 AND controller_generation=$5 AND state='active'`,
 		userID, writerNodeID, sessionID, activityEpoch, controllerGeneration, now, now.Add(ttl))
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows == 1, err
+}
+
+// UpdateActivityLeaseTelemetry updates only the fully fenced current lease.
+// Stale sessions and stale controller generations cannot mutate or extend a
+// replacement writer. Any live page, request, read, or write extends the same
+// 15-minute lease; absence of all four facts never shortens it early.
+func (s *Store) UpdateActivityLeaseTelemetry(ctx context.Context, p ActivityLeaseTelemetry) (bool, error) {
+	if p.UserID <= 0 || p.WriterNodeID <= 0 || p.SessionID == "" || p.ActivityEpoch <= 0 ||
+		p.ControllerGeneration <= 0 || p.InFlightReads < 0 || p.InFlightWrites < 0 || p.TTL <= 0 {
+		return false, ErrInvalidLeaseInput
+	}
+	if p.Now.IsZero() {
+		p.Now = time.Now().UTC()
+	}
+	if p.LastPageHeartbeatAt.IsZero() {
+		p.LastPageHeartbeatAt = p.Now.Add(-p.TTL)
+	}
+	if p.LastRequestAt.IsZero() {
+		p.LastRequestAt = p.Now.Add(-p.TTL)
+	}
+	result, err := s.DB.ExecContext(ctx, `
+		UPDATE user_activity_leases
+		SET last_page_heartbeat_at=$6,last_request_at=$7,
+		  in_flight_reads=$8,in_flight_writes=$9,
+		  lease_expires_at=CASE WHEN $10 THEN GREATEST(lease_expires_at,$11) ELSE lease_expires_at END,
+		  updated_at=$5
+		WHERE user_id=$1 AND writer_node_id=$2 AND session_id=$3
+		  AND activity_epoch=$4 AND controller_generation=$12 AND state='active'`,
+		p.UserID, p.WriterNodeID, p.SessionID, p.ActivityEpoch, p.Now,
+		p.LastPageHeartbeatAt, p.LastRequestAt, p.InFlightReads, p.InFlightWrites,
+		p.Online, p.Now.Add(p.TTL), p.ControllerGeneration)
 	if err != nil {
 		return false, err
 	}

@@ -50,9 +50,18 @@ func WriteError(w http.ResponseWriter, status int, msg string) {
 
 // UserStatus 描述节点上某用户的在线状态（供总控判断离线触发备份）。
 type UserStatus struct {
-	Handle       string `json:"handle"`
-	IsOnline     bool   `json:"is_online"`
-	LastActivity int64  `json:"last_activity"` // Unix 毫秒
+	Handle               string `json:"handle"`
+	SessionID            string `json:"session_id,omitempty"`
+	ActivityEpoch        int64  `json:"activity_epoch,omitempty"`
+	ControllerGeneration int64  `json:"controller_generation,omitempty"`
+	LoginMode            string `json:"login_mode,omitempty"`
+	Ended                bool   `json:"ended,omitempty"`
+	IsOnline             bool   `json:"is_online"`
+	LastActivity         int64  `json:"last_activity"` // Unix 毫秒
+	LastPageHeartbeat    int64  `json:"last_page_heartbeat,omitempty"`
+	LastRequest          int64  `json:"last_request,omitempty"`
+	InFlightReads        int    `json:"in_flight_reads,omitempty"`
+	InFlightWrites       int    `json:"in_flight_writes,omitempty"`
 }
 
 // HeartbeatRequest 子控定期上报。

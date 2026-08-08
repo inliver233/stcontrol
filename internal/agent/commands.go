@@ -136,6 +136,13 @@ func (a *Agent) executeAndReportCommand(ctx context.Context, workerID string, co
 			}
 		}
 	}
+	if err := a.appendLocalAudit(localAuditEvent{
+		Event: "command_completed", CommandID: command.ID, OperationID: command.OperationID,
+		CommandType: command.CommandType, ControllerGeneration: result.ControllerGeneration,
+		Succeeded: &result.Succeeded, Cached: ok,
+	}); err != nil {
+		return fmt.Errorf("persist local command audit: %w", err)
+	}
 	payload := protocol.FinishCommandRequest{
 		WorkerID: workerID, ControllerGeneration: result.ControllerGeneration,
 		Succeeded: result.Succeeded, Result: result.Result,
