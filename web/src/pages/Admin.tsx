@@ -36,6 +36,7 @@ async function adminReq<T>(path: string, options?: RequestInit): Promise<T> {
 
 const adminApi = {
   overview: () => adminReq<any>('/api/admin/overview'),
+  controllerRebuild: () => adminReq<any>('/api/admin/controller/rebuild'),
   nodes: () => adminReq<{ nodes: any[] }>('/api/admin/nodes'),
   updateNode: (id: number, body: any) => adminReq<any>(`/api/admin/nodes/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   transitionNode: (id: number, state: string, reason_code: string, acknowledge_risk = false) =>
@@ -165,8 +166,15 @@ export default function AdminPage() {
 // ---------- 仪表盘 ----------
 function Overview() {
   const [data, setData] = useState<any>(null)
-  useEffect(() => { adminApi.overview().then(setData).catch(() => {}) }, [])
-  if (!data) return <div className="loading">加载中…</div>
+  const [rebuild, setRebuild] = useState<any>(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    Promise.all([adminApi.overview(), adminApi.controllerRebuild()])
+      .then(([overview, recovery]) => { setData(overview); setRebuild(recovery) })
+      .catch(err => setError(err instanceof Error ? err.message : '总览加载失败'))
+  }, [])
+  if (error) return <div className="error-box">{error}</div>
+  if (!data || !rebuild) return <div className="loading">加载中…</div>
   const stats = [
     { label: '节点总数', value: data.nodes },
     { label: '在线节点', value: data.nodes_online },
@@ -190,6 +198,21 @@ function Overview() {
           </div>
         ))}
       </div>
+      {rebuild.state !== 'not_required' && (
+        <div className="card" style={{ marginTop: 20 }}>
+          <h3>总控世代恢复对账</h3>
+          <p>
+            generation <strong>{rebuild.generation}</strong>：
+            {rebuild.state === 'succeeded' ? '已完成' : '新登录、选点、注册和备份保持关闭'}；
+            节点 {rebuild.reconciled_nodes}/{rebuild.total_nodes}。
+          </p>
+          {rebuild.nodes?.map((node: any) => (
+            <div key={node.node_id}>
+              {node.node_name}（{node.role}）：<span className="mono">{node.state}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </>
   )
 }

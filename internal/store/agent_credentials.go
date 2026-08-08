@@ -98,7 +98,7 @@ func (s *Store) EnsureAgentCredentialRotation(
 		Scan(&nodeState); err != nil {
 		return nil, err
 	}
-	if nodeState == "retired" {
+	if nodeState == "retired" || nodeState == "decommissioned" {
 		return nil, ErrAgentCredentialRotation
 	}
 	var activeGeneration int64
@@ -123,6 +123,11 @@ func (s *Store) EnsureAgentCredentialRotation(
 	if err == nil {
 		if rotation.ControllerGeneration != activeGeneration || !rotation.ExpiresAt.After(p.Now) {
 			return nil, ErrAgentCredentialRotation
+		}
+		if err := markControllerRebuildRotationPendingLocked(
+			ctx, tx, p.NodeID, activeGeneration, rotation.CredentialVersion, p.Now,
+		); err != nil {
+			return nil, err
 		}
 		return rotation, tx.Commit()
 	}
@@ -163,6 +168,11 @@ func (s *Store) EnsureAgentCredentialRotation(
 		) VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8)`,
 		p.ID, p.OperationID, p.NodeID, version, p.ProposedCiphertext,
 		activeGeneration, p.ExpiresAt, p.Now); err != nil {
+		return nil, err
+	}
+	if err := markControllerRebuildRotationPendingLocked(
+		ctx, tx, p.NodeID, activeGeneration, version, p.Now,
+	); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -212,23 +222,48 @@ func (s *Store) ActivateAgentCredentialRotation(
 		)`, nodeID, credentialVersion).Scan(&exists); err != nil || !exists {
 			return 0, ErrAgentCredentialRotation
 		}
+		if err := markControllerRebuildCredentialActivatedLocked(
+			ctx, tx, nodeID, activeGeneration, credentialVersion, now,
+		); err != nil {
+			return 0, err
+		}
 		return activeGeneration, tx.Commit()
 	}
 	if state != "pending" || !expiresAt.After(now) || rotationGeneration != activeGeneration {
 		return 0, ErrAgentCredentialRotation
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE agent_credentials SET revoked_at=COALESCE(revoked_at,$3)
-		WHERE node_id=$1 AND revoked_at IS NULL;
+		UPDATE agent_credentials SET revoked_at=COALESCE(revoked_at,$2)
+		WHERE node_id=$1 AND revoked_at IS NULL`, nodeID, now); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO agent_credentials (
 		  id,node_id,credential_version,credential_type,secret_ciphertext,
 		  controller_generation,created_at
-		) VALUES ($4,$1,$2,'hmac',$5,$6,$3);
-		UPDATE agent_credential_rotations SET state='activated',confirmed_at=$3 WHERE id=$4;
-		UPDATE nodes SET controller_generation=$6 WHERE id=$1;
-		UPDATE agent_commands SET state='expired',updated_at=$3
+		) VALUES ($1,$2,$3,'hmac',$4,$5,$6)`,
+		rotationID, nodeID, credentialVersion, ciphertext, activeGeneration, now); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE agent_credential_rotations SET state='activated',confirmed_at=$2
+		WHERE id=$1`, rotationID, now); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE nodes SET controller_generation=$2 WHERE id=$1`,
+		nodeID, activeGeneration); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE agent_commands SET state='expired',updated_at=$2
 		WHERE node_id=$1 AND state IN ('queued','leased','acked','running')`,
-		nodeID, credentialVersion, now, rotationID, ciphertext, activeGeneration); err != nil {
+		nodeID, now); err != nil {
+		return 0, err
+	}
+	if err := markControllerRebuildCredentialActivatedLocked(
+		ctx, tx, nodeID, activeGeneration, credentialVersion, now,
+	); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {

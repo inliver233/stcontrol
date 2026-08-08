@@ -18,7 +18,7 @@ import (
 func main() {
 	cfgPath := flag.String("config", "controller.yaml", "配置文件路径")
 	passive := flag.Bool("passive", false, "作为被动副控等待 PostgreSQL 领导锁，取得后自动提升")
-	promote := flag.Bool("promote", false, "取得领导锁后显式提升 controller generation")
+	promote := flag.Bool("promote", false, "把本次启动标记为显式恢复（每次取得领导锁都会提升世代）")
 	flag.Parse()
 
 	cfg := config.DefaultController()
@@ -72,13 +72,17 @@ func main() {
 		}
 	}
 	defer leadership.Close()
-	if *passive || *promote {
-		generation, err := st.PromoteControllerEpoch(ctx, "postgres-leadership-promotion", time.Now().UTC())
-		if err != nil {
-			log.Fatalf("提升总控世代失败: %v", err)
-		}
-		log.Printf("总控已原子提升到 generation=%d；旧会话和票据已撤销", generation)
+	promotionSource := "controller-process-start"
+	if *passive {
+		promotionSource = "passive-controller-takeover"
+	} else if *promote {
+		promotionSource = "explicit-controller-recovery"
 	}
+	generation, err := st.PromoteControllerEpoch(ctx, promotionSource, time.Now().UTC())
+	if err != nil {
+		log.Fatalf("提升总控世代并建立恢复对账失败: %v", err)
+	}
+	log.Printf("总控已原子提升到 generation=%d；新操作保持关闭直至节点凭据轮换与模式对账完成", generation)
 	runCtx, cancelLeadership := context.WithCancel(ctx)
 	defer cancelLeadership()
 	go func() {

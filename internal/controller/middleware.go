@@ -130,6 +130,21 @@ func (s *Server) agentAuthMiddleware(next http.Handler) http.Handler {
 			protocol.WriteError(w, http.StatusUnauthorized, "签名校验失败")
 			return
 		}
+		activeGeneration, err := s.Store.GetActiveControllerGeneration(r.Context())
+		if err != nil {
+			protocol.WriteError(w, http.StatusServiceUnavailable, "节点认证暂不可用")
+			return
+		}
+		if matched.ControllerGeneration != activeGeneration {
+			// A previous-generation active credential is retained only long
+			// enough to authenticate the durable recovery heartbeat that wraps
+			// its successor. It cannot lease, acknowledge or finish commands.
+			if matched.Pending || matched.ControllerGeneration > activeGeneration ||
+				r.URL.Path != "/api/agent/heartbeat" {
+				protocol.WriteError(w, http.StatusUnauthorized, "节点凭据世代已失效")
+				return
+			}
+		}
 		signedUnix, err := strconv.ParseInt(r.Header.Get(protocol.HeaderTimestamp), 10, 64)
 		if err != nil {
 			protocol.WriteError(w, http.StatusUnauthorized, "签名校验失败")
@@ -151,6 +166,7 @@ func (s *Server) agentAuthMiddleware(next http.Handler) http.Handler {
 		// 把节点放进上下文
 		ctx := context.WithValue(r.Context(), ctxKey("stcontrol-node"), node)
 		ctx = context.WithValue(ctx, ctxKey("stcontrol-agent-credential-version"), matched.CredentialVersion)
+		ctx = context.WithValue(ctx, ctxKey("stcontrol-agent-credential-generation"), matched.ControllerGeneration)
 		ctx = context.WithValue(ctx, ctxKey("stcontrol-agent-credential-pending"), matched.Pending)
 		ctx = context.WithValue(ctx, ctxKey("stcontrol-agent-psk"), matchedPSK)
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -162,6 +178,11 @@ func currentAgentCredential(r *http.Request) (int64, bool, string) {
 	pending, _ := r.Context().Value(ctxKey("stcontrol-agent-credential-pending")).(bool)
 	psk, _ := r.Context().Value(ctxKey("stcontrol-agent-psk")).(string)
 	return version, pending, psk
+}
+
+func currentAgentCredentialGeneration(r *http.Request) int64 {
+	generation, _ := r.Context().Value(ctxKey("stcontrol-agent-credential-generation")).(int64)
+	return generation
 }
 
 func (s *Server) agentPSK(ctx context.Context, node *store.Node) (string, error) {

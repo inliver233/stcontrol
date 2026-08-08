@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -43,6 +44,11 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 	}
 	nodeA := insertIntegrationNode(t, stores[0], "writer-a")
 	nodeB := insertIntegrationNode(t, stores[0], "writer-b")
+	recoveryNode := insertIntegrationNode(t, stores[0], "controller-rebuild")
+
+	t.Run("controller promotion only permits heartbeat recovery before credential rotation", func(t *testing.T) {
+		generation = assertPostgresControllerRebuild(t, stores[0], recoveryNode, generation)
+	})
 
 	t.Run("single writer and operation binding", func(t *testing.T) {
 		userID := insertIntegrationGlobalUser(t, stores[0], "lease-user")
@@ -77,6 +83,152 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 	t.Run("ten-thousand account inventory is durable and page bounded", func(t *testing.T) {
 		assertPostgresAccountInventoryScale(t, stores[0], nodeA)
 	})
+}
+
+func assertPostgresControllerRebuild(
+	t *testing.T,
+	st *Store,
+	nodeID, previousGeneration int64,
+) int64 {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO agent_credentials (
+		  id,node_id,credential_version,credential_type,secret_ciphertext,
+		  controller_generation,created_at
+		) VALUES (
+		  '73000000-0000-4000-8000-000000000001',$1,1,'hmac',$2,$3,$4
+		)`, nodeID, []byte("old-controller-secret"), previousGeneration, now); err != nil {
+		t.Fatalf("insert controller rebuild credential: %v", err)
+	}
+	nextGeneration, err := st.PromoteControllerEpoch(ctx, "postgres-rebuild-test", now.Add(time.Second))
+	if err != nil || nextGeneration != previousGeneration+1 {
+		t.Fatalf("promote controller generation=%d err=%v", nextGeneration, err)
+	}
+	status, err := st.GetLatestControllerRebuild(ctx)
+	if err != nil || status == nil || status.State != "reconciling" ||
+		status.Generation != nextGeneration || status.TotalNodes != 1 ||
+		len(status.Nodes) != 1 || status.Nodes[0].State != "awaiting_heartbeat" {
+		t.Fatalf("initial controller rebuild=%+v err=%v", status, err)
+	}
+	ready, err := st.IsControlPlaneReady(ctx)
+	if err != nil || ready {
+		t.Fatalf("control plane opened before rebuild: ready=%v err=%v", ready, err)
+	}
+
+	payloadDigest := sha256.Sum256([]byte("rebuild-fenced-command"))
+	if _, err := st.EnqueueAgentCommand(ctx, EnqueueAgentCommandParams{
+		ID: "73000000-0000-4000-8000-000000000002", OperationID: "73000000-0000-4000-8000-000000000003",
+		NodeID: nodeID, CommandType: "verify_user", EncryptedPayload: json.RawMessage(`{"ciphertext":"test"}`),
+		PayloadSHA256: payloadDigest[:], ExpiresAt: now.Add(time.Hour), Now: now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("enqueue generation-fenced rebuild command: %v", err)
+	}
+	lease, err := st.LeaseAgentCommand(
+		ctx, nodeID, "rebuild-worker-old", now.Add(3*time.Second), time.Minute,
+	)
+	if err != nil || lease != nil {
+		t.Fatalf("old credential node leased new generation command: lease=%+v err=%v", lease, err)
+	}
+
+	fact := NodeControlModeFact{
+		Mode: NodeModeManaged, ModeGeneration: 1,
+		ControllerGeneration: previousGeneration, ObservedAt: now.Add(4 * time.Second),
+	}
+	decision, err := st.ReconcileNodeControlModeAuthenticated(
+		ctx, nodeID, fact, previousGeneration,
+	)
+	if err != nil || decision.ControllerGeneration != nextGeneration ||
+		decision.DesiredMode != NodeModeManaged {
+		t.Fatalf("old credential recovery heartbeat decision=%+v err=%v", decision, err)
+	}
+	status, err = st.GetLatestControllerRebuild(ctx)
+	if err != nil || status.Nodes[0].State != "heartbeat_verified" {
+		t.Fatalf("verified controller rebuild heartbeat=%+v err=%v", status, err)
+	}
+	intermediateGeneration := nextGeneration
+	nextGeneration, err = st.PromoteControllerEpoch(
+		ctx, "postgres-rebuild-restart-test", now.Add(5*time.Second),
+	)
+	if err != nil || nextGeneration != intermediateGeneration+1 {
+		t.Fatalf("restart promotion generation=%d err=%v", nextGeneration, err)
+	}
+	var supersededState, supersededError string
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT state,error_code FROM controller_rebuild_operations
+		WHERE generation=$1`, intermediateGeneration).
+		Scan(&supersededState, &supersededError); err != nil ||
+		supersededState != "failed" || supersededError != "superseded_by_generation" {
+		t.Fatalf("superseded rebuild state=%q error=%q err=%v", supersededState, supersededError, err)
+	}
+	status, err = st.GetLatestControllerRebuild(ctx)
+	if err != nil || status.State != "reconciling" ||
+		status.Generation != nextGeneration || status.Nodes[0].State != "awaiting_heartbeat" {
+		t.Fatalf("replacement controller rebuild=%+v err=%v", status, err)
+	}
+	// The Agent may have durably accepted the intermediate generation before
+	// the Controller crashed, while still authenticating with the older active
+	// credential. A still-higher rebuild must converge this state rather than
+	// deadlock it.
+	fact.ControllerGeneration = intermediateGeneration
+	fact.ObservedAt = now.Add(6 * time.Second)
+	decision, err = st.ReconcileNodeControlModeAuthenticated(
+		ctx, nodeID, fact, previousGeneration,
+	)
+	if err != nil || decision.ControllerGeneration != nextGeneration {
+		t.Fatalf("intermediate generation recovery decision=%+v err=%v", decision, err)
+	}
+
+	rotation, err := st.EnsureAgentCredentialRotation(ctx, EnsureAgentCredentialRotationParams{
+		ID: "73000000-0000-4000-8000-000000000004", OperationID: "73000000-0000-4000-8000-000000000005",
+		NodeID: nodeID, ProposedCiphertext: []byte("new-controller-secret"),
+		ControllerGeneration: nextGeneration, Now: now.Add(7 * time.Second),
+		ExpiresAt: now.Add(24 * time.Hour),
+	})
+	if err != nil || rotation == nil || rotation.CredentialVersion != 2 {
+		t.Fatalf("controller rebuild rotation=%+v err=%v", rotation, err)
+	}
+	status, err = st.GetLatestControllerRebuild(ctx)
+	if err != nil || status.Nodes[0].State != "rotation_pending" {
+		t.Fatalf("pending controller rebuild rotation=%+v err=%v", status, err)
+	}
+	activatedGeneration, err := st.ActivateAgentCredentialRotation(
+		ctx, nodeID, rotation.CredentialVersion, now.Add(8*time.Second),
+	)
+	if err != nil || activatedGeneration != nextGeneration {
+		t.Fatalf("activate controller rebuild rotation generation=%d err=%v", activatedGeneration, err)
+	}
+	status, err = st.GetLatestControllerRebuild(ctx)
+	if err != nil || status.State != "succeeded" || status.ReconciledNodes != 1 ||
+		status.CompletedAt == nil || status.Nodes[0].State != "reconciled" {
+		t.Fatalf("completed controller rebuild=%+v err=%v", status, err)
+	}
+	ready, err = st.IsControlPlaneReady(ctx)
+	if err != nil || !ready {
+		t.Fatalf("control plane remained closed after rebuild: ready=%v err=%v", ready, err)
+	}
+	if _, err := st.ReconcileNodeControlModeAuthenticated(
+		ctx, nodeID, fact, previousGeneration,
+	); !errors.Is(err, ErrStaleControllerMode) {
+		t.Fatalf("old credential accepted after rebuild completion: %v", err)
+	}
+
+	secondDigest := sha256.Sum256([]byte("rebuild-current-command"))
+	if _, err := st.EnqueueAgentCommand(ctx, EnqueueAgentCommandParams{
+		ID: "73000000-0000-4000-8000-000000000006", OperationID: "73000000-0000-4000-8000-000000000007",
+		NodeID: nodeID, CommandType: "verify_user", EncryptedPayload: json.RawMessage(`{"ciphertext":"test"}`),
+		PayloadSHA256: secondDigest[:], ExpiresAt: now.Add(time.Hour), Now: now.Add(9 * time.Second),
+	}); err != nil {
+		t.Fatalf("enqueue post-rebuild command: %v", err)
+	}
+	lease, err = st.LeaseAgentCommand(
+		ctx, nodeID, "rebuild-worker-current", now.Add(10*time.Second), time.Minute,
+	)
+	if err != nil || lease == nil || lease.ControllerGeneration != nextGeneration {
+		t.Fatalf("current credential node could not lease command: lease=%+v err=%v", lease, err)
+	}
+	return nextGeneration
 }
 
 func assertPostgresUserDataFaultLifecycle(t *testing.T, st *Store, generation int64) {

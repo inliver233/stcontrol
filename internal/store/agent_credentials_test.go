@@ -39,6 +39,9 @@ func TestEnsureAgentCredentialRotationAfterGenerationPromotion(t *testing.T) {
 		p.ID, p.OperationID, p.NodeID, int64(2), p.ProposedCiphertext,
 		int64(5), p.ExpiresAt, now,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE controller_rebuild_nodes item SET`).WithArgs(
+		p.NodeID, int64(5), int64(2), now,
+	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	rotation, err := st.EnsureAgentCredentialRotation(context.Background(), p)
 	if err != nil || rotation == nil || rotation.CredentialVersion != 2 ||
@@ -90,9 +93,22 @@ func TestActivateAgentCredentialRotationAtomicallyFencesOldCommands(t *testing.T
 	mock.ExpectQuery(`SELECT id::text,secret_ciphertext`).WithArgs(int64(12), int64(2)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "secret_ciphertext", "controller_generation", "state", "expires_at"}).
 			AddRow("55555555-5555-4555-8555-555555555555", []byte("ciphertext"), int64(5), "pending", now.Add(time.Hour)))
-	mock.ExpectExec(`(?s)UPDATE agent_credentials SET revoked_at=.*INSERT INTO agent_credentials.*UPDATE agent_credential_rotations.*UPDATE nodes.*UPDATE agent_commands`).
-		WithArgs(int64(12), int64(2), now, "55555555-5555-4555-8555-555555555555", []byte("ciphertext"), int64(5)).
-		WillReturnResult(sqlmock.NewResult(0, 5))
+	mock.ExpectExec(`UPDATE agent_credentials SET revoked_at`).WithArgs(int64(12), now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO agent_credentials`).WithArgs(
+		"55555555-5555-4555-8555-555555555555", int64(12), int64(2),
+		[]byte("ciphertext"), int64(5), now,
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE agent_credential_rotations SET state='activated'`).WithArgs(
+		"55555555-5555-4555-8555-555555555555", now,
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE nodes SET controller_generation`).WithArgs(int64(12), int64(5)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE agent_commands SET state='expired'`).WithArgs(int64(12), now).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectQuery(`UPDATE controller_rebuild_nodes item SET`).WithArgs(
+		int64(12), int64(5), int64(2), now,
+	).WillReturnError(sql.ErrNoRows)
 	mock.ExpectCommit()
 	generation, err := st.ActivateAgentCredentialRotation(context.Background(), 12, 2, now)
 	if err != nil || generation != 5 {

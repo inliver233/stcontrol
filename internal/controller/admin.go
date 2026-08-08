@@ -23,6 +23,21 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 	protocol.WriteJSON(w, http.StatusOK, counts)
 }
 
+func (s *Server) handleAdminControllerRebuild(w http.ResponseWriter, r *http.Request) {
+	status, err := s.Store.GetLatestControllerRebuild(r.Context())
+	if err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "总控恢复对账状态暂不可用")
+		return
+	}
+	if status == nil {
+		protocol.WriteJSON(w, http.StatusOK, map[string]any{
+			"state": "not_required", "total_nodes": 0, "reconciled_nodes": 0,
+		})
+		return
+	}
+	protocol.WriteJSON(w, http.StatusOK, status)
+}
+
 // handleAdminListNodes 列出节点。
 func (s *Server) handleAdminListNodes(w http.ResponseWriter, r *http.Request) {
 	nodes, err := s.Store.ListNodes(r.Context())

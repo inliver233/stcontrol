@@ -128,7 +128,9 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusInternalServerError, "更新心跳失败")
 		return
 	}
-	decision, err := s.Store.ReconcileNodeControlMode(ctx, node.ID, modeFact)
+	decision, err := s.Store.ReconcileNodeControlModeAuthenticated(
+		ctx, node.ID, modeFact, currentAgentCredentialGeneration(r),
+	)
 	if err != nil {
 		protocol.WriteError(w, http.StatusConflict, "节点控制模式世代冲突")
 		return
@@ -230,6 +232,7 @@ func (s *Server) handleAgentConfirmCredential(w http.ResponseWriter, r *http.Req
 		protocol.WriteError(w, http.StatusConflict, "凭据轮换已失效，请等待重新协商")
 		return
 	}
+	_ = s.refreshControlPlaneGate(r.Context())
 	_ = s.Store.Audit(r.Context(), "agent", "credential-rotated", fmt.Sprintf("node:%d", node.ID), nil)
 	protocol.WriteJSON(w, http.StatusOK, protocol.ConfirmAgentCredentialResponse{
 		OK: true, CredentialVersion: req.CredentialVersion, ControllerGeneration: generation,

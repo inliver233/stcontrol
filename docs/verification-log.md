@@ -362,3 +362,12 @@
 - Agent 测试证明同尺寸字节篡改可通过 light 但必被 deep 捕获，截短/结构变化由 light 捕获，命令错误不泄露路径/内容；Store/Controller 测试覆盖 check-kind 回执绑定、轻检升级、深检隔离和退避。真实 PostgreSQL 覆盖 light 不能直接 quarantine、light→deep、deep 成功重排、后续 light 不改变 deep cursor，最终 deep mismatch 原子标 corrupt 与 critical alert。
 - `STCONTROL_TEST_POSTGRES_DSN=... go test -count=1 -coverprofile=coverage/tiered_integrity.coverprofile ./...`、`go vet ./...`、Linux amd64 CGO0 build、web production build、31 个 embedded migration 并发应用/checksum 校验和 `git diff --check` 通过；总覆盖率 44.6%（Agent 54.3%、Controller 25.1%、Store 57.7%）。
 - 尚未完成且未冒充完成：本批只闭环 immutable archive 的三层校验与按用户 storage repair 入口；升级/插件 incident、管理员标记单用户权威数据损坏、权威 home 的安全检测/恢复、真实磁盘位翻转/进程重启和 80% 覆盖率仍是后续缺口，因此 R19/R22 保持 `部分`。
+
+## 2026-08-09：Controller 世代恢复与凭据轮换闭环批次
+
+- 新增 `0034_controller_rebuilds.sql`：每次进程取得 PostgreSQL 领导锁都提升 generation，并持久记录本次 rebuild、前一世代、逐节点旧凭据世代、心跳、轮换、draining 和完成时间；连续提升会把未完成旧 rebuild 明确标记为 `failed/superseded_by_generation`，不留下两个伪活动恢复任务。
+- promotion 在一个 serializable 事务内撤销旧浏览器 session、未用票据和旧 pending rotation，并只为持有有效 Agent 凭据且未退役的节点建立清单。`IsControlPlaneReady` 在当前 rebuild 完成前关闭新登录/选点/注册/备份；预创建但尚未 enrollment 的节点不会制造无法完成的恢复依赖。
+- 上一世代 HMAC 仅能通过 middleware 到达 recovery heartbeat，不能 lease/ACK/finish 命令；Store 命令租约再要求 `nodes.controller_generation` 与 active epoch 相等。旧凭据心跳只有命中当前 durable rebuild 清单才可得到更高 generation 和 successor rotation，激活 successor 时原子撤旧凭据、废弃在途命令、更新节点世代及 rebuild 进度。
+- 真实 PostgreSQL 覆盖 Controller 第一次提升后 Agent 已持久接受 N+1、但尚用 N 凭据时再次崩溃并提升 N+2；N 凭据仍只能执行 N+2 恢复心跳，随后轮换并完成 rebuild。恢复前旧节点不能领取新世代命令，完成后旧凭据恢复例外消失，当前凭据可领取命令且操作门才重新开放。
+- 管理员 `/api/admin/controller/rebuild` 与仪表盘显示 generation、完成数及逐节点机器状态；加载失败显式显示。`go test ./...`、`go vet ./...`、Windows/Linux build、web production build、34 migration 真实 PostgreSQL 矩阵和 `git diff --check` 通过；总覆盖率 43.6%，仍低于最终 80%。
+- 尚未完成且未冒充完成：真实 Controller/Agent 双进程网络中断、PostgreSQL/配置/主密钥备份恢复演练、跨机部署安装矩阵及全局 80% 覆盖率继续后续阶段，R12/R20 保持 `部分`。

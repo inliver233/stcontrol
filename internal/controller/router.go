@@ -101,6 +101,7 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Use(s.userAuthMiddleware)
 		r.Use(s.adminOnly)
 		r.Get("/overview", s.handleAdminOverview)
+		r.Get("/controller/rebuild", s.handleAdminControllerRebuild)
 		r.Get("/nodes", s.handleAdminListNodes)
 		r.Get("/node-links", s.handleAdminNodeLinks)
 		r.Post("/nodes", s.handleAdminCreateNode)

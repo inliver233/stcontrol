@@ -114,6 +114,7 @@ func (s *Store) LeaseAgentCommand(
 		  ON epoch.generation=command.controller_generation AND epoch.state='active'
 		JOIN nodes node ON node.id=command.node_id
 		WHERE command.node_id=$1 AND command.expires_at>$2
+		  AND node.controller_generation=epoch.generation
 		  AND (
 		    node.control_mode='managed'
 		    OR (node.control_mode='independent-draining' AND command.command_type IN (

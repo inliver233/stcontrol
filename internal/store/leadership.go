@@ -81,18 +81,99 @@ func (s *Store) PromoteControllerEpoch(ctx context.Context, source string, now t
 		WHERE state='active' FOR UPDATE`).Scan(&current, &signingVersion); err != nil {
 		return 0, err
 	}
+	var operationID, rebuildID string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT gen_random_uuid()::text,gen_random_uuid()::text`).
+		Scan(&operationID, &rebuildID); err != nil {
+		return 0, err
+	}
 	next := current + 1
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE controller_epochs SET state='revoked',revoked_at=$2 WHERE generation=$1 AND state='active';
+		UPDATE controller_epochs SET state='revoked',revoked_at=$2
+		WHERE generation=$1 AND state='active'`, current, now); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO controller_epochs (
 		  generation,operation_id,controller_id,source,state,signing_key_version,activated_at
-		) VALUES ($3,gen_random_uuid(),gen_random_uuid(),$4,'active',$5,$2);
-		UPDATE controller_sessions SET revoked_at=COALESCE(revoked_at,$2) WHERE revoked_at IS NULL;
-		UPDATE control_tickets SET revoked_at=COALESCE(revoked_at,$2) WHERE consumed_at IS NULL AND revoked_at IS NULL;
+		) VALUES ($1,$2,gen_random_uuid(),$3,'active',$4,$5)`,
+		next, operationID, source, signingVersion+1, now); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE controller_sessions SET revoked_at=COALESCE(revoked_at,$1)
+		WHERE revoked_at IS NULL`, now); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE control_tickets SET revoked_at=COALESCE(revoked_at,$1)
+		WHERE consumed_at IS NULL AND revoked_at IS NULL`, now); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE agent_credential_rotations SET state='revoked'
-		WHERE state='pending' AND controller_generation=$1;
-		UPDATE nodes SET controller_generation=0 WHERE role IN ('compute','storage')`,
-		current, now, next, source, signingVersion+1); err != nil {
+		WHERE state='pending' AND controller_generation=$1`, current); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE controller_rebuild_operations SET state='failed',
+		  error_code='superseded_by_generation',completed_at=$1,updated_at=$1
+		WHERE state='reconciling'`, now); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO controller_rebuild_operations (
+		  id,operation_id,generation,previous_generation,source,state,
+		  total_nodes,reconciled_nodes,started_at,updated_at
+		) VALUES ($1,$2,$3,$4,$5,'reconciling',0,0,$6,$6)`,
+		rebuildID, operationID, next, current, source, now); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO controller_rebuild_nodes (
+		  rebuild_id,node_id,previous_credential_generation,state,updated_at
+		)
+		SELECT $1,node.id,credential.controller_generation,'awaiting_heartbeat',$2
+		FROM nodes node
+		JOIN LATERAL (
+		  SELECT controller_generation FROM agent_credentials
+		  WHERE node_id=node.id AND revoked_at IS NULL
+		    AND (expires_at IS NULL OR expires_at>$2)
+		  ORDER BY credential_version DESC LIMIT 1
+		) credential ON true
+		WHERE node.role IN ('compute','storage')
+		  AND node.operational_state NOT IN ('decommissioned','retired')`,
+		rebuildID, now); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE nodes SET controller_generation=0
+		WHERE id IN (
+		  SELECT node_id FROM controller_rebuild_nodes WHERE rebuild_id=$1
+		)`, rebuildID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE controller_rebuild_operations rebuild SET
+		  total_nodes=progress.total_nodes,
+		  state=CASE WHEN progress.total_nodes=0 THEN 'succeeded' ELSE 'reconciling' END,
+		  completed_at=CASE WHEN progress.total_nodes=0 THEN $2::timestamptz ELSE NULL END,
+		  updated_at=$2::timestamptz
+		FROM (
+		  SELECT count(*)::int AS total_nodes FROM controller_rebuild_nodes
+		  WHERE rebuild_id=$1
+		) progress WHERE rebuild.id=$1`, rebuildID, now); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO audit_events (
+		  actor_type,action,target_type,target_id,operation_id,
+		  controller_generation,outcome,detail
+		) VALUES (
+		  'controller','controller-generation-promoted','controller_epoch',$1::text,
+		  $2,$1::bigint,'succeeded',jsonb_build_object(
+		    'previous_generation',$3::bigint,'source',$4::text,
+		    'rebuild_id',$5::text))`, next, operationID, current, source, rebuildID); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
