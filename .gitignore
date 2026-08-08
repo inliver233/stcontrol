@@ -17,4 +17,4 @@ controller.yaml
 
 # Agent runtime data
 /agent-data/
-
+/controller-relay-data/

@@ -28,3 +28,12 @@ func TestDefaultAgentUsesFilesystemCapacityUnlessQuotaConfigured(t *testing.T) {
 		t.Fatalf("agent defaults=%+v", agent)
 	}
 }
+
+func TestDefaultControllerRelayIsDisabledAndBounded(t *testing.T) {
+	t.Parallel()
+	relay := DefaultController().Relay
+	if relay.Listen != "" || relay.PublicURL != "" || relay.DataDir == "" ||
+		relay.MaxBytes <= 0 || relay.RetentionMin <= 0 || relay.MaxConcurrent <= 0 {
+		t.Fatalf("unsafe relay defaults=%+v", relay)
+	}
+}

@@ -22,6 +22,7 @@ type ControllerConfig struct {
 	Backup       BackupPolicy `yaml:"backup"`
 	OAuth        OAuthConfig  `yaml:"oauth"`
 	Admin        AdminConfig  `yaml:"admin"`
+	Relay        RelayConfig  `yaml:"relay"`
 }
 
 // NodePolicy 节点策略。
@@ -81,6 +82,21 @@ type AdminConfig struct {
 	PasswordEnv string `yaml:"password_env"` // 仅首次引导；明文只从环境变量读取
 }
 
+// RelayConfig is a separately-listened, short-lived ciphertext spool used
+// only after a direct Agent-to-Agent transfer has failed. PublicURL must be
+// HTTPS outside loopback; the Controller never receives either endpoint's
+// ephemeral private key.
+type RelayConfig struct {
+	Listen        string `yaml:"listen"`
+	PublicURL     string `yaml:"public_url"`
+	DataDir       string `yaml:"data_dir"`
+	TLSCertFile   string `yaml:"tls_cert_file"`
+	TLSKeyFile    string `yaml:"tls_key_file"`
+	MaxBytes      int64  `yaml:"max_bytes"`
+	RetentionMin  int    `yaml:"retention_min"`
+	MaxConcurrent int    `yaml:"max_concurrent"`
+}
+
 // ---------- 子控配置 ----------
 
 // AgentConfig 子控配置。
@@ -135,6 +151,10 @@ func DefaultController() *ControllerConfig {
 			ZstdLevel: 3, RetryMax: 3, AbortOnLogin: true,
 		},
 		Admin: AdminConfig{Username: "admin", PasswordEnv: "CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD"},
+		Relay: RelayConfig{
+			DataDir: "./controller-relay-data", MaxBytes: 110 << 30,
+			RetentionMin: 60, MaxConcurrent: 4,
+		},
 	}
 }
 

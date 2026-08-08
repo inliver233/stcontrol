@@ -3,6 +3,8 @@ package controller
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -102,6 +104,27 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := s.refreshControlPlaneGate(ctx); err != nil {
 		return fmt.Errorf("initialize control-plane operation gate: %w", err)
 	}
+	var relay *relayDataPlane
+	var relayServer *http.Server
+	if s.Cfg.Relay.Listen != "" {
+		if err := validateRelayListenerConfig(s.Cfg.Relay); err != nil {
+			return err
+		}
+		var err error
+		relay, err = s.relayDataPlane()
+		if err != nil {
+			return err
+		}
+		relayServer = &http.Server{
+			Addr: s.Cfg.Relay.Listen, Handler: relay.Handler(),
+			ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
+			MaxHeaderBytes: 32 << 10,
+		}
+		if s.Cfg.Relay.TLSCertFile != "" {
+			relayServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS13}
+		}
+	}
+
 	go s.nodeWatchdog(ctx)
 	go s.backupScheduler(ctx)
 	go s.sessionJanitor(ctx)
@@ -113,16 +136,43 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.registrationWorkflowReconciler(ctx)
 	go s.independentReconciliationReconciler(ctx)
 
-	srv := &http.Server{
+	controlServer := &http.Server{
 		Addr:              s.Cfg.Listen,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       90 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
-	go func() {
-		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutCtx)
-	}()
-	return srv.ListenAndServe()
+	servers := []*http.Server{controlServer}
+	if relayServer != nil {
+		servers = append(servers, relayServer)
+	}
+	errCh := make(chan error, 2)
+	go func() { errCh <- controlServer.ListenAndServe() }()
+
+	if relayServer != nil {
+		go relayCleanupLoop(ctx, relay)
+		go func() {
+			if s.Cfg.Relay.TLSCertFile != "" {
+				errCh <- relayServer.ListenAndServeTLS(s.Cfg.Relay.TLSCertFile, s.Cfg.Relay.TLSKeyFile)
+				return
+			}
+			errCh <- relayServer.ListenAndServe()
+		}()
+	}
+
+	var runErr error
+	select {
+	case <-ctx.Done():
+	case runErr = <-errCh:
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for _, server := range servers {
+		_ = server.Shutdown(shutdownCtx)
+	}
+	if runErr == nil || errors.Is(runErr, http.ErrServerClosed) {
+		return nil
+	}
+	return runErr
 }

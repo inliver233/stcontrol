@@ -5,6 +5,18 @@ database_url: postgres://stcontrol:stcontrol@127.0.0.1:5432/stcontrol?sslmode=di
 secret_key_env: CONTROLLER_SECRET_KEY
 static_dir: ./web/dist
 
+# 默认关闭。只有 Agent 直连数据面失败后才会使用这个独立监听器；生产环境
+# 必须配置 HTTPS 证书，或在可信反向代理后仅绑定 loopback。
+relay:
+  listen: ""
+  public_url: ""
+  data_dir: ./controller-relay-data
+  tls_cert_file: ""
+  tls_key_file: ""
+  max_bytes: 118111600640
+  retention_min: 60
+  max_concurrent: 4
+
 node:
   register_cpu: 50
   register_mem: 50
