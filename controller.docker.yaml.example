@@ -36,6 +36,9 @@ node:
 ticket:
   ttl_sec: 60
 
+activity:
+  lease_ttl_sec: 900
+
 backup:
   offline_grace_min: 12
   unprotected_alert_min: 60

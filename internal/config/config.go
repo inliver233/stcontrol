@@ -12,19 +12,20 @@ import (
 
 // ControllerConfig 总控配置。
 type ControllerConfig struct {
-	PublicURL    string       `yaml:"public_url"` // 总控对外地址
-	Listen       string       `yaml:"listen"`     // 监听地址 :8080
-	TLSCertFile  string       `yaml:"tls_cert_file"`
-	TLSKeyFile   string       `yaml:"tls_key_file"`
-	DatabaseURL  string       `yaml:"database_url"`
-	SecretKeyEnv string       `yaml:"secret_key_env"` // 控制面凭证加密主密钥的环境变量名
-	StaticDir    string       `yaml:"static_dir"`     // React 构建产物目录
-	Node         NodePolicy   `yaml:"node"`
-	Ticket       TicketPolicy `yaml:"ticket"`
-	Backup       BackupPolicy `yaml:"backup"`
-	OAuth        OAuthConfig  `yaml:"oauth"`
-	Admin        AdminConfig  `yaml:"admin"`
-	Relay        RelayConfig  `yaml:"relay"`
+	PublicURL    string         `yaml:"public_url"` // 总控对外地址
+	Listen       string         `yaml:"listen"`     // 监听地址 :8080
+	TLSCertFile  string         `yaml:"tls_cert_file"`
+	TLSKeyFile   string         `yaml:"tls_key_file"`
+	DatabaseURL  string         `yaml:"database_url"`
+	SecretKeyEnv string         `yaml:"secret_key_env"` // 控制面凭证加密主密钥的环境变量名
+	StaticDir    string         `yaml:"static_dir"`     // React 构建产物目录
+	Node         NodePolicy     `yaml:"node"`
+	Ticket       TicketPolicy   `yaml:"ticket"`
+	Activity     ActivityPolicy `yaml:"activity"`
+	Backup       BackupPolicy   `yaml:"backup"`
+	OAuth        OAuthConfig    `yaml:"oauth"`
+	Admin        AdminConfig    `yaml:"admin"`
+	Relay        RelayConfig    `yaml:"relay"`
 }
 
 // NodePolicy 节点策略。
@@ -46,6 +47,13 @@ type NodePolicy struct {
 // TicketPolicy 票据策略。
 type TicketPolicy struct {
 	TTLSec int `yaml:"ttl_sec"` // 默认60
+}
+
+// ActivityPolicy controls the generation-fenced single-writer lease. It is
+// separate from ticket lifetime: a short handoff secret must not silently
+// shorten or lengthen an authenticated browser activity lease.
+type ActivityPolicy struct {
+	LeaseTTLSec int `yaml:"lease_ttl_sec"` // 默认900
 }
 
 // BackupPolicy 备份策略。
@@ -151,7 +159,8 @@ func DefaultController() *ControllerConfig {
 			MinDiskFreeBytes: 5 << 30, MaxOnlineUsers: 500, MaxTaskQueueDepth: 50,
 			HeartbeatTimeoutSec: 45,
 		},
-		Ticket: TicketPolicy{TTLSec: 60},
+		Ticket:   TicketPolicy{TTLSec: 60},
+		Activity: ActivityPolicy{LeaseTTLSec: 15 * 60},
 		Backup: BackupPolicy{
 			OfflineGraceMin: 12, UnprotectedAlertMin: 60, RetainVersions: 1,
 			ZstdLevel: 3, RetryMax: 3, AbortOnLogin: true,

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -65,6 +66,7 @@ func TestControllerAgentHTTPEnrollmentRotationAndCommandQueue(t *testing.T) {
 	}
 
 	cfg := config.DefaultController()
+	cfg.Activity.LeaseTTLSec = 120
 	cfg.StaticDir = t.TempDir()
 	cfg.Relay.Listen = ""
 	secretKey := []byte("0123456789abcdef0123456789abcdef")
@@ -121,6 +123,28 @@ func TestControllerAgentHTTPEnrollmentRotationAndCommandQueue(t *testing.T) {
 
 	generation := enrollment.ControllerGeneration
 	psk := enrollment.AgentPSK
+	activityPasswordHash, err := controlcrypto.HashPassword("activity-test-password")
+	if err != nil {
+		t.Fatalf("hash activity user password: %v", err)
+	}
+	activityUser := &store.User{
+		Username: "agent-http-activity", DisplayName: "Agent HTTP Activity",
+		PasswordHash: sql.NullString{String: activityPasswordHash, Valid: true}, AuthProvider: "password",
+		HomeNodeID: sql.NullInt64{Int64: node.ID, Valid: true}, Status: "active",
+	}
+	if err := st.CreateUser(ctx, activityUser); err != nil {
+		t.Fatalf("create activity user: %v", err)
+	}
+	const activitySessionID = "74000000-0000-4000-8000-000000000010"
+	activityLease, err := st.AcquireActivityLease(ctx, store.AcquireActivityLeaseParams{
+		OperationID: "74000000-0000-4000-8000-000000000011", UserID: activityUser.GlobalID,
+		WriterNodeID: node.ID, SessionID: activitySessionID, ControllerGeneration: generation,
+		TTL: 30 * time.Second, Now: time.Now().UTC(),
+	})
+	if err != nil || !activityLease.Acquired {
+		t.Fatalf("seed activity lease: result=%+v err=%v", activityLease, err)
+	}
+	activityObservedAt := time.Now().UTC()
 	heartbeat := protocol.HeartbeatRequest{
 		NodeID: node.ID, AgentVersion: "agent-http/v1", TavernVersion: info.TavernVersion,
 		CPUPct: 12, MemPct: 18, DiskPct: 20, MetricsValid: true,
@@ -137,6 +161,13 @@ func TestControllerAgentHTTPEnrollmentRotationAndCommandQueue(t *testing.T) {
 			ControllerGeneration: generation, ReasonCode: "controller_reachable",
 			LastControllerSuccessAt: time.Now().UTC(),
 		},
+		Users: []protocol.UserStatus{{
+			Handle: activityUser.Username, SessionID: activitySessionID,
+			ActivityEpoch: activityLease.Lease.ActivityEpoch, ControllerGeneration: generation,
+			LoginMode: protocol.NodeModeManaged, IsOnline: true,
+			LastActivity: activityObservedAt.UnixMilli(), LastPageHeartbeat: activityObservedAt.UnixMilli(),
+			LastRequest: activityObservedAt.UnixMilli(),
+		}},
 	}
 
 	if status, body := agentSignedJSONRequest(t, client, http.MethodPost, httpServer.URL+"/api/agent/heartbeat", node.ID, "wrong-psk", heartbeat); status != http.StatusUnauthorized {
@@ -154,6 +185,79 @@ func TestControllerAgentHTTPEnrollmentRotationAndCommandQueue(t *testing.T) {
 		heartbeatResponse.ControllerGeneration != generation || heartbeatResponse.CredentialRotation != nil {
 		t.Fatalf("initial heartbeat response=%+v err=%v body=%s", heartbeatResponse, err, body)
 	}
+	var leaseState string
+	var leaseExpiresAt time.Time
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT state,lease_expires_at FROM user_activity_leases WHERE user_id=$1`, activityUser.GlobalID).
+		Scan(&leaseState, &leaseExpiresAt); err != nil || leaseState != "active" ||
+		leaseExpiresAt.Before(activityObservedAt.Add(115*time.Second)) ||
+		leaseExpiresAt.After(activityObservedAt.Add(130*time.Second)) {
+		t.Fatalf("configured activity lease state=%q expires=%s observed=%s err=%v",
+			leaseState, leaseExpiresAt, activityObservedAt, err)
+	}
+
+	// A directory mtime fallback is not authoritative proof of logout. It may
+	// update capacity metrics, but it cannot end the durable writer or leave an
+	// offline fact that the backup scheduler could consume.
+	heartbeat.TelemetrySource = "directory_fallback"
+	heartbeat.Users[0].Ended = true
+	heartbeat.Users[0].IsOnline = false
+	heartbeat.Users[0].LastActivity = time.Now().Add(-time.Hour).UnixMilli()
+	heartbeat.Users[0].LastPageHeartbeat = 0
+	heartbeat.Users[0].LastRequest = 0
+	heartbeat.RegistrationPolicy.ExpiresAt = time.Now().UTC().Add(10 * time.Minute)
+	heartbeat.ControlMode.LastControllerSuccessAt = time.Now().UTC()
+	if status, fallbackBody := agentSignedJSONRequest(t, client, http.MethodPost,
+		httpServer.URL+"/api/agent/heartbeat", node.ID, psk, heartbeat); status != http.StatusOK {
+		t.Fatalf("fallback heartbeat: status=%d body=%s", status, fallbackBody)
+	}
+	if err := st.DB.QueryRowContext(ctx, `SELECT state FROM user_activity_leases WHERE user_id=$1`,
+		activityUser.GlobalID).Scan(&leaseState); err != nil || leaseState != "active" {
+		t.Fatalf("fallback ended durable lease: state=%q err=%v", leaseState, err)
+	}
+	server.actMu.Lock()
+	_, retainedFallback := server.activity[node.ID]
+	server.actMu.Unlock()
+	if retainedFallback {
+		t.Fatal("fallback heartbeat retained schedulable activity facts")
+	}
+
+	// A stale but schema-valid adapter tombstone cannot end a replacement
+	// session or become an offline scheduling fact.
+	heartbeat.TelemetrySource = "adapter"
+	heartbeat.Users[0].SessionID = "74000000-0000-4000-8000-000000000012"
+	heartbeat.RegistrationPolicy.ExpiresAt = time.Now().UTC().Add(10 * time.Minute)
+	heartbeat.ControlMode.LastControllerSuccessAt = time.Now().UTC()
+	if status, staleBody := agentSignedJSONRequest(t, client, http.MethodPost,
+		httpServer.URL+"/api/agent/heartbeat", node.ID, psk, heartbeat); status != http.StatusOK {
+		t.Fatalf("stale ended heartbeat: status=%d body=%s", status, staleBody)
+	}
+	if err := st.DB.QueryRowContext(ctx, `SELECT state FROM user_activity_leases WHERE user_id=$1`,
+		activityUser.GlobalID).Scan(&leaseState); err != nil || leaseState != "active" {
+		t.Fatalf("stale adapter ended replacement lease: state=%q err=%v", leaseState, err)
+	}
+	server.actMu.Lock()
+	staleFact := server.activity[node.ID][activityUser.Username]
+	server.actMu.Unlock()
+	if !staleFact.IsOnline {
+		t.Fatal("stale adapter tombstone became schedulable offline evidence")
+	}
+	heartbeat.Users[0].SessionID = activitySessionID
+
+	// The same fully fenced ended fact from the adapter is authoritative and
+	// atomically terminates the lease.
+	heartbeat.TelemetrySource = "adapter"
+	heartbeat.RegistrationPolicy.ExpiresAt = time.Now().UTC().Add(10 * time.Minute)
+	heartbeat.ControlMode.LastControllerSuccessAt = time.Now().UTC()
+	if status, endedBody := agentSignedJSONRequest(t, client, http.MethodPost,
+		httpServer.URL+"/api/agent/heartbeat", node.ID, psk, heartbeat); status != http.StatusOK {
+		t.Fatalf("adapter ended heartbeat: status=%d body=%s", status, endedBody)
+	}
+	if err := st.DB.QueryRowContext(ctx, `SELECT state FROM user_activity_leases WHERE user_id=$1`,
+		activityUser.GlobalID).Scan(&leaseState); err != nil || leaseState != "ended" {
+		t.Fatalf("adapter did not end durable lease: state=%q err=%v", leaseState, err)
+	}
+	heartbeat.Users = nil
 
 	// Force the normal 30-day rotation path without changing the Controller
 	// generation; the HTTP mechanics and pending-credential restrictions are

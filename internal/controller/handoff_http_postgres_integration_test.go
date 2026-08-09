@@ -90,6 +90,7 @@ func TestControllerUserAndAdminHandoffsAreNodeBoundAndSingleUse(t *testing.T) {
 	}
 
 	cfg := config.DefaultController()
+	cfg.Activity.LeaseTTLSec = 120
 	cfg.StaticDir = t.TempDir()
 	cfg.Relay.Listen = ""
 	cfg.Backup.AbortOnLogin = false
@@ -283,11 +284,21 @@ func TestControllerUserAndAdminHandoffsAreNodeBoundAndSingleUse(t *testing.T) {
 		userRedeemURL, otherNode.ID, otherPSK, map[string]string{"code": userHandoff.Code}); got != http.StatusForbidden {
 		t.Fatalf("wrong-node user redemption: status=%d body=%s", got, response)
 	}
+	redeemedAt := time.Now().UTC()
 	if got, response := agentSignedJSONRequest(t, &http.Client{Timeout: 10 * time.Second}, http.MethodPost,
 		userRedeemURL, primaryNode.ID, primaryPSK, map[string]string{"code": userHandoff.Code}); got != http.StatusOK ||
 		!bytes.Contains(response, []byte(user.Username)) || !bytes.Contains(response, []byte(user.UUID)) ||
 		!bytes.Contains(response, []byte(`"activity_epoch":1`)) {
 		t.Fatalf("user redemption: status=%d body=%s", got, response)
+	}
+	var activityLeaseExpiresAt time.Time
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT lease_expires_at FROM user_activity_leases WHERE user_id=$1`, user.GlobalID).
+		Scan(&activityLeaseExpiresAt); err != nil ||
+		activityLeaseExpiresAt.Before(redeemedAt.Add(115*time.Second)) ||
+		activityLeaseExpiresAt.After(redeemedAt.Add(130*time.Second)) {
+		t.Fatalf("handoff did not use configured activity TTL: expires=%s redeemed=%s err=%v",
+			activityLeaseExpiresAt, redeemedAt, err)
 	}
 	if got, response := agentSignedJSONRequest(t, &http.Client{Timeout: 10 * time.Second}, http.MethodPost,
 		userRedeemURL, primaryNode.ID, primaryPSK, map[string]string{"code": userHandoff.Code}); got != http.StatusForbidden {

@@ -137,7 +137,7 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 处理用户在线状态 → 供离线备份调度参考
-	if err := s.trackUserActivity(ctx, node.ID, req.Users, now); err != nil {
+	if err := s.trackUserActivity(ctx, node.ID, facts.TelemetrySource, req.Users, now); err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "更新用户活动租约失败")
 		return
 	}
@@ -473,58 +473,94 @@ func normalizeRegistrationPolicy(
 func (s *Server) trackUserActivity(
 	ctx context.Context,
 	nodeID int64,
+	telemetrySource string,
 	users []protocol.UserStatus,
 	now time.Time,
 ) error {
-	const leaseTTL = 15 * time.Minute
+	// Directory mtimes and Agent-local fallbacks cannot prove that every page,
+	// request, or write has stopped. Remove scheduling facts for this node and
+	// leave its durable lease untouched until authoritative adapter telemetry
+	// returns. Missing facts therefore fail closed instead of triggering backup.
+	if telemetrySource != "adapter" {
+		s.actMu.Lock()
+		delete(s.activity, nodeID)
+		s.actMu.Unlock()
+		return nil
+	}
+	if len(users) == 0 {
+		s.actMu.Lock()
+		if s.activity == nil {
+			s.activity = make(map[int64]map[string]protocol.UserStatus)
+		}
+		s.activity[nodeID] = map[string]protocol.UserStatus{}
+		s.actMu.Unlock()
+		return nil
+	}
+	leaseTTL := s.activityLeaseTTL()
 	activeGeneration, err := s.Store.GetActiveControllerGeneration(ctx)
 	if err != nil {
 		return err
 	}
 	aggregated := make(map[string]protocol.UserStatus)
 	for _, u := range users {
-		if u.Handle == "" || len(u.Handle) > 128 || u.LastActivity < 0 || u.LastPageHeartbeat < 0 ||
-			u.LastRequest < 0 || u.InFlightReads < 0 || u.InFlightWrites < 0 {
+		normalized, pageAt, requestAt, ok := normalizeUserActivityStatus(u, now, leaseTTL)
+		if !ok {
 			continue
 		}
-		pageAt, pageOK := reportedActivityTime(u.LastPageHeartbeat, now)
-		requestAt, requestOK := reportedActivityTime(u.LastRequest, now)
-		online := !u.Ended && (u.InFlightReads > 0 || u.InFlightWrites > 0 ||
-			(pageOK && now.Sub(pageAt) <= leaseTTL) || (requestOK && now.Sub(requestAt) <= leaseTTL))
+		authoritative := u.LoginMode == protocol.NodeModeManaged && isUUID(u.SessionID) &&
+			u.ActivityEpoch > 0 && u.ControllerGeneration == activeGeneration
+		if authoritative {
+			user, err := s.Store.GetUserByUsername(ctx, u.Handle)
+			if err != nil {
+				return fmt.Errorf("resolve activity user %s: %w", u.Handle, err)
+			}
+			authoritative = user != nil && user.GlobalID > 0
+			if authoritative && u.Ended {
+				matched, err := s.Store.EndActivityLease(ctx, user.GlobalID, nodeID, u.SessionID,
+					u.ActivityEpoch, u.ControllerGeneration, now)
+				if err != nil {
+					return fmt.Errorf("end activity lease for %s: %w", u.Handle, err)
+				}
+				authoritative = matched
+				if !matched {
+					lease, err := s.Store.GetActivityLease(ctx, user.GlobalID)
+					if err != nil {
+						return fmt.Errorf("read ended activity lease for %s: %w", u.Handle, err)
+					}
+					authoritative = lease != nil && lease.WriterNodeID == nodeID &&
+						lease.SessionID == u.SessionID && lease.ActivityEpoch == u.ActivityEpoch &&
+						lease.ControllerGeneration == u.ControllerGeneration && lease.State == "ended"
+				}
+			} else if authoritative {
+				matched, err := s.Store.UpdateActivityLeaseTelemetry(ctx, store.ActivityLeaseTelemetry{
+					UserID: user.GlobalID, WriterNodeID: nodeID, SessionID: u.SessionID,
+					ActivityEpoch: u.ActivityEpoch, ControllerGeneration: u.ControllerGeneration,
+					LastPageHeartbeatAt: pageAt, LastRequestAt: requestAt,
+					InFlightReads: u.InFlightReads, InFlightWrites: u.InFlightWrites,
+					Online: normalized.IsOnline, Now: now, TTL: leaseTTL,
+				})
+				if err != nil {
+					return fmt.Errorf("update activity telemetry for %s: %w", u.Handle, err)
+				}
+				authoritative = matched
+			}
+		}
+		if !authoritative {
+			// A stale session/generation or unknown login mode cannot prove
+			// offline. It also cannot extend the durable lease.
+			normalized.IsOnline = true
+			normalized.LastActivity = now.UnixMilli()
+		}
+
 		current := aggregated[u.Handle]
 		current.Handle = u.Handle
-		current.IsOnline = current.IsOnline || online
-		if u.LastActivity > current.LastActivity {
-			current.LastActivity = u.LastActivity
+		current.IsOnline = current.IsOnline || normalized.IsOnline
+		if normalized.LastActivity > current.LastActivity {
+			current.LastActivity = normalized.LastActivity
 		}
 		current.InFlightReads += u.InFlightReads
 		current.InFlightWrites += u.InFlightWrites
 		aggregated[u.Handle] = current
-
-		if u.LoginMode != protocol.NodeModeManaged || !isUUID(u.SessionID) || u.ActivityEpoch <= 0 ||
-			u.ControllerGeneration != activeGeneration {
-			continue
-		}
-		user, err := s.Store.GetUserByUsername(ctx, u.Handle)
-		if err != nil || user == nil || user.GlobalID <= 0 {
-			continue
-		}
-		if u.Ended {
-			if _, err := s.Store.EndActivityLease(ctx, user.GlobalID, nodeID, u.SessionID,
-				u.ActivityEpoch, u.ControllerGeneration, now); err != nil {
-				return fmt.Errorf("end activity lease for %s: %w", u.Handle, err)
-			}
-			continue
-		}
-		if _, err := s.Store.UpdateActivityLeaseTelemetry(ctx, store.ActivityLeaseTelemetry{
-			UserID: user.GlobalID, WriterNodeID: nodeID, SessionID: u.SessionID,
-			ActivityEpoch: u.ActivityEpoch, ControllerGeneration: u.ControllerGeneration,
-			LastPageHeartbeatAt: pageAt, LastRequestAt: requestAt,
-			InFlightReads: u.InFlightReads, InFlightWrites: u.InFlightWrites,
-			Online: online, Now: now, TTL: leaseTTL,
-		}); err != nil {
-			return fmt.Errorf("update activity telemetry for %s: %w", u.Handle, err)
-		}
 	}
 
 	s.actMu.Lock()
@@ -532,15 +568,36 @@ func (s *Server) trackUserActivity(
 	if s.activity == nil {
 		s.activity = make(map[int64]map[string]protocol.UserStatus)
 	}
-	m := s.activity[nodeID]
-	if m == nil {
-		m = make(map[string]protocol.UserStatus)
-		s.activity[nodeID] = m
-	}
-	for _, u := range aggregated {
-		m[u.Handle] = u
-	}
+	// Each adapter response is a complete point-in-time snapshot. Replacing the
+	// node map prevents an old offline or online entry from surviving forever;
+	// absence itself is not treated as offline by the scheduler.
+	s.activity[nodeID] = aggregated
 	return nil
+}
+
+func normalizeUserActivityStatus(
+	u protocol.UserStatus,
+	now time.Time,
+	leaseTTL time.Duration,
+) (protocol.UserStatus, time.Time, time.Time, bool) {
+	if u.Handle == "" || len(u.Handle) > 128 || u.LastActivity < 0 || u.LastPageHeartbeat < 0 ||
+		u.LastRequest < 0 || u.InFlightReads < 0 || u.InFlightWrites < 0 ||
+		u.InFlightReads > 1_000_000 || u.InFlightWrites > 1_000_000 || leaseTTL <= 0 {
+		return protocol.UserStatus{}, time.Time{}, time.Time{}, false
+	}
+	activityAt, activityOK := reportedActivityTime(u.LastActivity, now)
+	pageAt, pageOK := reportedActivityTime(u.LastPageHeartbeat, now)
+	requestAt, requestOK := reportedActivityTime(u.LastRequest, now)
+	u.IsOnline = !u.Ended && (u.InFlightReads > 0 || u.InFlightWrites > 0 ||
+		(pageOK && now.Sub(pageAt) <= leaseTTL) || (requestOK && now.Sub(requestAt) <= leaseTTL))
+	if !activityOK || u.LastPageHeartbeat > 0 && !pageOK || u.LastRequest > 0 && !requestOK {
+		// Invalid/future activity can never prove the offline grace elapsed.
+		u.IsOnline = true
+		u.LastActivity = now.UnixMilli()
+	} else {
+		u.LastActivity = activityAt.UnixMilli()
+	}
+	return u, pageAt, requestAt, true
 }
 
 func reportedActivityTime(value int64, now time.Time) (time.Time, bool) {

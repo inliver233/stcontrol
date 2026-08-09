@@ -85,6 +85,33 @@ func TestControlHTTPServerPinsTLS13AndHeaderBounds(t *testing.T) {
 	}
 }
 
+func TestControllerRejectsUnsafeActivityLeaseTTL(t *testing.T) {
+	t.Parallel()
+	for _, ttl := range []int{0, 59, 24*60*60 + 1} {
+		cfg := config.DefaultController()
+		cfg.Activity.LeaseTTLSec = ttl
+		if err := ValidateRuntimeConfig(cfg); err == nil {
+			t.Fatalf("unsafe activity lease TTL %d was accepted", ttl)
+		}
+	}
+	cfg := config.DefaultController()
+	cfg.Activity.LeaseTTLSec = 60
+	if err := ValidateRuntimeConfig(cfg); err != nil {
+		t.Fatalf("minimum safe activity lease TTL rejected: %v", err)
+	}
+}
+
+func TestControllerRejectsUnsafeOfflineBackupGrace(t *testing.T) {
+	t.Parallel()
+	for _, grace := range []int{0, 24*60 + 1} {
+		cfg := config.DefaultController()
+		cfg.Backup.OfflineGraceMin = grace
+		if err := ValidateRuntimeConfig(cfg); err == nil {
+			t.Fatalf("unsafe offline backup grace %d was accepted", grace)
+		}
+	}
+}
+
 func TestControllerTLSPreflightFailsBeforeDatabaseOrWorkers(t *testing.T) {
 	t.Parallel()
 	if err := ValidateRuntimeTLSFiles(config.DefaultController()); err != nil {

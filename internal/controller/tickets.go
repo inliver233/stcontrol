@@ -20,7 +20,6 @@ import (
 
 const (
 	loginHandoffField = "stcontrol_code"
-	activityLeaseTTL  = 15 * time.Minute
 	handoffKeyID      = "controller-master-v1"
 )
 
@@ -132,7 +131,7 @@ func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 		Subject:            user.UUID,
 		KeyID:              handoffKeyID,
 		TicketTTL:          ticketTTL,
-		LeaseTTL:           activityLeaseTTL,
+		LeaseTTL:           s.activityLeaseTTL(),
 		ExistingWriterOnly: !isCurrentHome,
 		Now:                time.Now().UTC(),
 	})
@@ -210,7 +209,7 @@ func (s *Server) handleTicketRedeem(w http.ResponseWriter, r *http.Request) {
 	redemption, consumed, err := s.Store.ConsumeLoginHandoff(
 		r.Context(), jti, secretHash[:], node.ID,
 		strings.TrimRight(s.Cfg.PublicURL, "/"), handoffKeyID,
-		time.Now().UTC(), activityLeaseTTL,
+		time.Now().UTC(), s.activityLeaseTTL(),
 	)
 	if err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "登录短码核销失败")

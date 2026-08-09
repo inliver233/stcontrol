@@ -38,6 +38,11 @@ node:
 ticket:
   ttl_sec: 60
 
+# Must match the managed adapter's sessionIdleMs policy. Only authenticated
+# adapter page/request/in-flight facts can extend this generation-fenced lease.
+activity:
+  lease_ttl_sec: 900
+
 backup:
   offline_grace_min: 12
   unprotected_alert_min: 60

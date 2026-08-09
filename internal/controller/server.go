@@ -81,6 +81,17 @@ func New(cfg *config.ControllerConfig, st *store.Store, secretKey []byte) *Serve
 	}
 }
 
+func (s *Server) activityLeaseTTL() time.Duration {
+	seconds := 0
+	if s != nil && s.Cfg != nil {
+		seconds = s.Cfg.Activity.LeaseTTLSec
+	}
+	if seconds <= 0 {
+		seconds = config.DefaultController().Activity.LeaseTTLSec
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 // context key
 type ctxKey string
 
@@ -200,6 +211,12 @@ func (s *Server) Run(ctx context.Context) error {
 func ValidateRuntimeConfig(cfg *config.ControllerConfig) error {
 	if err := validateControlListenerConfig(cfg); err != nil {
 		return err
+	}
+	if cfg.Activity.LeaseTTLSec < 60 || cfg.Activity.LeaseTTLSec > 24*60*60 {
+		return fmt.Errorf("activity lease TTL must be between 60 and 86400 seconds")
+	}
+	if cfg.Backup.OfflineGraceMin < 1 || cfg.Backup.OfflineGraceMin > 24*60 {
+		return fmt.Errorf("offline backup grace must be between 1 and 1440 minutes")
 	}
 	if cfg.Relay.Listen != "" {
 		return validateRelayListenerConfig(cfg.Relay)

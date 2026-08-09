@@ -29,7 +29,14 @@ func (s *Server) scheduleOfflineBackups(ctx context.Context) {
 	nowMs := time.Now().UnixMilli()
 
 	s.actMu.Lock()
-	activity := s.activity
+	activity := make(map[int64]map[string]protocol.UserStatus, len(s.activity))
+	for nodeID, nodeFacts := range s.activity {
+		copied := make(map[string]protocol.UserStatus, len(nodeFacts))
+		for handle, fact := range nodeFacts {
+			copied[handle] = fact
+		}
+		activity[nodeID] = copied
+	}
 	s.actMu.Unlock()
 
 	users, err := s.Store.ListUsers(ctx)

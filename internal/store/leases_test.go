@@ -48,6 +48,24 @@ func TestUpdateActivityLeaseTelemetryUsesFullGenerationFence(t *testing.T) {
 	}
 }
 
+func TestGetActivityLeaseReturnsEndedFence(t *testing.T) {
+	t.Parallel()
+	store, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 9, 4, 30, 0, 0, time.UTC)
+	mock.ExpectQuery(`FROM user_activity_leases WHERE user_id=\$1`).WithArgs(int64(70)).
+		WillReturnRows(sqlmock.NewRows(splitColumns(leaseColumns)).AddRow(
+			int64(70), int64(8), "11111111-1111-4111-8111-111111111111", int64(4),
+			"ended", now, now.Add(-time.Minute), now.Add(-time.Second), 0, 0, int64(9), now,
+		))
+	lease, err := store.GetActivityLease(context.Background(), 70)
+	if err != nil || lease == nil || lease.State != "ended" || lease.ActivityEpoch != 4 ||
+		lease.ControllerGeneration != 9 {
+		t.Fatalf("lease=%+v err=%v", lease, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
 func TestAcquireActivityLeaseCreatesFirstWriter(t *testing.T) {
 	t.Parallel()
 

@@ -21,6 +21,13 @@ func TestDefaultControllerDelaysUnprotectedAlerts(t *testing.T) {
 	}
 }
 
+func TestDefaultControllerHasExplicitActivityLeasePolicy(t *testing.T) {
+	t.Parallel()
+	if got := DefaultController().Activity.LeaseTTLSec; got != 15*60 {
+		t.Fatalf("activity lease TTL=%d, want 900 seconds", got)
+	}
+}
+
 func TestDefaultAgentUsesFilesystemCapacityUnlessQuotaConfigured(t *testing.T) {
 	t.Parallel()
 	agent := DefaultAgent()

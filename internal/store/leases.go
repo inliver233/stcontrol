@@ -73,6 +73,29 @@ type ActivityLeaseTelemetry struct {
 	TTL                  time.Duration
 }
 
+// GetActivityLease returns the current durable row, including an ended row.
+// It is used only to distinguish an idempotently replayed ended observation
+// from a stale session that lost to a replacement writer.
+func (s *Store) GetActivityLease(ctx context.Context, userID int64) (*ActivityLease, error) {
+	if userID <= 0 {
+		return nil, ErrInvalidLeaseInput
+	}
+	lease := &ActivityLease{}
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT user_id,writer_node_id,session_id,activity_epoch,state,lease_expires_at,
+		  last_page_heartbeat_at,last_request_at,in_flight_reads,in_flight_writes,
+		  controller_generation,updated_at
+		FROM user_activity_leases WHERE user_id=$1`, userID).Scan(
+		&lease.UserID, &lease.WriterNodeID, &lease.SessionID, &lease.ActivityEpoch,
+		&lease.State, &lease.LeaseExpiresAt, &lease.LastPageHeartbeatAt, &lease.LastRequestAt,
+		&lease.InFlightReads, &lease.InFlightWrites, &lease.ControllerGeneration, &lease.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return lease, err
+}
+
 // AcquireActivityLease atomically establishes the only active writer for a
 // global user. It locks the global user row so simultaneous first acquisitions
 // cannot both observe an absent lease, and records the result under a stable
@@ -230,7 +253,7 @@ func (s *Store) RenewActivityLease(
 // UpdateActivityLeaseTelemetry updates only the fully fenced current lease.
 // Stale sessions and stale controller generations cannot mutate or extend a
 // replacement writer. Any live page, request, read, or write extends the same
-// 15-minute lease; absence of all four facts never shortens it early.
+// configured lease; absence of all four facts never shortens it early.
 func (s *Store) UpdateActivityLeaseTelemetry(ctx context.Context, p ActivityLeaseTelemetry) (bool, error) {
 	if p.UserID <= 0 || p.WriterNodeID <= 0 || p.SessionID == "" || p.ActivityEpoch <= 0 ||
 		p.ControllerGeneration <= 0 || p.InFlightReads < 0 || p.InFlightWrites < 0 || p.TTL <= 0 {
