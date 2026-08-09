@@ -46,7 +46,7 @@ type AdminHandoffRedemption struct {
 }
 
 func (s *Store) CreateAdminHandoff(ctx context.Context, p CreateAdminHandoffParams) (AdminHandoff, error) {
-	if p.OperationID == "" || p.JTI == "" || len(p.SecretHash) != 32 || p.AdminID <= 0 ||
+	if !validUUIDText(p.OperationID) || !validUUIDText(p.JTI) || len(p.SecretHash) != 32 || p.AdminID <= 0 ||
 		p.NodeID <= 0 || p.Issuer == "" || p.KeyID == "" || p.TicketTTL <= 0 {
 		return AdminHandoff{}, ErrInvalidAdminHandoff
 	}
@@ -146,9 +146,11 @@ func (s *Store) ConsumeAdminHandoff(
 	jti string,
 	secretHash []byte,
 	nodeID int64,
+	expectedIssuer, expectedKeyID string,
 	now time.Time,
 ) (AdminHandoffRedemption, bool, error) {
-	if jti == "" || len(secretHash) != 32 || nodeID <= 0 {
+	if !validUUIDText(jti) || len(secretHash) != 32 || nodeID <= 0 ||
+		expectedIssuer == "" || expectedKeyID == "" {
 		return AdminHandoffRedemption{}, false, ErrInvalidAdminHandoff
 	}
 	if now.IsZero() {
@@ -157,11 +159,13 @@ func (s *Store) ConsumeAdminHandoff(
 	var out AdminHandoffRedemption
 	err := s.DB.QueryRowContext(ctx, `WITH consumed AS (
 		UPDATE control_tickets ticket SET consumed_at=$4,consumed_by_node_id=$2
-		FROM controller_epochs epoch,admins admin,admin_node_links link
+		FROM controller_epochs epoch,admins admin,admin_node_links link,nodes node
 		WHERE ticket.jti=$1 AND ticket.target_node_id=$2 AND ticket.secret_hash=$3
 		  AND ticket.ticket_type='node_admin' AND ticket.not_before<=$4 AND ticket.expires_at>$4
+		  AND ticket.issued_at<=$4 AND ticket.issuer=$5 AND ticket.key_id=$6
 		  AND ticket.consumed_at IS NULL AND ticket.revoked_at IS NULL
 		  AND epoch.state='active' AND epoch.generation=ticket.controller_generation
+		  AND node.id=ticket.target_node_id AND node.base_url=ticket.audience
 		  AND admin.id=ticket.admin_id AND admin.status='active'
 		  AND link.admin_id=ticket.admin_id AND link.node_id=ticket.target_node_id
 		  AND link.local_handle=ticket.subject AND link.state='verified' AND link.revoked_at IS NULL
@@ -169,7 +173,7 @@ func (s *Store) ConsumeAdminHandoff(
 		) SELECT consumed.admin_id,consumed.subject,link.permission_version,
 		  consumed.controller_generation FROM consumed
 		JOIN admin_node_links link ON link.admin_id=consumed.admin_id AND link.node_id=$2`,
-		jti, nodeID, secretHash, now).Scan(&out.AdminID, &out.LocalHandle,
+		jti, nodeID, secretHash, now, expectedIssuer, expectedKeyID).Scan(&out.AdminID, &out.LocalHandle,
 		&out.PermissionVersion, &out.ControllerGeneration)
 	if err == sql.ErrNoRows {
 		return AdminHandoffRedemption{}, false, nil

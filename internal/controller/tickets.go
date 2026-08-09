@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -128,7 +129,7 @@ func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 		RequestedNodeID:    node.ID,
 		SessionID:          sessionID,
 		Issuer:             issuer,
-		Subject:            user.Username,
+		Subject:            user.UUID,
 		KeyID:              handoffKeyID,
 		TicketTTL:          ticketTTL,
 		LeaseTTL:           activityLeaseTTL,
@@ -190,7 +191,8 @@ func (s *Server) handleTicketRedeem(w http.ResponseWriter, r *http.Request) {
 	var req redeemLoginHandoffRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
+	if err := decoder.Decode(&req); err != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+		strings.TrimSpace(req.Code) == "" {
 		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
@@ -206,7 +208,9 @@ func (s *Server) handleTicketRedeem(w http.ResponseWriter, r *http.Request) {
 	}
 	secretHash := sha256.Sum256(suppliedSecret)
 	redemption, consumed, err := s.Store.ConsumeLoginHandoff(
-		r.Context(), jti, secretHash[:], node.ID, time.Now().UTC(), activityLeaseTTL,
+		r.Context(), jti, secretHash[:], node.ID,
+		strings.TrimRight(s.Cfg.PublicURL, "/"), handoffKeyID,
+		time.Now().UTC(), activityLeaseTTL,
 	)
 	if err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "登录短码核销失败")
@@ -220,6 +224,7 @@ func (s *Server) handleTicketRedeem(w http.ResponseWriter, r *http.Request) {
 		"ok":                    true,
 		"handle":                redemption.Handle,
 		"user_id":               redemption.UserID,
+		"user_uuid":             redemption.UserUUID,
 		"session_id":            redemption.SessionID,
 		"activity_epoch":        redemption.ActivityEpoch,
 		"controller_generation": redemption.ControllerGeneration,

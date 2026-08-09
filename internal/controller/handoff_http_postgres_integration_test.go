@@ -60,6 +60,10 @@ func TestControllerUserAndAdminHandoffsAreNodeBoundAndSingleUse(t *testing.T) {
 	if err != nil || admin == nil {
 		t.Fatalf("load handoff administrator: admin=%+v err=%v", admin, err)
 	}
+	otherAdmin, err := st.CreateAdmin(ctx, "handoff-other-admin", adminHash, admin.ID, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create alternate handoff administrator: %v", err)
+	}
 
 	primaryNode := createControllerBackupNode(t, ctx, st, "handoff-http-primary", "compute", false, 1)
 	otherNode := createControllerBackupNode(t, ctx, st, "handoff-http-other", "compute", false, 1)
@@ -186,6 +190,30 @@ func TestControllerUserAndAdminHandoffsAreNodeBoundAndSingleUse(t *testing.T) {
 	}
 	assertStoredHandoffHash(t, ctx, st, adminJTI, adminSecret, adminHandoff.Code)
 	adminRedeemURL := httpServer.URL + "/api/tickets/redeem-admin"
+	userRedeemURL := httpServer.URL + "/api/tickets/redeem"
+	assertMalformedHandoffBodiesDoNotConsume(
+		t, ctx, st, adminJTI, adminRedeemURL, primaryNode.ID, primaryPSK, adminHandoff.Code,
+	)
+	adminClaims := readStoredHandoffClaims(t, ctx, st, adminJTI)
+	assertHandoffClaimMutationsDoNotConsume(t, ctx, st, adminClaims, adminRedeemURL,
+		primaryNode.ID, primaryPSK, adminHandoff.Code, []handoffClaimMutation{
+			{name: "type", assignment: "ticket_type=$2,admin_id=NULL", args: []any{"user_login"}},
+			{name: "issuer", assignment: "issuer=$2", args: []any{"https://wrong-controller.example"}},
+			{name: "audience", assignment: "audience=$2", args: []any{otherNode.BaseURL}},
+			{name: "subject", assignment: "subject=$2", args: []any{"wrong-local-administrator"}},
+			{name: "admin identity", assignment: "admin_id=$2", args: []any{otherAdmin.ID}},
+			{name: "target node", assignment: "target_node_id=$2", args: []any{otherNode.ID}},
+			{name: "key id", assignment: "key_id=$2", args: []any{"wrong-key"}},
+			{name: "generation", assignment: "controller_generation=$2", args: []any{adminClaims.ControllerGeneration + 1}},
+			{name: "future issued at", assignment: "issued_at=$2,not_before=$2,expires_at=$3", args: []any{time.Now().UTC().Add(time.Hour), time.Now().UTC().Add(2 * time.Hour)}},
+			{name: "not before", assignment: "not_before=$2,expires_at=$3", args: []any{time.Now().UTC().Add(time.Hour), time.Now().UTC().Add(2 * time.Hour)}},
+			{name: "expired", assignment: "issued_at=$2,not_before=$2,expires_at=$3", args: []any{time.Now().UTC().Add(-2 * time.Hour), time.Now().UTC().Add(-time.Hour)}},
+		},
+	)
+	if got, response := agentSignedJSONRequest(t, &http.Client{Timeout: 10 * time.Second}, http.MethodPost,
+		userRedeemURL, primaryNode.ID, primaryPSK, map[string]string{"code": adminHandoff.Code}); got != http.StatusForbidden {
+		t.Fatalf("administrator code accepted by user redeemer: status=%d body=%s", got, response)
+	}
 	if got, response := agentSignedJSONRequest(t, &http.Client{Timeout: 10 * time.Second}, http.MethodPost,
 		adminRedeemURL, otherNode.ID, otherPSK, map[string]string{"code": adminHandoff.Code}); got != http.StatusForbidden {
 		t.Fatalf("wrong-node administrator redemption: status=%d body=%s", got, response)
@@ -226,14 +254,39 @@ func TestControllerUserAndAdminHandoffsAreNodeBoundAndSingleUse(t *testing.T) {
 		t.Fatalf("parse issued user handoff code")
 	}
 	assertStoredHandoffHash(t, ctx, st, userJTI, userSecret, userHandoff.Code)
-	userRedeemURL := httpServer.URL + "/api/tickets/redeem"
+	assertMalformedHandoffBodiesDoNotConsume(
+		t, ctx, st, userJTI, userRedeemURL, primaryNode.ID, primaryPSK, userHandoff.Code,
+	)
+	userClaims := readStoredHandoffClaims(t, ctx, st, userJTI)
+	assertHandoffClaimMutationsDoNotConsume(t, ctx, st, userClaims, userRedeemURL,
+		primaryNode.ID, primaryPSK, userHandoff.Code, []handoffClaimMutation{
+			{name: "type", assignment: "ticket_type=$2,user_id=NULL,admin_id=$3", args: []any{"node_admin", admin.ID}},
+			{name: "issuer", assignment: "issuer=$2", args: []any{"https://wrong-controller.example"}},
+			{name: "audience", assignment: "audience=$2", args: []any{otherNode.BaseURL}},
+			{name: "subject UUID", assignment: "subject=$2", args: []any{"00000000-0000-4000-8000-000000000099"}},
+			{name: "user identity", assignment: "user_id=NULL"},
+			{name: "target node", assignment: "target_node_id=$2", args: []any{otherNode.ID}},
+			{name: "session", assignment: "session_id=$2", args: []any{"00000000-0000-4000-8000-000000000098"}},
+			{name: "activity epoch", assignment: "activity_epoch=activity_epoch+1"},
+			{name: "key id", assignment: "key_id=$2", args: []any{"wrong-key"}},
+			{name: "generation", assignment: "controller_generation=$2", args: []any{userClaims.ControllerGeneration + 1}},
+			{name: "future issued at", assignment: "issued_at=$2,not_before=$2,expires_at=$3", args: []any{time.Now().UTC().Add(time.Hour), time.Now().UTC().Add(2 * time.Hour)}},
+			{name: "not before", assignment: "not_before=$2,expires_at=$3", args: []any{time.Now().UTC().Add(time.Hour), time.Now().UTC().Add(2 * time.Hour)}},
+			{name: "expired", assignment: "issued_at=$2,not_before=$2,expires_at=$3", args: []any{time.Now().UTC().Add(-2 * time.Hour), time.Now().UTC().Add(-time.Hour)}},
+		},
+	)
+	if got, response := agentSignedJSONRequest(t, &http.Client{Timeout: 10 * time.Second}, http.MethodPost,
+		adminRedeemURL, primaryNode.ID, primaryPSK, map[string]string{"code": userHandoff.Code}); got != http.StatusForbidden {
+		t.Fatalf("user code accepted by administrator redeemer: status=%d body=%s", got, response)
+	}
 	if got, response := agentSignedJSONRequest(t, &http.Client{Timeout: 10 * time.Second}, http.MethodPost,
 		userRedeemURL, otherNode.ID, otherPSK, map[string]string{"code": userHandoff.Code}); got != http.StatusForbidden {
 		t.Fatalf("wrong-node user redemption: status=%d body=%s", got, response)
 	}
 	if got, response := agentSignedJSONRequest(t, &http.Client{Timeout: 10 * time.Second}, http.MethodPost,
 		userRedeemURL, primaryNode.ID, primaryPSK, map[string]string{"code": userHandoff.Code}); got != http.StatusOK ||
-		!bytes.Contains(response, []byte(user.Username)) || !bytes.Contains(response, []byte(`"activity_epoch":1`)) {
+		!bytes.Contains(response, []byte(user.Username)) || !bytes.Contains(response, []byte(user.UUID)) ||
+		!bytes.Contains(response, []byte(`"activity_epoch":1`)) {
 		t.Fatalf("user redemption: status=%d body=%s", got, response)
 	}
 	if got, response := agentSignedJSONRequest(t, &http.Client{Timeout: 10 * time.Second}, http.MethodPost,
@@ -334,5 +387,139 @@ func assertStoredHandoffHash(
 	want := sha256.Sum256(secret)
 	if !bytes.Equal(storedHash, want[:]) || bytes.Contains(storedHash, []byte(code)) || bytes.Contains(storedHash, secret) {
 		t.Fatalf("handoff bearer credential was not stored hash-only")
+	}
+}
+
+type storedHandoffClaims struct {
+	JTI                  string
+	TicketType           string
+	Issuer               string
+	Audience             string
+	Subject              string
+	UserID               sql.NullInt64
+	AdminID              sql.NullInt64
+	TargetNodeID         sql.NullInt64
+	SessionID            sql.NullString
+	ActivityEpoch        sql.NullInt64
+	KeyID                string
+	ControllerGeneration int64
+	IssuedAt             time.Time
+	NotBefore            time.Time
+	ExpiresAt            time.Time
+}
+
+type handoffClaimMutation struct {
+	name       string
+	assignment string
+	args       []any
+}
+
+func readStoredHandoffClaims(
+	t *testing.T,
+	ctx context.Context,
+	st *store.Store,
+	jti string,
+) storedHandoffClaims {
+	t.Helper()
+	var claims storedHandoffClaims
+	claims.JTI = jti
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT ticket_type,issuer,audience,subject,user_id,admin_id,target_node_id,
+		  session_id::text,activity_epoch,key_id,controller_generation,
+		  issued_at,not_before,expires_at
+		FROM control_tickets WHERE jti=$1`, jti).Scan(
+		&claims.TicketType, &claims.Issuer, &claims.Audience, &claims.Subject,
+		&claims.UserID, &claims.AdminID, &claims.TargetNodeID, &claims.SessionID,
+		&claims.ActivityEpoch, &claims.KeyID, &claims.ControllerGeneration,
+		&claims.IssuedAt, &claims.NotBefore, &claims.ExpiresAt,
+	); err != nil {
+		t.Fatalf("read stored handoff claims: %v", err)
+	}
+	return claims
+}
+
+func restoreStoredHandoffClaims(
+	t *testing.T,
+	ctx context.Context,
+	st *store.Store,
+	claims storedHandoffClaims,
+) {
+	t.Helper()
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE control_tickets SET
+		  ticket_type=$2,issuer=$3,audience=$4,subject=$5,user_id=$6,admin_id=$7,
+		  target_node_id=$8,session_id=$9,activity_epoch=$10,key_id=$11,
+		  controller_generation=$12,issued_at=$13,not_before=$14,expires_at=$15
+		WHERE jti=$1`, claims.JTI, claims.TicketType, claims.Issuer, claims.Audience,
+		claims.Subject, claims.UserID, claims.AdminID, claims.TargetNodeID,
+		claims.SessionID, claims.ActivityEpoch, claims.KeyID, claims.ControllerGeneration,
+		claims.IssuedAt, claims.NotBefore, claims.ExpiresAt); err != nil {
+		t.Fatalf("restore stored handoff claims: %v", err)
+	}
+}
+
+func assertHandoffClaimMutationsDoNotConsume(
+	t *testing.T,
+	ctx context.Context,
+	st *store.Store,
+	claims storedHandoffClaims,
+	redeemURL string,
+	nodeID int64,
+	psk, code string,
+	mutations []handoffClaimMutation,
+) {
+	t.Helper()
+	for _, mutation := range mutations {
+		args := append([]any{claims.JTI}, mutation.args...)
+		query := fmt.Sprintf("UPDATE control_tickets SET %s WHERE jti=$1", mutation.assignment)
+		if _, err := st.DB.ExecContext(ctx, query, args...); err != nil {
+			t.Fatalf("mutate %s handoff claim: %v", mutation.name, err)
+		}
+		status, response := agentSignedJSONRequest(t, &http.Client{Timeout: 10 * time.Second},
+			http.MethodPost, redeemURL, nodeID, psk, map[string]string{"code": code})
+		if status != http.StatusForbidden {
+			t.Fatalf("%s handoff claim accepted: status=%d body=%s", mutation.name, status, response)
+		}
+		var consumedAt sql.NullTime
+		if err := st.DB.QueryRowContext(ctx, `SELECT consumed_at FROM control_tickets WHERE jti=$1`,
+			claims.JTI).Scan(&consumedAt); err != nil || consumedAt.Valid {
+			t.Fatalf("%s handoff claim consumed credential: consumed=%v err=%v", mutation.name, consumedAt, err)
+		}
+		restoreStoredHandoffClaims(t, ctx, st, claims)
+	}
+}
+
+func assertMalformedHandoffBodiesDoNotConsume(
+	t *testing.T,
+	ctx context.Context,
+	st *store.Store,
+	jti, redeemURL string,
+	nodeID int64,
+	psk, code string,
+) {
+	t.Helper()
+	encodedCode, err := json.Marshal(code)
+	if err != nil {
+		t.Fatalf("encode handoff code for malformed matrix: %v", err)
+	}
+	bodies := [][]byte{
+		[]byte(`{}`),
+		[]byte(`{"code":123}`),
+		[]byte(`{"code":null}`),
+		[]byte(`[]`),
+		[]byte(fmt.Sprintf(`{"code":%s,"unexpected":true}`, encodedCode)),
+		[]byte(fmt.Sprintf(`{"code":%s} {}`, encodedCode)),
+	}
+	for index, body := range bodies {
+		status, response := agentSignedRawRequest(t, &http.Client{Timeout: 10 * time.Second},
+			http.MethodPost, redeemURL, nodeID, psk, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("malformed handoff body %d accepted: status=%d body=%s", index, status, response)
+		}
+		var consumedAt sql.NullTime
+		if err := st.DB.QueryRowContext(ctx, `SELECT consumed_at FROM control_tickets WHERE jti=$1`,
+			jti).Scan(&consumedAt); err != nil || consumedAt.Valid {
+			t.Fatalf("malformed handoff body %d consumed credential: consumed=%v err=%v", index, consumedAt, err)
+		}
 	}
 }

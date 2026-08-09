@@ -1689,7 +1689,7 @@ func assertPostgresNodeLifecycleHardening(t *testing.T, st *Store, peerNodeID in
 		RequestedNodeID: captureNodeID,
 		SessionID:       "71000000-0000-4000-8000-000000000028",
 		Issuer:          "https://controller.example",
-		Subject:         "lifecycle-captured-user",
+		Subject:         "71000000-0000-4000-8000-000000000022",
 		KeyID:           "controller-v1",
 		TicketTTL:       time.Minute,
 		LeaseTTL:        15 * time.Minute,
@@ -2028,6 +2028,16 @@ func assertConcurrentHandoffRedemption(t *testing.T, st *Store, userID, nodeID i
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	secretHash := sha256.Sum256([]byte("one-use-handoff-secret"))
+	const localHandle = "handoff-user"
+	var userUUID string
+	if err := st.DB.QueryRow(`SELECT uuid::text FROM global_users WHERE id=$1`, userID).Scan(&userUUID); err != nil {
+		t.Fatalf("load handoff global identity: %v", err)
+	}
+	if _, err := st.DB.Exec(`
+		INSERT INTO node_accounts (user_id,node_id,local_handle,status)
+		VALUES ($1,$2,$3,'active')`, userID, nodeID, localHandle); err != nil {
+		t.Fatalf("insert handoff node account: %v", err)
+	}
 	params := CreateLoginHandoffParams{
 		OperationID:     "30000000-0000-4000-8000-000000000001",
 		JTI:             "40000000-0000-4000-8000-000000000001",
@@ -2036,7 +2046,7 @@ func assertConcurrentHandoffRedemption(t *testing.T, st *Store, userID, nodeID i
 		RequestedNodeID: nodeID,
 		SessionID:       "50000000-0000-4000-8000-000000000001",
 		Issuer:          "https://controller.example",
-		Subject:         "handoff-user",
+		Subject:         userUUID,
 		KeyID:           "controller-v1",
 		TicketTTL:       time.Minute,
 		LeaseTTL:        15 * time.Minute,
@@ -2051,7 +2061,10 @@ func assertConcurrentHandoffRedemption(t *testing.T, st *Store, userID, nodeID i
 		t.Fatalf("CreateLoginHandoff replay=%+v err=%v", replay, err)
 	}
 	wrongSecret := sha256.Sum256([]byte("wrong-secret"))
-	if _, ok, err := st.ConsumeLoginHandoff(context.Background(), params.JTI, wrongSecret[:], nodeID, now, 15*time.Minute); err != nil || ok {
+	if _, ok, err := st.ConsumeLoginHandoff(
+		context.Background(), params.JTI, wrongSecret[:], nodeID,
+		params.Issuer, params.KeyID, now, 15*time.Minute,
+	); err != nil || ok {
 		t.Fatalf("wrong-secret redemption ok=%v err=%v", ok, err)
 	}
 
@@ -2070,7 +2083,8 @@ func assertConcurrentHandoffRedemption(t *testing.T, st *Store, userID, nodeID i
 			defer wait.Done()
 			<-start
 			redemption, ok, err := st.ConsumeLoginHandoff(
-				context.Background(), params.JTI, secretHash[:], nodeID, now.Add(time.Second), 15*time.Minute,
+				context.Background(), params.JTI, secretHash[:], nodeID,
+				params.Issuer, params.KeyID, now.Add(time.Second), 15*time.Minute,
 			)
 			results <- result{redemption: redemption, ok: ok, err: err}
 		}()
@@ -2086,7 +2100,8 @@ func assertConcurrentHandoffRedemption(t *testing.T, st *Store, userID, nodeID i
 		}
 		if result.ok {
 			consumed++
-			if result.redemption.UserID != userID || result.redemption.Handle != params.Subject ||
+			if result.redemption.UserID != userID || result.redemption.UserUUID != userUUID ||
+				result.redemption.Handle != localHandle ||
 				result.redemption.SessionID != params.SessionID || result.redemption.ActivityEpoch != handoff.ActivityEpoch {
 				t.Fatalf("unexpected redemption: %+v", result.redemption)
 			}
@@ -2096,7 +2111,8 @@ func assertConcurrentHandoffRedemption(t *testing.T, st *Store, userID, nodeID i
 		t.Fatalf("handoff consumed %d times, want exactly once", consumed)
 	}
 	if _, ok, err := st.ConsumeLoginHandoff(
-		context.Background(), params.JTI, secretHash[:], nodeID, now.Add(2*time.Second), 15*time.Minute,
+		context.Background(), params.JTI, secretHash[:], nodeID,
+		params.Issuer, params.KeyID, now.Add(2*time.Second), 15*time.Minute,
 	); err != nil || ok {
 		t.Fatalf("post-consumption replay ok=%v err=%v", ok, err)
 	}

@@ -146,12 +146,14 @@ func TestAdminHandoffIssueAndConsumeUseCurrentAuthorityFacts(t *testing.T) {
 	if err != nil || handoff.LocalHandle != "node-admin" || handoff.ControllerGeneration != 8 {
 		t.Fatalf("handoff=%+v err=%v", handoff, err)
 	}
-	mock.ExpectQuery(`WITH consumed AS`).WithArgs(jti, int64(12), secretHash, now.Add(time.Second)).
+	mock.ExpectQuery(`WITH consumed AS`).WithArgs(
+		jti, int64(12), secretHash, now.Add(time.Second), "controller", "controller-master-v1",
+	).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"admin_id", "subject", "permission_version", "controller_generation",
 		}).AddRow(int64(4), "node-admin", int64(5), int64(8)))
 	redemption, consumed, err := st.ConsumeAdminHandoff(
-		context.Background(), jti, secretHash, 12, now.Add(time.Second),
+		context.Background(), jti, secretHash, 12, "controller", "controller-master-v1", now.Add(time.Second),
 	)
 	if err != nil || !consumed || redemption.LocalHandle != "node-admin" || redemption.PermissionVersion != 5 {
 		t.Fatalf("redemption=%+v consumed=%v err=%v", redemption, consumed, err)
@@ -172,7 +174,9 @@ func TestAdminNodeLinkAndHandoffRejectInvalidPublicInputs(t *testing.T) {
 	if _, err := st.CreateAdminHandoff(context.Background(), CreateAdminHandoffParams{}); !errors.Is(err, ErrInvalidAdminHandoff) {
 		t.Fatalf("create error=%v", err)
 	}
-	if _, _, err := st.ConsumeAdminHandoff(context.Background(), "", nil, 0, time.Now()); !errors.Is(err, ErrInvalidAdminHandoff) {
+	if _, _, err := st.ConsumeAdminHandoff(
+		context.Background(), "", nil, 0, "", "", time.Now(),
+	); !errors.Is(err, ErrInvalidAdminHandoff) {
 		t.Fatalf("consume error=%v", err)
 	}
 }

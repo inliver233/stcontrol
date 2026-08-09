@@ -18,7 +18,7 @@ func testHandoffParams(now time.Time) CreateLoginHandoffParams {
 		RequestedNodeID: 20,
 		SessionID:       "33333333-3333-4333-8333-333333333333",
 		Issuer:          "https://control.example",
-		Subject:         "alice",
+		Subject:         "44444444-4444-4444-8444-444444444444",
 		KeyID:           "controller-master-v1",
 		TicketTTL:       time.Minute,
 		LeaseTTL:        15 * time.Minute,
@@ -236,7 +236,7 @@ func TestCreateLoginHandoffReplaysOriginalResult(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"operation_id", "jti", "user_id", "target_node_id", "base_url", "subject",
 			"session_id", "activity_epoch", "controller_generation", "expires_at", "outcome",
-		}).AddRow(p.OperationID, originalJTI, p.UserID, int64(30), "https://writer.example", "alice",
+		}).AddRow(p.OperationID, originalJTI, p.UserID, int64(30), "https://writer.example", p.Subject,
 			p.SessionID, int64(8), int64(3), now.Add(30*time.Second), "existing"))
 	mock.ExpectCommit()
 
@@ -257,28 +257,35 @@ func TestConsumeLoginHandoffIsFencedAndOneUse(t *testing.T) {
 	now := time.Date(2026, 8, 7, 14, 0, 0, 0, time.UTC)
 	hash := make([]byte, 32)
 
+	jti := "55555555-5555-4555-8555-555555555555"
+	issuer := "https://control.example"
+	keyID := "controller-master-v1"
+	userUUID := "44444444-4444-4444-8444-444444444444"
 	mock.ExpectQuery(`WITH consumed AS`).
-		WithArgs("ticket-jti", int64(20), hash, now, now.Add(15*time.Minute)).
+		WithArgs(jti, int64(20), hash, now, now.Add(15*time.Minute), issuer, keyID).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"user_id", "subject", "session_id", "activity_epoch", "controller_generation",
-		}).AddRow(int64(70), "alice", "session", int64(4), int64(3)))
+			"user_id", "user_uuid", "local_handle", "session_id", "activity_epoch", "controller_generation",
+		}).AddRow(int64(70), userUUID, "alice", "session", int64(4), int64(3)))
 
 	redemption, ok, err := store.ConsumeLoginHandoff(
-		context.Background(), "ticket-jti", hash, 20, now, 15*time.Minute,
+		context.Background(), jti, hash, 20, issuer, keyID, now, 15*time.Minute,
 	)
 	if err != nil || !ok {
 		t.Fatalf("ConsumeLoginHandoff ok=%v err=%v", ok, err)
 	}
-	if redemption.Handle != "alice" || redemption.ActivityEpoch != 4 || redemption.ControllerGeneration != 3 {
+	if redemption.UserUUID != userUUID || redemption.Handle != "alice" ||
+		redemption.ActivityEpoch != 4 || redemption.ControllerGeneration != 3 {
 		t.Fatalf("unexpected redemption: %+v", redemption)
 	}
 
 	mock.ExpectQuery(`WITH consumed AS`).
-		WithArgs("ticket-jti", int64(20), hash, now, now.Add(15*time.Minute)).
+		WithArgs(jti, int64(20), hash, now, now.Add(15*time.Minute), issuer, keyID).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"user_id", "subject", "session_id", "activity_epoch", "controller_generation",
+			"user_id", "user_uuid", "local_handle", "session_id", "activity_epoch", "controller_generation",
 		}))
-	_, ok, err = store.ConsumeLoginHandoff(context.Background(), "ticket-jti", hash, 20, now, 15*time.Minute)
+	_, ok, err = store.ConsumeLoginHandoff(
+		context.Background(), jti, hash, 20, issuer, keyID, now, 15*time.Minute,
+	)
 	if err != nil || ok {
 		t.Fatalf("second ConsumeLoginHandoff ok=%v err=%v, want false", ok, err)
 	}

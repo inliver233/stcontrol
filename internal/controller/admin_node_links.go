@@ -202,7 +202,8 @@ func (s *Server) handleAdminTicketRedeem(w http.ResponseWriter, r *http.Request)
 	var req redeemLoginHandoffRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+	if err := decoder.Decode(&req); err != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+		strings.TrimSpace(req.Code) == "" {
 		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
@@ -212,7 +213,10 @@ func (s *Server) handleAdminTicketRedeem(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	secretHash := sha256.Sum256(suppliedSecret)
-	redemption, consumed, err := s.Store.ConsumeAdminHandoff(r.Context(), jti, secretHash[:], node.ID, time.Now().UTC())
+	redemption, consumed, err := s.Store.ConsumeAdminHandoff(
+		r.Context(), jti, secretHash[:], node.ID,
+		strings.TrimRight(s.Cfg.PublicURL, "/"), handoffKeyID, time.Now().UTC(),
+	)
 	if err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "管理员跳转短码核销失败")
 		return

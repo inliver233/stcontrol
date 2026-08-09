@@ -60,8 +60,8 @@ type LoginHandoff struct {
 // its one-use ticket in the same serializable transaction. A committed lease
 // can therefore never exist without the corresponding handoff result.
 func (s *Store) CreateLoginHandoff(ctx context.Context, p CreateLoginHandoffParams) (LoginHandoff, error) {
-	if p.OperationID == "" || p.JTI == "" || len(p.SecretHash) != 32 || p.UserID <= 0 ||
-		p.RequestedNodeID <= 0 || p.SessionID == "" || p.Issuer == "" || p.Subject == "" ||
+	if !validUUIDText(p.OperationID) || !validUUIDText(p.JTI) || len(p.SecretHash) != 32 || p.UserID <= 0 ||
+		p.RequestedNodeID <= 0 || !validUUIDText(p.SessionID) || p.Issuer == "" || !validUUIDText(p.Subject) ||
 		p.KeyID == "" || p.TicketTTL <= 0 || p.LeaseTTL <= 0 {
 		return LoginHandoff{}, ErrInvalidLoginHandoff
 	}
@@ -206,6 +206,7 @@ func getLoginHandoffByOperation(
 // establish its local session.
 type LoginRedemption struct {
 	UserID               int64  `json:"user_id"`
+	UserUUID             string `json:"user_uuid"`
 	Handle               string `json:"handle"`
 	SessionID            string `json:"session_id"`
 	ActivityEpoch        int64  `json:"activity_epoch"`
@@ -220,10 +221,12 @@ func (s *Store) ConsumeLoginHandoff(
 	jti string,
 	secretHash []byte,
 	nodeID int64,
+	expectedIssuer, expectedKeyID string,
 	now time.Time,
 	leaseTTL time.Duration,
 ) (LoginRedemption, bool, error) {
-	if jti == "" || len(secretHash) != 32 || nodeID <= 0 || leaseTTL <= 0 {
+	if !validUUIDText(jti) || len(secretHash) != 32 || nodeID <= 0 ||
+		expectedIssuer == "" || expectedKeyID == "" || leaseTTL <= 0 {
 		return LoginRedemption{}, false, ErrInvalidLoginHandoff
 	}
 	if now.IsZero() {
@@ -234,16 +237,23 @@ func (s *Store) ConsumeLoginHandoff(
 		WITH consumed AS (
 		  UPDATE control_tickets AS t
 		  SET consumed_at=$4, consumed_by_node_id=$2
-		  FROM user_activity_leases AS l, controller_epochs AS ce
+		  FROM user_activity_leases AS l, controller_epochs AS ce, nodes AS n,
+		    global_users AS gu, node_accounts AS account
 		  WHERE t.jti=$1 AND t.target_node_id=$2 AND t.secret_hash=$3
 		    AND t.ticket_type='user_login' AND t.not_before<=$4 AND t.expires_at>$4
+		    AND t.issued_at<=$4 AND t.issuer=$6 AND t.key_id=$7
 		    AND t.consumed_at IS NULL AND t.revoked_at IS NULL
 		    AND ce.state='active' AND ce.generation=t.controller_generation
+		    AND n.id=t.target_node_id AND n.base_url=t.audience
+		    AND gu.id=t.user_id AND gu.uuid::text=t.subject AND gu.status='active'
+		    AND account.user_id=t.user_id AND account.node_id=t.target_node_id
+		    AND account.status='active'
 		    AND l.user_id=t.user_id AND l.writer_node_id=t.target_node_id
 		    AND l.session_id=t.session_id AND l.activity_epoch=t.activity_epoch
 		    AND l.controller_generation=t.controller_generation
 		    AND l.state='active' AND l.lease_expires_at>$4
-		  RETURNING t.user_id, t.subject, t.target_node_id, t.session_id,
+		  RETURNING t.user_id, gu.uuid::text AS user_uuid, account.local_handle,
+		    t.target_node_id, t.session_id,
 		    t.activity_epoch, t.controller_generation
 		)
 		UPDATE user_activity_leases AS l
@@ -252,9 +262,10 @@ func (s *Store) ConsumeLoginHandoff(
 		WHERE l.user_id=c.user_id AND l.writer_node_id=c.target_node_id
 		  AND l.session_id=c.session_id AND l.activity_epoch=c.activity_epoch
 		  AND l.controller_generation=c.controller_generation
-		RETURNING c.user_id, c.subject, c.session_id, c.activity_epoch, c.controller_generation`,
-		jti, nodeID, secretHash, now, now.Add(leaseTTL)).
-		Scan(&out.UserID, &out.Handle, &out.SessionID, &out.ActivityEpoch, &out.ControllerGeneration)
+		RETURNING c.user_id, c.user_uuid, c.local_handle, c.session_id,
+		  c.activity_epoch, c.controller_generation`,
+		jti, nodeID, secretHash, now, now.Add(leaseTTL), expectedIssuer, expectedKeyID).
+		Scan(&out.UserID, &out.UserUUID, &out.Handle, &out.SessionID, &out.ActivityEpoch, &out.ControllerGeneration)
 	if err == sql.ErrNoRows {
 		return LoginRedemption{}, false, nil
 	}
