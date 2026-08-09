@@ -302,7 +302,7 @@ func (s *Store) BeginIndependentReconciliationCompletion(
 		        AND (lease.writer_node_id<>reconciliation.node_id
 		          OR lease.in_flight_reads<>0 OR lease.in_flight_writes<>0
 		          OR lease.state='quiescing'
-		          OR (lease.lease_expires_at>$2 AND lease.state<>'independent'))
+		          OR (lease.lease_expires_at>$3 AND lease.state<>'independent'))
 		    )
 		  )
 		  AND (
@@ -382,7 +382,7 @@ func (s *Store) RetryIndependentReconciliationCompletion(
 		UPDATE independent_user_reconciliations
 		SET state=CASE WHEN attempt>=9 THEN 'failed' ELSE 'completion_retry' END,
 		  attempt=attempt+1,error_code=$3,
-		  next_attempt_at=CASE WHEN attempt>=9 THEN NULL ELSE $4 END,updated_at=$5
+		  next_attempt_at=CASE WHEN attempt>=9 THEN NULL ELSE $4::timestamptz END,updated_at=$5
 		WHERE id=$1::uuid AND marker=$2::uuid AND state='completing'`,
 		id, marker, errorCode, now.Add(delay), now)
 	if err != nil {
@@ -414,7 +414,7 @@ func (s *Store) RestartIndependentReconciliationSnapshot(
 		UPDATE independent_user_reconciliations reconciliation
 		SET state=CASE WHEN reconciliation.attempt>=4 THEN 'failed' ELSE 'retry_wait' END,
 		  workflow_id=NULL,attempt=reconciliation.attempt+1,error_code=$3,
-		  next_attempt_at=CASE WHEN reconciliation.attempt>=4 THEN NULL ELSE $4 END,updated_at=$5
+		  next_attempt_at=CASE WHEN reconciliation.attempt>=4 THEN NULL ELSE $4::timestamptz END,updated_at=$5
 		FROM workflows workflow
 		WHERE reconciliation.id=$1::uuid AND reconciliation.marker=$2::uuid
 		  AND reconciliation.state='snapshotting' AND workflow.id=reconciliation.workflow_id

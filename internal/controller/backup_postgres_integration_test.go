@@ -294,10 +294,11 @@ type controllerBackupCommandHarness struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	mu                 sync.Mutex
-	receipts           map[string]*protocol.SnapshotTransferReceipt
-	failedRetryPrepare bool
-	errs               []error
+	mu                          sync.Mutex
+	receipts                    map[string]*protocol.SnapshotTransferReceipt
+	failedRetryPrepare          bool
+	failedIndependentCompletion bool
+	errs                        []error
 }
 
 func newControllerBackupCommandHarness(
@@ -540,6 +541,26 @@ func (h *controllerBackupCommandHarness) handleCommand(
 			return agentCommandSummary{OK: false, Code: "receipt_missing"}, false, nil
 		}
 		return agentCommandSummary{OK: true, Snapshot: receipt}, true, nil
+
+	case "complete_independent_sync":
+		if nodeID != h.sourceNodeID {
+			return agentCommandSummary{}, false, fmt.Errorf("independent completion command leased by non-source node %d", nodeID)
+		}
+		var request protocol.CompleteIndependentSyncRequest
+		if err := json.Unmarshal(plaintext, &request); err != nil || request.OperationID == "" ||
+			request.Handle == "" || request.Marker == "" {
+			return agentCommandSummary{}, false, fmt.Errorf("decode independent completion command: %w", err)
+		}
+		h.mu.Lock()
+		fail := request.Handle == "independent-retry-user" && !h.failedIndependentCompletion
+		if fail {
+			h.failedIndependentCompletion = true
+		}
+		h.mu.Unlock()
+		if fail {
+			return agentCommandSummary{OK: false, Code: "adapter_completion_failed"}, false, nil
+		}
+		return agentCommandSummary{OK: true}, true, nil
 	default:
 		return agentCommandSummary{}, false, fmt.Errorf("unexpected durable Agent command %q", lease.CommandType)
 	}
