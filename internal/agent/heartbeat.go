@@ -51,6 +51,9 @@ func (a *Agent) sendHeartbeat(ctx context.Context) {
 	if err := a.syncTavernControlMode(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("节点控制模式尚未应用: %v", err)
 	}
+	if err := a.syncTavernActivityLeases(ctx); err != nil && ctx.Err() == nil {
+		log.Printf("用户活动租约确认尚未应用: %v", err)
+	}
 	probedInfo, _ := ProbeTavern(a.Cfg.TavernDir)
 	var info protocol.NodeInfo
 	if probedInfo != nil {
@@ -84,6 +87,7 @@ func (a *Agent) sendHeartbeat(ctx context.Context) {
 		compatibility = a.compatibilityReport(ctx, info)
 	}()
 	wait.Wait()
+	activityObservedAt := time.Now().UTC().UnixMilli()
 	metricsValid := metricsErr == nil && allocationErr == nil
 	onlineUsers := 0
 	for _, user := range users {
@@ -113,6 +117,7 @@ func (a *Agent) sendHeartbeat(ctx context.Context) {
 		Compatibility:      compatibility,
 		TransferURL:        a.Cfg.TransferPublicURL,
 		RegistrationPolicy: registrationPolicy,
+		ActivityObservedAt: activityObservedAt,
 		Users:              users,
 		ControlMode:        a.controlModeReport(),
 	}
@@ -144,6 +149,9 @@ func (a *Agent) sendHeartbeat(ctx context.Context) {
 	}
 	if err := a.syncTavernControlMode(ctx); err != nil {
 		log.Printf("应用总控恢复模式失败: %v", err)
+	}
+	if err := a.syncTavernActivityLeases(ctx); err != nil {
+		log.Printf("应用总控活动租约确认失败: %v", err)
 	}
 }
 

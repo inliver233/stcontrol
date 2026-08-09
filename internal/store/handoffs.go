@@ -205,12 +205,14 @@ func getLoginHandoffByOperation(
 // LoginRedemption is the minimum identity and fencing context a node needs to
 // establish its local session.
 type LoginRedemption struct {
-	UserID               int64  `json:"user_id"`
-	UserUUID             string `json:"user_uuid"`
-	Handle               string `json:"handle"`
-	SessionID            string `json:"session_id"`
-	ActivityEpoch        int64  `json:"activity_epoch"`
-	ControllerGeneration int64  `json:"controller_generation"`
+	UserID               int64     `json:"user_id"`
+	UserUUID             string    `json:"user_uuid"`
+	Handle               string    `json:"handle"`
+	SessionID            string    `json:"session_id"`
+	ActivityEpoch        int64     `json:"activity_epoch"`
+	ControllerGeneration int64     `json:"controller_generation"`
+	LeaseConfirmedAt     time.Time `json:"-"`
+	LeaseExpiresAt       time.Time `json:"-"`
 }
 
 // ConsumeLoginHandoff atomically consumes a ticket only when the authenticated
@@ -263,9 +265,10 @@ func (s *Store) ConsumeLoginHandoff(
 		  AND l.session_id=c.session_id AND l.activity_epoch=c.activity_epoch
 		  AND l.controller_generation=c.controller_generation
 		RETURNING c.user_id, c.user_uuid, c.local_handle, c.session_id,
-		  c.activity_epoch, c.controller_generation`,
+		  c.activity_epoch, c.controller_generation, $4::timestamptz, l.lease_expires_at`,
 		jti, nodeID, secretHash, now, now.Add(leaseTTL), expectedIssuer, expectedKeyID).
-		Scan(&out.UserID, &out.UserUUID, &out.Handle, &out.SessionID, &out.ActivityEpoch, &out.ControllerGeneration)
+		Scan(&out.UserID, &out.UserUUID, &out.Handle, &out.SessionID, &out.ActivityEpoch,
+			&out.ControllerGeneration, &out.LeaseConfirmedAt, &out.LeaseExpiresAt)
 	if err == sql.ErrNoRows {
 		return LoginRedemption{}, false, nil
 	}

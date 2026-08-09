@@ -151,8 +151,9 @@ func TestControllerAgentHTTPEnrollmentRotationAndCommandQueue(t *testing.T) {
 		DiskTotalBytes: 100 << 30, DiskAvailableBytes: 80 << 30,
 		DiskQuotaBytes: 90 << 30, AllocatedDiskBytes: 1 << 30,
 		OnlineUsers: 0, TaskQueueDepth: 0, TelemetrySource: "adapter",
-		Compatibility: protocol.NodeCompatibilityReport{State: "compatible", Fingerprint: strings.Repeat("a", 64)},
-		TransferURL:   "https://agent-http.example/data",
+		ActivityObservedAt: activityObservedAt.UnixMilli(),
+		Compatibility:      protocol.NodeCompatibilityReport{State: "compatible", Fingerprint: strings.Repeat("a", 64)},
+		TransferURL:        "https://agent-http.example/data",
 		RegistrationPolicy: protocol.RegistrationPolicyReport{
 			State: "open", Version: 1, ExpiresAt: time.Now().UTC().Add(10 * time.Minute),
 		},
@@ -182,7 +183,11 @@ func TestControllerAgentHTTPEnrollmentRotationAndCommandQueue(t *testing.T) {
 	}
 	var heartbeatResponse protocol.HeartbeatResponse
 	if err := json.Unmarshal(body, &heartbeatResponse); err != nil || !heartbeatResponse.OK ||
-		heartbeatResponse.ControllerGeneration != generation || heartbeatResponse.CredentialRotation != nil {
+		heartbeatResponse.ControllerGeneration != generation || heartbeatResponse.CredentialRotation != nil ||
+		heartbeatResponse.ActivityLeaseConfirmedAt != activityObservedAt.UnixMilli() ||
+		len(heartbeatResponse.ActivityLeaseConfirmations) != 1 ||
+		heartbeatResponse.ActivityLeaseConfirmations[0].SessionID != activitySessionID ||
+		heartbeatResponse.ActivityLeaseConfirmations[0].LeaseExpiresAt <= activityObservedAt.UnixMilli() {
 		t.Fatalf("initial heartbeat response=%+v err=%v body=%s", heartbeatResponse, err, body)
 	}
 	var leaseState string

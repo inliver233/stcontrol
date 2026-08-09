@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
@@ -65,7 +66,7 @@ func TestControllerAgentTavernProcessesRecoverAcrossRestarts(t *testing.T) {
 
 	dsn, cleanupSchema := newProcessE2ESchema(t)
 	t.Cleanup(cleanupSchema)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
 	t.Cleanup(cancel)
 	st, err := store.Open(ctx, dsn)
 	if err != nil {
@@ -101,12 +102,14 @@ func TestControllerAgentTavernProcessesRecoverAcrossRestarts(t *testing.T) {
 	// reserve positive while avoiding an environment-specific false "full".
 	controllerConfig.Node.MinDiskFreeBytes = 1 << 20
 	controllerConfig.Node.AllocationHardPct = 99.9
+	controllerConfig.Activity.LeaseTTLSec = 120
 	controllerConfig.SecretKeyEnv = "STCONTROL_PROCESS_E2E_SECRET_KEY"
 	controllerConfig.Admin.PasswordEnv = "STCONTROL_PROCESS_E2E_ADMIN_PASSWORD"
 	if err := config.Save(controllerConfigPath, controllerConfig); err != nil {
 		t.Fatalf("write controller config: %v", err)
 	}
-	controllerKey := base64.StdEncoding.EncodeToString([]byte("01234567890123456789012345678901"))
+	controllerSecret := []byte("01234567890123456789012345678901")
+	controllerKey := base64.StdEncoding.EncodeToString(controllerSecret)
 	adminPassword := "process-e2e-admin-password"
 	controllerEnvironment := append(os.Environ(),
 		"STCONTROL_PROCESS_E2E_SECRET_KEY="+controllerKey,
@@ -203,6 +206,7 @@ func TestControllerAgentTavernProcessesRecoverAcrossRestarts(t *testing.T) {
 		t.Fatalf("post-rebuild Controller-Agent-Tavern scan: %v response=%s", err, response)
 	}
 	configureProcessE2EDisasterPeers(t, st, primary, secondary)
+	runProcessE2EManagedPartitionMatrix(t, ctx, st, controllerURL, controllerSecret, primary, secondary)
 	agentProcess = primary.agentProcess
 	userClient := newProcessE2EUserClient(t, controllerURL)
 	registrationOperation := "81000000-0000-4000-8000-000000000006"
@@ -245,7 +249,11 @@ func TestControllerAgentTavernProcessesRecoverAcrossRestarts(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("authorize ready standby replica: %v", err)
 	}
-	provisionProcessE2EReplicaAccount(t, ctx, st, secondary, registeredUser)
+	provisionProcessE2EReplicaAccount(
+		t, ctx, st, secondary, registeredUser,
+		"81000000-0000-4000-8000-000000000009",
+		"81000000-0000-4000-8000-000000000010",
+	)
 
 	firstHandoff, err := userClient.createHandoff(
 		ctx, primary.node.ID, "81000000-0000-4000-8000-000000000007",
@@ -549,12 +557,231 @@ func configureProcessE2EDisasterPeers(
 	waitForProcessE2ENodeReady(t, st, secondary.node.ID, 45*time.Second)
 }
 
+// runProcessE2EManagedPartitionMatrix proves the bounded-grace single-writer
+// invariant with real processes and real PostgreSQL. The primary Agent is
+// killed while its adapter/browser stays alive. The old browser may write only
+// inside its already-confirmed grace window, is fenced before PostgreSQL can
+// reassign the lease, and remains fenced when the secondary becomes writer.
+func runProcessE2EManagedPartitionMatrix(
+	t *testing.T,
+	ctx context.Context,
+	st *store.Store,
+	controllerURL string,
+	controllerSecret []byte,
+	primary, secondary *processE2ENode,
+) {
+	t.Helper()
+	client := newProcessE2EUserClient(t, controllerURL)
+	registration := processE2ERegistrationRequest{
+		OperationID: "82000000-0000-4000-8000-000000000001",
+		Username:    "process-partition",
+		DisplayName: "Process Partition",
+		Password:    "process-partition-password",
+		NodeID:      primary.node.ID,
+	}
+	if err := client.registerUntilComplete(ctx, registration, 60*time.Second); err != nil {
+		t.Fatalf("register partition-matrix user: %v", err)
+	}
+	user, err := st.GetUserByUsername(ctx, registration.Username)
+	if err != nil || user == nil {
+		t.Fatalf("partition-matrix user=%+v err=%v", user, err)
+	}
+	if err := st.UpsertReplica(ctx, &store.UserReplica{
+		UserID: user.ID, NodeID: secondary.node.ID, Kind: "hot_standby", State: "ready",
+	}); err != nil {
+		t.Fatalf("authorize partition-matrix replica: %v", err)
+	}
+	provisionProcessE2EReplicaAccount(
+		t, ctx, st, secondary, user,
+		"82000000-0000-4000-8000-000000000002",
+		"82000000-0000-4000-8000-000000000003",
+	)
+
+	primaryHandoff, err := client.createHandoff(
+		ctx, primary.node.ID, "82000000-0000-4000-8000-000000000004",
+	)
+	if err != nil || primaryHandoff.ExistingWriter || primaryHandoff.TargetNodeID != primary.node.ID {
+		t.Fatalf("partition primary handoff=%+v err=%v", primaryHandoff, err)
+	}
+	if status, err := redeemProcessE2EHandoff(ctx, primaryHandoff.PostURL, primaryHandoff.Code); err != nil || status != http.StatusSeeOther {
+		t.Fatalf("partition primary redemption status=%d err=%v", status, err)
+	}
+	before, err := processE2EPostJSON(ctx, primary.adapterURL+"/api/e2e/write", map[string]any{
+		"operation_id": "before-partition",
+	})
+	if err != nil || before.status != http.StatusOK {
+		t.Fatalf("pre-partition write status=%d code=%q err=%v body=%s", before.status, before.code, err, before.body)
+	}
+
+	partitionedAgent := primary.agentProcess
+	partitionedAgent.stop()
+	grace, err := processE2EPostJSON(ctx, primary.adapterURL+"/api/e2e/write", map[string]any{
+		"operation_id": "confirmed-grace",
+	})
+	if err != nil || grace.status != http.StatusOK {
+		t.Fatalf("confirmed partition grace status=%d code=%q err=%v body=%s", grace.status, grace.code, err, grace.body)
+	}
+	preExpiryHandoff, err := client.createHandoff(
+		ctx, secondary.node.ID, "82000000-0000-4000-8000-000000000005",
+	)
+	if err != nil || !preExpiryHandoff.ExistingWriter || preExpiryHandoff.TargetNodeID != primary.node.ID {
+		t.Fatalf("unexpired lease did not preserve primary writer: handoff=%+v err=%v", preExpiryHandoff, err)
+	}
+
+	var leaseExpiresAt time.Time
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT lease_expires_at FROM user_activity_leases
+		WHERE user_id=$1 AND writer_node_id=$2 AND state='active'`, user.GlobalID, primary.node.ID).
+		Scan(&leaseExpiresAt); err != nil {
+		t.Fatalf("read partition lease deadline: %v", err)
+	}
+	localFenceProbeAt := leaseExpiresAt.Add(-59 * time.Second)
+	if delay := time.Until(localFenceProbeAt); delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			t.Fatalf("wait for local lease fence: %v", ctx.Err())
+		}
+	}
+	fenced, err := processE2EPostJSON(ctx, primary.adapterURL+"/api/e2e/write", map[string]any{
+		"operation_id": "fenced-before-reassignment",
+	})
+	if err != nil || fenced.status != http.StatusConflict || fenced.code != "stale_writer_session" {
+		t.Fatalf("old writer was not fenced before reassignment: status=%d code=%q err=%v body=%s",
+			fenced.status, fenced.code, err, fenced.body)
+	}
+	if delay := time.Until(leaseExpiresAt.Add(time.Second)); delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			t.Fatalf("wait for central lease expiry: %v", ctx.Err())
+		}
+	}
+
+	// Force the post-expiry contender at the production Store boundary. The
+	// ordinary user route correctly requires a separate data-loss confirmation
+	// before promoting a hot standby; this fault matrix isolates the lease race
+	// itself while still using the real atomic handoff/ticket transaction and
+	// the real Agent/Controller redemption path.
+	const (
+		secondaryOperationID = "82000000-0000-4000-8000-000000000006"
+		secondaryJTI         = "82000000-0000-4000-8000-000000000007"
+		secondarySessionID   = "82000000-0000-4000-8000-000000000008"
+	)
+	mac := hmac.New(sha256.New, controllerSecret)
+	_, _ = mac.Write([]byte("stcontrol-login-handoff:v1:" + secondaryJTI))
+	secondarySecret := mac.Sum(nil)
+	secondarySecretHash := sha256.Sum256(secondarySecret)
+	secondaryHandoff, err := st.CreateLoginHandoff(ctx, store.CreateLoginHandoffParams{
+		OperationID: secondaryOperationID, JTI: secondaryJTI, SecretHash: secondarySecretHash[:],
+		UserID: user.GlobalID, RequestedNodeID: secondary.node.ID, SessionID: secondarySessionID,
+		Issuer: strings.TrimRight(controllerURL, "/"), Subject: user.UUID, KeyID: "controller-master-v1",
+		TicketTTL: time.Minute, LeaseTTL: 120 * time.Second, Now: time.Now().UTC(),
+	})
+	if err != nil || !secondaryHandoff.Acquired || secondaryHandoff.Existing ||
+		secondaryHandoff.TargetNodeID != secondary.node.ID {
+		t.Fatalf("expired lease did not atomically reassign secondary: handoff=%+v err=%v", secondaryHandoff, err)
+	}
+	secondaryCode := secondaryJTI + "." + base64.RawURLEncoding.EncodeToString(secondarySecret)
+	secondaryPostURL := strings.TrimRight(secondary.adapterURL, "/") + "/api/users/me?stcontrol_handoff=user"
+	if status, err := redeemProcessE2EHandoff(ctx, secondaryPostURL, secondaryCode); err != nil || status != http.StatusSeeOther {
+		t.Fatalf("partition secondary redemption status=%d err=%v", status, err)
+	}
+
+	type writeResult struct {
+		node     string
+		response processE2EHTTPResponse
+		err      error
+	}
+	results := make(chan writeResult, 2)
+	go func() {
+		response, requestErr := processE2EPostJSON(ctx, primary.adapterURL+"/api/e2e/write", map[string]any{
+			"operation_id": "old-after-reassignment",
+		})
+		results <- writeResult{node: "primary", response: response, err: requestErr}
+	}()
+	go func() {
+		response, requestErr := processE2EPostJSON(ctx, secondary.adapterURL+"/api/e2e/write", map[string]any{
+			"operation_id": "new-after-reassignment",
+		})
+		results <- writeResult{node: "secondary", response: response, err: requestErr}
+	}()
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("concurrent %s write: %v", result.node, result.err)
+		}
+		if result.node == "primary" && (result.response.status != http.StatusConflict || result.response.code != "stale_writer_session") {
+			t.Fatalf("old concurrent writer status=%d code=%q body=%s",
+				result.response.status, result.response.code, result.response.body)
+		}
+		if result.node == "secondary" && result.response.status != http.StatusOK {
+			t.Fatalf("new concurrent writer status=%d code=%q body=%s",
+				result.response.status, result.response.code, result.response.body)
+		}
+	}
+	assertProcessE2EPartitionWrites(t, primary, registration.Username, []string{"before-partition", "confirmed-grace"})
+	assertProcessE2EPartitionWrites(t, secondary, registration.Username, []string{"new-after-reassignment"})
+
+	for _, node := range []*processE2ENode{primary, secondary} {
+		logout, err := processE2EPostJSON(ctx, node.adapterURL+"/api/users/logout", map[string]any{})
+		if err != nil || logout.status != http.StatusOK {
+			t.Fatalf("partition %s logout status=%d err=%v body=%s", node.node.Name, logout.status, err, logout.body)
+		}
+	}
+	primary.agentProcess = primary.startAgent(t)
+	waitForProcessE2ENodeReady(t, st, primary.node.ID, 45*time.Second)
+	waitForProcessE2ECondition(t, 15*time.Second, func() (bool, error) {
+		var state string
+		err := st.DB.QueryRowContext(ctx, `SELECT state FROM user_activity_leases WHERE user_id=$1`, user.GlobalID).Scan(&state)
+		return err == nil && state == "ended", err
+	}, "partition-matrix writer lease did not end after both real browser sessions logged out")
+}
+
+func assertProcessE2EPartitionWrites(
+	t *testing.T,
+	node *processE2ENode,
+	handle string,
+	want []string,
+) {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(node.adapterDataRoot, "e2e-writes.jsonl"))
+	if err != nil {
+		t.Fatalf("read %s write evidence: %v", node.node.Name, err)
+	}
+	got := make([]string, 0, len(want))
+	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var record struct {
+			OperationID string `json:"operation_id"`
+			Handle      string `json:"handle"`
+		}
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode %s write evidence: %v line=%q", node.node.Name, err, line)
+		}
+		if record.Handle == handle {
+			got = append(got, record.OperationID)
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%s partition writes=%v want=%v", node.node.Name, got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("%s partition writes=%v want=%v", node.node.Name, got, want)
+		}
+	}
+}
+
 func provisionProcessE2EReplicaAccount(
 	t *testing.T,
 	ctx context.Context,
 	st *store.Store,
 	node *processE2ENode,
 	user *store.User,
+	operationID, workflowID string,
 ) {
 	t.Helper()
 	var passwordHash, passwordSalt string
@@ -566,8 +793,8 @@ func provisionProcessE2EReplicaAccount(
 		t.Fatalf("read registered node password material: %v", err)
 	}
 	payload := map[string]any{
-		"operation_id":   "81000000-0000-4000-8000-000000000009",
-		"workflow_id":    "81000000-0000-4000-8000-000000000010",
+		"operation_id":   operationID,
+		"workflow_id":    workflowID,
 		"global_user_id": user.GlobalID, "account_version": accountVersion,
 		"handle": user.Username, "name": user.DisplayName,
 		"password_hash": passwordHash, "password_salt": passwordSalt,

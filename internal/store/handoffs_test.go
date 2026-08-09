@@ -265,7 +265,8 @@ func TestConsumeLoginHandoffIsFencedAndOneUse(t *testing.T) {
 		WithArgs(jti, int64(20), hash, now, now.Add(15*time.Minute), issuer, keyID).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"user_id", "user_uuid", "local_handle", "session_id", "activity_epoch", "controller_generation",
-		}).AddRow(int64(70), userUUID, "alice", "session", int64(4), int64(3)))
+			"lease_confirmed_at", "lease_expires_at",
+		}).AddRow(int64(70), userUUID, "alice", "session", int64(4), int64(3), now, now.Add(15*time.Minute)))
 
 	redemption, ok, err := store.ConsumeLoginHandoff(
 		context.Background(), jti, hash, 20, issuer, keyID, now, 15*time.Minute,
@@ -274,7 +275,8 @@ func TestConsumeLoginHandoffIsFencedAndOneUse(t *testing.T) {
 		t.Fatalf("ConsumeLoginHandoff ok=%v err=%v", ok, err)
 	}
 	if redemption.UserUUID != userUUID || redemption.Handle != "alice" ||
-		redemption.ActivityEpoch != 4 || redemption.ControllerGeneration != 3 {
+		redemption.ActivityEpoch != 4 || redemption.ControllerGeneration != 3 ||
+		!redemption.LeaseConfirmedAt.Equal(now) || !redemption.LeaseExpiresAt.Equal(now.Add(15*time.Minute)) {
 		t.Fatalf("unexpected redemption: %+v", redemption)
 	}
 
@@ -282,6 +284,7 @@ func TestConsumeLoginHandoffIsFencedAndOneUse(t *testing.T) {
 		WithArgs(jti, int64(20), hash, now, now.Add(15*time.Minute), issuer, keyID).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"user_id", "user_uuid", "local_handle", "session_id", "activity_epoch", "controller_generation",
+			"lease_confirmed_at", "lease_expires_at",
 		}))
 	_, ok, err = store.ConsumeLoginHandoff(
 		context.Background(), jti, hash, 20, issuer, keyID, now, 15*time.Minute,

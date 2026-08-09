@@ -87,7 +87,7 @@ func TestControlHTTPServerPinsTLS13AndHeaderBounds(t *testing.T) {
 
 func TestControllerRejectsUnsafeActivityLeaseTTL(t *testing.T) {
 	t.Parallel()
-	for _, ttl := range []int{0, 59, 24*60*60 + 1} {
+	for _, ttl := range []int{0, 60, 119, 24*60*60 + 1} {
 		cfg := config.DefaultController()
 		cfg.Activity.LeaseTTLSec = ttl
 		if err := ValidateRuntimeConfig(cfg); err == nil {
@@ -95,7 +95,7 @@ func TestControllerRejectsUnsafeActivityLeaseTTL(t *testing.T) {
 		}
 	}
 	cfg := config.DefaultController()
-	cfg.Activity.LeaseTTLSec = 60
+	cfg.Activity.LeaseTTLSec = 120
 	if err := ValidateRuntimeConfig(cfg); err != nil {
 		t.Fatalf("minimum safe activity lease TTL rejected: %v", err)
 	}

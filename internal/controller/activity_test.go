@@ -19,13 +19,34 @@ func TestActivityLeaseTTLUsesExplicitControllerPolicy(t *testing.T) {
 	}
 }
 
+func TestValidateActivityObservationRejectsRollbackAndFutureClockEvidence(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 9, 4, 0, 0, 0, time.UTC)
+	for name, observedAt := range map[string]int64{
+		"negative":       -1,
+		"too old":        now.Add(-5*time.Minute - time.Millisecond).UnixMilli(),
+		"too far future": now.Add(time.Minute + time.Millisecond).UnixMilli(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateActivityObservation(now, observedAt); err == nil {
+				t.Fatalf("unsafe observation %d was accepted", observedAt)
+			}
+		})
+	}
+	for _, observedAt := range []int64{0, now.Add(-5 * time.Minute).UnixMilli(), now.UnixMilli(), now.Add(time.Minute).UnixMilli()} {
+		if err := validateActivityObservation(now, observedAt); err != nil {
+			t.Fatalf("valid observation %d rejected: %v", observedAt, err)
+		}
+	}
+}
+
 func TestNonAuthoritativeActivityTelemetryFailsClosed(t *testing.T) {
 	t.Parallel()
 	server := New(config.DefaultController(), nil, nil)
 	server.activity[7] = map[string]protocol.UserStatus{
 		"alice": {Handle: "alice", IsOnline: false, LastActivity: 1},
 	}
-	if err := server.trackUserActivity(context.Background(), 7, "directory_fallback", []protocol.UserStatus{{
+	if _, err := server.trackUserActivity(context.Background(), 7, "directory_fallback", []protocol.UserStatus{{
 		Handle: "alice", IsOnline: false, LastActivity: 1,
 	}}, time.Now().UTC()); err != nil {
 		t.Fatal(err)
@@ -41,7 +62,7 @@ func TestAuthoritativeEmptyActivitySnapshotReplacesStaleFacts(t *testing.T) {
 	server.activity[7] = map[string]protocol.UserStatus{
 		"alice": {Handle: "alice", IsOnline: false, LastActivity: 1},
 	}
-	if err := server.trackUserActivity(context.Background(), 7, "adapter", nil, time.Now().UTC()); err != nil {
+	if _, err := server.trackUserActivity(context.Background(), 7, "adapter", nil, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(server.activity[7]); got != 0 {

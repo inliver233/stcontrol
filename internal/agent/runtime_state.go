@@ -35,6 +35,14 @@ type agentRuntimeState struct {
 	PendingIndependentUsers []protocol.IndependentSyncUser        `json:"pending_independent_users,omitempty"`
 	ActivityOwnership       map[string]activityOwnershipClaim     `json:"activity_ownership,omitempty"`
 	OwnershipTakeovers      map[string]ownershipTakeoverOperation `json:"ownership_takeovers,omitempty"`
+	ActivityLeases          agentActivityLeaseState               `json:"activity_leases"`
+}
+
+type agentActivityLeaseState struct {
+	ControllerGeneration int64                                `json:"controller_generation,omitempty"`
+	ConfirmedAt          int64                                `json:"confirmed_at,omitempty"`
+	Leases               []protocol.ActivityLeaseConfirmation `json:"leases,omitempty"`
+	AdapterConfirmedAt   int64                                `json:"adapter_confirmed_at,omitempty"`
 }
 
 type agentCredentialState struct {
@@ -112,6 +120,9 @@ func (a *Agent) loadRuntimeState() error {
 			operation.ParentClaimID == "" || operation.ParentClaimID != operation.Claim.ParentClaimID {
 			return fmt.Errorf("invalid persisted activity ownership takeover")
 		}
+	}
+	if err := validateAgentActivityLeaseState(a.state.ActivityLeases); err != nil {
+		return fmt.Errorf("invalid persisted activity lease confirmations: %w", err)
 	}
 	if a.state.WorkerID == "" {
 		workerID, err := newWorkerID()

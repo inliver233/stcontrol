@@ -108,6 +108,10 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	now := time.Now().UTC()
+	if err := validateActivityObservation(now, req.ActivityObservedAt); err != nil {
+		protocol.WriteError(w, http.StatusBadRequest, "用户活动观察时间无效")
+		return
+	}
 	modeFact, err := normalizeNodeControlMode(req.ControlMode, now)
 	if err != nil {
 		protocol.WriteError(w, http.StatusBadRequest, "节点控制模式报告无效")
@@ -137,9 +141,20 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 处理用户在线状态 → 供离线备份调度参考
-	if err := s.trackUserActivity(ctx, node.ID, facts.TelemetrySource, req.Users, now); err != nil {
+	leaseConfirmations, err := s.trackUserActivity(ctx, node.ID, facts.TelemetrySource, req.Users, now)
+	if err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "更新用户活动租约失败")
 		return
+	}
+	if modeFact.Mode != protocol.NodeModeManaged || decision.DesiredMode != protocol.NodeModeManaged {
+		leaseConfirmations = nil
+	}
+	if req.ActivityObservedAt == 0 {
+		// Rolling-upgrade compatibility: an older Agent may still renew the
+		// PostgreSQL lease, but it receives no causally ordered local grant. Its
+		// existing adapter deadline therefore expires closed instead of being
+		// extended from an observation whose time is unknown.
+		leaseConfirmations = nil
 	}
 	if modeFact.Mode != protocol.NodeModeManaged || decision.DesiredMode != protocol.NodeModeManaged {
 		s.setControlPlaneGate(true, "node_reconciliation_required")
@@ -164,7 +179,20 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		DesiredMode: decision.DesiredMode, ModeGeneration: decision.ModeGeneration,
 		AcknowledgedTakeoverOperations: acknowledgedTakeovers,
 		CredentialRotation:             rotation,
+		ActivityLeaseConfirmedAt:       req.ActivityObservedAt,
+		ActivityLeaseConfirmations:     leaseConfirmations,
 	})
+}
+
+func validateActivityObservation(now time.Time, observedAt int64) error {
+	if observedAt == 0 {
+		return nil
+	}
+	observed := time.UnixMilli(observedAt).UTC()
+	if observedAt < 0 || observed.After(now.Add(time.Minute)) || observed.Before(now.Add(-5*time.Minute)) {
+		return fmt.Errorf("activity observation is outside the accepted clock window")
+	}
+	return nil
 }
 
 func (s *Server) agentCredentialRotationOffer(
@@ -476,7 +504,7 @@ func (s *Server) trackUserActivity(
 	telemetrySource string,
 	users []protocol.UserStatus,
 	now time.Time,
-) error {
+) ([]protocol.ActivityLeaseConfirmation, error) {
 	// Directory mtimes and Agent-local fallbacks cannot prove that every page,
 	// request, or write has stopped. Remove scheduling facts for this node and
 	// leave its durable lease untouched until authoritative adapter telemetry
@@ -485,7 +513,7 @@ func (s *Server) trackUserActivity(
 		s.actMu.Lock()
 		delete(s.activity, nodeID)
 		s.actMu.Unlock()
-		return nil
+		return nil, nil
 	}
 	if len(users) == 0 {
 		s.actMu.Lock()
@@ -494,14 +522,16 @@ func (s *Server) trackUserActivity(
 		}
 		s.activity[nodeID] = map[string]protocol.UserStatus{}
 		s.actMu.Unlock()
-		return nil
+		return nil, nil
 	}
 	leaseTTL := s.activityLeaseTTL()
 	activeGeneration, err := s.Store.GetActiveControllerGeneration(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	aggregated := make(map[string]protocol.UserStatus)
+	confirmations := make([]protocol.ActivityLeaseConfirmation, 0)
+	confirmedHandles := make(map[string]struct{})
 	for _, u := range users {
 		normalized, pageAt, requestAt, ok := normalizeUserActivityStatus(u, now, leaseTTL)
 		if !ok {
@@ -512,27 +542,27 @@ func (s *Server) trackUserActivity(
 		if authoritative {
 			user, err := s.Store.GetUserByUsername(ctx, u.Handle)
 			if err != nil {
-				return fmt.Errorf("resolve activity user %s: %w", u.Handle, err)
+				return nil, fmt.Errorf("resolve activity user %s: %w", u.Handle, err)
 			}
 			authoritative = user != nil && user.GlobalID > 0
 			if authoritative && u.Ended {
 				matched, err := s.Store.EndActivityLease(ctx, user.GlobalID, nodeID, u.SessionID,
 					u.ActivityEpoch, u.ControllerGeneration, now)
 				if err != nil {
-					return fmt.Errorf("end activity lease for %s: %w", u.Handle, err)
+					return nil, fmt.Errorf("end activity lease for %s: %w", u.Handle, err)
 				}
 				authoritative = matched
 				if !matched {
 					lease, err := s.Store.GetActivityLease(ctx, user.GlobalID)
 					if err != nil {
-						return fmt.Errorf("read ended activity lease for %s: %w", u.Handle, err)
+						return nil, fmt.Errorf("read ended activity lease for %s: %w", u.Handle, err)
 					}
 					authoritative = lease != nil && lease.WriterNodeID == nodeID &&
 						lease.SessionID == u.SessionID && lease.ActivityEpoch == u.ActivityEpoch &&
 						lease.ControllerGeneration == u.ControllerGeneration && lease.State == "ended"
 				}
 			} else if authoritative {
-				matched, err := s.Store.UpdateActivityLeaseTelemetry(ctx, store.ActivityLeaseTelemetry{
+				leaseExpiresAt, matched, err := s.Store.UpdateActivityLeaseTelemetry(ctx, store.ActivityLeaseTelemetry{
 					UserID: user.GlobalID, WriterNodeID: nodeID, SessionID: u.SessionID,
 					ActivityEpoch: u.ActivityEpoch, ControllerGeneration: u.ControllerGeneration,
 					LastPageHeartbeatAt: pageAt, LastRequestAt: requestAt,
@@ -540,9 +570,19 @@ func (s *Server) trackUserActivity(
 					Online: normalized.IsOnline, Now: now, TTL: leaseTTL,
 				})
 				if err != nil {
-					return fmt.Errorf("update activity telemetry for %s: %w", u.Handle, err)
+					return nil, fmt.Errorf("update activity telemetry for %s: %w", u.Handle, err)
 				}
 				authoritative = matched
+				if matched && normalized.IsOnline && leaseExpiresAt.After(now) {
+					if _, exists := confirmedHandles[u.Handle]; !exists {
+						confirmedHandles[u.Handle] = struct{}{}
+						confirmations = append(confirmations, protocol.ActivityLeaseConfirmation{
+							Handle: u.Handle, SessionID: u.SessionID, ActivityEpoch: u.ActivityEpoch,
+							ControllerGeneration: u.ControllerGeneration,
+							LeaseExpiresAt:       leaseExpiresAt.UnixMilli(),
+						})
+					}
+				}
 			}
 		}
 		if !authoritative {
@@ -572,7 +612,7 @@ func (s *Server) trackUserActivity(
 	// node map prevents an old offline or online entry from surviving forever;
 	// absence itself is not treated as offline by the scheduler.
 	s.activity[nodeID] = aggregated
-	return nil
+	return confirmations, nil
 }
 
 func normalizeUserActivityStatus(

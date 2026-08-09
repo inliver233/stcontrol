@@ -83,6 +83,7 @@ type HeartbeatRequest struct {
 	Compatibility      NodeCompatibilityReport  `json:"compatibility"`
 	TransferURL        string                   `json:"transfer_url,omitempty"`
 	RegistrationPolicy RegistrationPolicyReport `json:"registration_policy"`
+	ActivityObservedAt int64                    `json:"activity_observed_at"`
 	Users              []UserStatus             `json:"users,omitempty"`
 	ControlMode        NodeControlModeReport    `json:"control_mode"`
 }
@@ -150,6 +151,31 @@ type HeartbeatResponse struct {
 	ModeGeneration                 int64                         `json:"mode_generation"`
 	AcknowledgedTakeoverOperations []string                      `json:"acknowledged_takeover_operations,omitempty"`
 	CredentialRotation             *AgentCredentialRotationOffer `json:"credential_rotation,omitempty"`
+	ActivityLeaseConfirmedAt       int64                         `json:"activity_lease_confirmed_at"`
+	ActivityLeaseConfirmations     []ActivityLeaseConfirmation   `json:"activity_lease_confirmations"`
+}
+
+// ActivityLeaseConfirmation is an exact, bounded local-write grant. The
+// Controller returns it only after the reported session/generation matched the
+// current PostgreSQL lease and its deadline was renewed atomically.
+type ActivityLeaseConfirmation struct {
+	Handle               string `json:"handle"`
+	SessionID            string `json:"session_id"`
+	ActivityEpoch        int64  `json:"activity_epoch"`
+	ControllerGeneration int64  `json:"controller_generation"`
+	LeaseExpiresAt       int64  `json:"lease_expires_at"`
+}
+
+type ApplyActivityLeaseConfirmationsRequest struct {
+	ControllerGeneration int64                       `json:"controller_generation"`
+	ConfirmedAt          int64                       `json:"confirmed_at"`
+	Leases               []ActivityLeaseConfirmation `json:"leases"`
+}
+
+type ApplyActivityLeaseConfirmationsResponse struct {
+	OK            bool  `json:"ok"`
+	ConfirmedAt   int64 `json:"confirmed_at"`
+	AppliedLeases int   `json:"applied_leases"`
 }
 
 type AgentCredentialRotationOffer struct {

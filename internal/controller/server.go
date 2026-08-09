@@ -212,8 +212,8 @@ func ValidateRuntimeConfig(cfg *config.ControllerConfig) error {
 	if err := validateControlListenerConfig(cfg); err != nil {
 		return err
 	}
-	if cfg.Activity.LeaseTTLSec < 60 || cfg.Activity.LeaseTTLSec > 24*60*60 {
-		return fmt.Errorf("activity lease TTL must be between 60 and 86400 seconds")
+	if cfg.Activity.LeaseTTLSec < 120 || cfg.Activity.LeaseTTLSec > 24*60*60 {
+		return fmt.Errorf("activity lease TTL must be between 120 and 86400 seconds")
 	}
 	if cfg.Backup.OfflineGraceMin < 1 || cfg.Backup.OfflineGraceMin > 24*60 {
 		return fmt.Errorf("offline backup grace must be between 1 and 1440 minutes")

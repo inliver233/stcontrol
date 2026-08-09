@@ -243,6 +243,9 @@ func (a *Agent) recordControllerSuccess(now time.Time, response protocol.Heartbe
 	if response.ModeGeneration == state.ModeGeneration && desired != state.Mode {
 		return fmt.Errorf("node mode generation reuse rejected")
 	}
+	if err := a.recordActivityLeaseConfirmations(now, response); err != nil {
+		return fmt.Errorf("activity lease confirmations rejected: %w", err)
+	}
 	for operationID := range seenAcknowledgements {
 		operation, exists := a.state.OwnershipTakeovers[operationID]
 		if exists && operation.Succeeded && operation.Audited {

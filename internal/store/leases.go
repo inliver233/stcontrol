@@ -254,10 +254,10 @@ func (s *Store) RenewActivityLease(
 // Stale sessions and stale controller generations cannot mutate or extend a
 // replacement writer. Any live page, request, read, or write extends the same
 // configured lease; absence of all four facts never shortens it early.
-func (s *Store) UpdateActivityLeaseTelemetry(ctx context.Context, p ActivityLeaseTelemetry) (bool, error) {
+func (s *Store) UpdateActivityLeaseTelemetry(ctx context.Context, p ActivityLeaseTelemetry) (time.Time, bool, error) {
 	if p.UserID <= 0 || p.WriterNodeID <= 0 || p.SessionID == "" || p.ActivityEpoch <= 0 ||
 		p.ControllerGeneration <= 0 || p.InFlightReads < 0 || p.InFlightWrites < 0 || p.TTL <= 0 {
-		return false, ErrInvalidLeaseInput
+		return time.Time{}, false, ErrInvalidLeaseInput
 	}
 	if p.Now.IsZero() {
 		p.Now = time.Now().UTC()
@@ -268,22 +268,26 @@ func (s *Store) UpdateActivityLeaseTelemetry(ctx context.Context, p ActivityLeas
 	if p.LastRequestAt.IsZero() {
 		p.LastRequestAt = p.Now.Add(-p.TTL)
 	}
-	result, err := s.DB.ExecContext(ctx, `
+	var leaseExpiresAt time.Time
+	err := s.DB.QueryRowContext(ctx, `
 		UPDATE user_activity_leases
 		SET last_page_heartbeat_at=$6,last_request_at=$7,
 		  in_flight_reads=$8,in_flight_writes=$9,
 		  lease_expires_at=CASE WHEN $10 THEN GREATEST(lease_expires_at,$11) ELSE lease_expires_at END,
 		  updated_at=$5
 		WHERE user_id=$1 AND writer_node_id=$2 AND session_id=$3
-		  AND activity_epoch=$4 AND controller_generation=$12 AND state='active'`,
+		  AND activity_epoch=$4 AND controller_generation=$12 AND state='active'
+		RETURNING lease_expires_at`,
 		p.UserID, p.WriterNodeID, p.SessionID, p.ActivityEpoch, p.Now,
 		p.LastPageHeartbeatAt, p.LastRequestAt, p.InFlightReads, p.InFlightWrites,
-		p.Online, p.Now.Add(p.TTL), p.ControllerGeneration)
-	if err != nil {
-		return false, err
+		p.Online, p.Now.Add(p.TTL), p.ControllerGeneration).Scan(&leaseExpiresAt)
+	if err == sql.ErrNoRows {
+		return time.Time{}, false, nil
 	}
-	rows, err := result.RowsAffected()
-	return rows == 1, err
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return leaseExpiresAt, true, nil
 }
 
 // EndActivityLease fences the exact current session. It is idempotent: ending

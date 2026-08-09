@@ -227,6 +227,8 @@ func (s *Server) handleTicketRedeem(w http.ResponseWriter, r *http.Request) {
 		"session_id":            redemption.SessionID,
 		"activity_epoch":        redemption.ActivityEpoch,
 		"controller_generation": redemption.ControllerGeneration,
+		"lease_confirmed_at":    redemption.LeaseConfirmedAt.UnixMilli(),
+		"lease_expires_at":      redemption.LeaseExpiresAt.UnixMilli(),
 	})
 }
 

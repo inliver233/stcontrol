@@ -31,17 +31,17 @@ func TestUpdateActivityLeaseTelemetryUsesFullGenerationFence(t *testing.T) {
 	now := time.Date(2026, 8, 8, 1, 2, 3, 0, time.UTC)
 	page := now.Add(-time.Minute)
 	request := now.Add(-time.Second)
-	mock.ExpectExec(`UPDATE user_activity_leases`).
+	mock.ExpectQuery(`UPDATE user_activity_leases`).
 		WithArgs(int64(70), int64(8), "11111111-1111-4111-8111-111111111111", int64(4), now,
 			page, request, 2, 1, true, now.Add(15*time.Minute), int64(9)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	ok, err := store.UpdateActivityLeaseTelemetry(context.Background(), ActivityLeaseTelemetry{
+		WillReturnRows(sqlmock.NewRows([]string{"lease_expires_at"}).AddRow(now.Add(15 * time.Minute)))
+	expiresAt, ok, err := store.UpdateActivityLeaseTelemetry(context.Background(), ActivityLeaseTelemetry{
 		UserID: 70, WriterNodeID: 8, SessionID: "11111111-1111-4111-8111-111111111111",
 		ActivityEpoch: 4, ControllerGeneration: 9, LastPageHeartbeatAt: page, LastRequestAt: request,
 		InFlightReads: 2, InFlightWrites: 1, Online: true, Now: now, TTL: 15 * time.Minute,
 	})
-	if err != nil || !ok {
-		t.Fatalf("ok=%v err=%v", ok, err)
+	if err != nil || !ok || !expiresAt.Equal(now.Add(15*time.Minute)) {
+		t.Fatalf("expiresAt=%s ok=%v err=%v", expiresAt, ok, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
