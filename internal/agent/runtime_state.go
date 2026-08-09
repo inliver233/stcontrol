@@ -131,6 +131,20 @@ func (a *Agent) loadRuntimeState() error {
 		if snapshotID != transfer.SnapshotID || validatePendingTransferState(transfer, a.Cfg.NodeID) != nil {
 			return fmt.Errorf("invalid persisted snapshot transfer")
 		}
+		// State-only unit/upgrade callers can omit a runtime role. A real
+		// compute/storage Agent has a validated destination root and must clean
+		// any tree left on the non-visible side of an atomic exchange before a
+		// consumed capability is re-armed.
+		if a.Cfg.Role == "compute" || a.Cfg.Role == "storage" {
+			taskRoot, finalPath, err := a.targetSnapshotPaths(transfer)
+			if err != nil {
+				return fmt.Errorf("invalid persisted snapshot destination")
+			}
+			if err := recoverSnapshotPublication(taskRoot, finalPath); err != nil {
+				return fmt.Errorf("recover interrupted snapshot publication")
+			}
+			removeTaskDirectory(taskRoot)
+		}
 		if transfer.State == "consumed" {
 			// A consumed transfer can only still exist at process startup when the
 			// receive handler died before persisting failed/published. Re-arm the
@@ -143,9 +157,6 @@ func (a *Agent) loadRuntimeState() error {
 			}
 			transfer.UpdatedAt = time.Now().UTC()
 			a.state.Transfers[snapshotID] = transfer
-			if taskRoot, _, err := a.targetSnapshotPaths(transfer); err == nil {
-				removeTaskDirectory(taskRoot)
-			}
 		}
 	}
 	if a.state.ActivityOwnership == nil {

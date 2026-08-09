@@ -44,6 +44,7 @@ const (
 )
 
 var errSnapshotDirectUnreachable = errors.New("direct snapshot target unreachable")
+var errSnapshotStorageExhausted = errors.New("snapshot storage exhausted")
 
 type archiveReplicaMetadata struct {
 	FormatVersion int                              `json:"format_version"`
@@ -1082,11 +1083,11 @@ func (a *Agent) ReceiveSnapshot(ctx context.Context, workflowID, snapshotID, tok
 		_ = a.finishTransfer(snapshotID, "failed")
 		return protocol.SnapshotTransferReceipt{}, err
 	}
-	if err := resetTaskDirectory(taskRoot); err != nil {
+	if err := resetSnapshotTaskDirectory(taskRoot, finalPath); err != nil {
 		_ = a.finishTransfer(snapshotID, "failed")
 		return protocol.SnapshotTransferReceipt{}, err
 	}
-	defer removeTaskDirectory(taskRoot)
+	defer cleanupSnapshotTaskDirectory(taskRoot, finalPath)
 	archivePath := filepath.Join(taskRoot, "incoming.tar.zst")
 	archive, err := os.OpenFile(archivePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -1252,11 +1253,12 @@ func extractVerifyAndPublish(
 		if err != nil {
 			return protocol.SnapshotTransferReceipt{}, err
 		}
-		hash := sha256.New()
-		written, copyErr := io.Copy(file, io.TeeReader(tarReader, hash))
+		copyErr := copyVerifiedSnapshotFile(file, tarReader, entry)
 		closeErr := file.Close()
-		want, _ := hex.DecodeString(entry.SHA256)
-		if copyErr != nil || closeErr != nil || written != entry.Size || !hmac.Equal(hash.Sum(nil), want) {
+		if copyErr != nil {
+			return protocol.SnapshotTransferReceipt{}, copyErr
+		}
+		if closeErr != nil {
 			return protocol.SnapshotTransferReceipt{}, fmt.Errorf("snapshot file verification failed")
 		}
 		seen[header.Name] = true
@@ -1338,33 +1340,48 @@ func manifestMatchesTransfer(manifest protocol.SnapshotManifest, transfer pendin
 		manifest.TargetNodeID == transfer.TargetNodeID && manifest.ActivityEpoch == transfer.ActivityEpoch
 }
 
-func publishSnapshotDirectory(staging, finalPath, taskRoot string) error {
-	if !isSubPath(filepath.Dir(finalPath), finalPath) || !isSubPath(filepath.Dir(taskRoot), taskRoot) {
-		return fmt.Errorf("unsafe publish path")
+func copyVerifiedSnapshotFile(file *os.File, source io.Reader, entry protocol.ManifestEntry) error {
+	hash := sha256.New()
+	written, err := io.Copy(file, io.TeeReader(source, hash))
+	if err != nil {
+		return safeSnapshotStorageError("write snapshot file", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(finalPath), 0o700); err != nil {
-		return err
+	want, err := hex.DecodeString(entry.SHA256)
+	if err != nil || len(want) != sha256.Size || written != entry.Size || !hmac.Equal(hash.Sum(nil), want) {
+		return fmt.Errorf("snapshot file verification failed")
 	}
-	previous := filepath.Join(taskRoot, "previous")
-	hadPrevious := false
-	if _, err := os.Lstat(finalPath); err == nil {
-		if err := os.Rename(finalPath, previous); err != nil {
-			return err
-		}
-		hadPrevious = true
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	if err := os.Rename(staging, finalPath); err != nil {
-		if hadPrevious {
-			_ = os.Rename(previous, finalPath)
-		}
-		return err
-	}
-	if hadPrevious {
-		removeTaskDirectory(previous)
+	if err := file.Sync(); err != nil {
+		return safeSnapshotStorageError("sync snapshot file", err)
 	}
 	return nil
+}
+
+func publishSnapshotDirectory(staging, finalPath, taskRoot string) error {
+	return publishSnapshotDirectoryWithCheckpoint(staging, finalPath, taskRoot, nil)
+}
+
+func publishSnapshotDirectoryWithCheckpoint(
+	staging, finalPath, taskRoot string,
+	checkpoint func(string),
+) error {
+	if !isSubPath(taskRoot, staging) || filepath.Clean(staging) == filepath.Clean(taskRoot) ||
+		!isSubPath(filepath.Dir(finalPath), finalPath) || !isSubPath(filepath.Dir(taskRoot), taskRoot) {
+		return fmt.Errorf("unsafe publish path")
+	}
+	info, err := os.Lstat(staging)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("invalid snapshot staging directory")
+	}
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0o700); err != nil {
+		return safeSnapshotStorageError("create snapshot publication parent", err)
+	}
+	if err := durablySyncSnapshotTree(staging); err != nil {
+		return err
+	}
+	if checkpoint != nil {
+		checkpoint("staging_durable")
+	}
+	return atomicallyReplaceSnapshotDirectory(staging, finalPath, taskRoot, checkpoint)
 }
 
 func hashFile(path string) ([32]byte, error) {
@@ -1388,6 +1405,20 @@ func resetTaskDirectory(path string) error {
 	}
 	removeTaskDirectory(path)
 	return os.MkdirAll(path, 0o700)
+}
+
+func resetSnapshotTaskDirectory(taskRoot, finalPath string) error {
+	if err := recoverSnapshotPublication(taskRoot, finalPath); err != nil {
+		return err
+	}
+	return resetTaskDirectory(taskRoot)
+}
+
+func cleanupSnapshotTaskDirectory(taskRoot, finalPath string) {
+	if recoverSnapshotPublication(taskRoot, finalPath) != nil {
+		return
+	}
+	removeTaskDirectory(taskRoot)
 }
 
 func removeTaskDirectory(path string) {
