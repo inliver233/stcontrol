@@ -108,6 +108,33 @@ type CompleteAccountImportClaimParams struct {
 	Now          time.Time
 }
 
+// AccountImportClaimOperationMatches reports whether a completed claim is an
+// exact user/node replay. It lets the HTTP layer return the durable result after
+// a lost response without asking the node to verify a password a second time.
+func (s *Store) AccountImportClaimOperationMatches(
+	ctx context.Context,
+	operationID string,
+	globalUserID, nodeID int64,
+) (bool, error) {
+	if operationID == "" || globalUserID <= 0 || nodeID <= 0 {
+		return false, ErrAccountClaimRejected
+	}
+	var existingUserID, existingNodeID int64
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT user_id,node_id FROM account_import_claim_operations
+		WHERE operation_id=$1`, operationID).Scan(&existingUserID, &existingNodeID)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if existingUserID != globalUserID || existingNodeID != nodeID {
+		return false, ErrAccountImportConflict
+	}
+	return true, nil
+}
+
 func (s *Store) ListAccountImportClaimTargets(ctx context.Context, globalUserID int64) ([]AccountImportClaimTarget, error) {
 	if globalUserID <= 0 {
 		return nil, ErrAccountClaimRejected
@@ -219,17 +246,46 @@ func (s *Store) CompleteAccountImportClaim(ctx context.Context, p CompleteAccoun
 		legacyUserID, p.NodeID, kind, replicaState, p.Now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		UPDATE account_import_candidates SET resolution_state='claimed',matched_user_id=$2,
-		  reason_code='password_control_proof',updated_at=$3 WHERE id=$1;
+		  reason_code='password_control_proof',updated_at=$3 WHERE id=$1`,
+		candidateID, p.GlobalUserID, p.Now)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		if err != nil {
+			return err
+		}
+		return ErrAccountClaimRejected
+	}
+	result, err = tx.ExecContext(ctx, `
 		UPDATE account_import_batches SET auto_linked_count=auto_linked_count+1,
 		  unresolved_count=GREATEST(0,unresolved_count-1),
-		  state=CASE WHEN unresolved_count<=1 THEN 'resolved' ELSE state END,updated_at=$3 WHERE id=$4;
+		  state=CASE WHEN unresolved_count<=1 THEN 'resolved' ELSE state END,updated_at=$2 WHERE id=$1`,
+		batchID, p.Now)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		if err != nil {
+			return err
+		}
+		return ErrAccountClaimRejected
+	}
+	result, err = tx.ExecContext(ctx, `
 		INSERT INTO account_import_claim_operations (
 		  operation_id,candidate_id,user_id,node_id,local_user_id,controller_generation,completed_at
-		) SELECT $5,$1,$2,$6,$7,generation,$3 FROM controller_epochs WHERE state='active'`,
-		candidateID, p.GlobalUserID, p.Now, batchID, p.OperationID, p.NodeID, p.LocalUserID); err != nil {
+		) SELECT $1,$2,$3,$4,$5,generation,$6 FROM controller_epochs WHERE state='active'`,
+		p.OperationID, candidateID, p.GlobalUserID, p.NodeID, p.LocalUserID, p.Now)
+	if err != nil {
 		return err
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		if err != nil {
+			return err
+		}
+		return ErrNoActiveController
 	}
 	return tx.Commit()
 }

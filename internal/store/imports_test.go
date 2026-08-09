@@ -13,6 +13,48 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
+func TestAccountImportClaimOperationMatchesBindsUserAndNode(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	mock.ExpectQuery(`SELECT user_id,node_id FROM account_import_claim_operations`).
+		WithArgs("claim-operation").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "node_id"}).AddRow(int64(7), int64(12)))
+	matched, err := st.AccountImportClaimOperationMatches(
+		context.Background(), "claim-operation", 7, 12,
+	)
+	if err != nil || !matched {
+		t.Fatalf("matched=%v err=%v", matched, err)
+	}
+	assertMockExpectations(t, mock)
+
+	st, mock, closeDB = newMockStore(t)
+	defer closeDB()
+	mock.ExpectQuery(`SELECT user_id,node_id FROM account_import_claim_operations`).
+		WithArgs("claim-operation").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "node_id"}).AddRow(int64(7), int64(13)))
+	matched, err = st.AccountImportClaimOperationMatches(
+		context.Background(), "claim-operation", 7, 12,
+	)
+	if matched || !errors.Is(err, ErrAccountImportConflict) {
+		t.Fatalf("matched=%v err=%v, want conflict", matched, err)
+	}
+	assertMockExpectations(t, mock)
+
+	st, mock, closeDB = newMockStore(t)
+	defer closeDB()
+	mock.ExpectQuery(`SELECT user_id,node_id FROM account_import_claim_operations`).
+		WithArgs("missing-operation").
+		WillReturnError(sql.ErrNoRows)
+	matched, err = st.AccountImportClaimOperationMatches(
+		context.Background(), "missing-operation", 7, 12,
+	)
+	if err != nil || matched {
+		t.Fatalf("matched=%v err=%v, want absent", matched, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
 func importBatchParams(now time.Time) CreateAccountImportBatchParams {
 	return CreateAccountImportBatchParams{
 		ID:          "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -269,9 +311,15 @@ func TestCompleteAccountImportClaimRequiresExactNodeProof(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO user_replicas`).WithArgs(int64(8), p.NodeID, "home", "ready", now).
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(`(?s)UPDATE account_import_candidates.*INSERT INTO account_import_claim_operations`).
-		WithArgs("candidate-id", p.GlobalUserID, now, "batch-id", p.OperationID, p.NodeID, p.LocalUserID).
-		WillReturnResult(sqlmock.NewResult(1, 3))
+	mock.ExpectExec(`UPDATE account_import_candidates`).
+		WithArgs("candidate-id", p.GlobalUserID, now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE account_import_batches`).
+		WithArgs("batch-id", now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO account_import_claim_operations`).
+		WithArgs(p.OperationID, "candidate-id", p.GlobalUserID, p.NodeID, p.LocalUserID, now).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 	if err := st.CompleteAccountImportClaim(context.Background(), p); err != nil {
 		t.Fatal(err)

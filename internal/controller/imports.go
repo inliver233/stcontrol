@@ -69,6 +69,21 @@ func (s *Server) handleClaimImportedAccount(w http.ResponseWriter, r *http.Reque
 		protocol.WriteError(w, http.StatusUnauthorized, "用户不可用")
 		return
 	}
+	replayed, err := s.Store.AccountImportClaimOperationMatches(
+		r.Context(), req.OperationID, user.GlobalID, req.NodeID,
+	)
+	if err != nil {
+		if errors.Is(err, store.ErrAccountImportConflict) {
+			protocol.WriteError(w, http.StatusConflict, "重复认领操作与原请求不一致")
+			return
+		}
+		protocol.WriteError(w, http.StatusServiceUnavailable, "读取重复认领操作失败")
+		return
+	}
+	if replayed {
+		protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true, "replayed": true})
+		return
+	}
 	targets, err := s.Store.ListAccountImportClaimTargets(r.Context(), user.GlobalID)
 	if err != nil {
 		protocol.WriteError(w, http.StatusServiceUnavailable, "账号认领暂不可用")
