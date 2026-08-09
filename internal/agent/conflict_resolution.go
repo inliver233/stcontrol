@@ -614,8 +614,13 @@ func readStrictPrivateJSON(path string, out any, maxBytes int64) error {
 
 func readConflictResolutionReceipt(path string) (protocol.ConflictResolutionReceipt, error) {
 	var receipt protocol.ConflictResolutionReceipt
-	if err := readStrictPrivateJSON(path, &receipt, 64<<10); err != nil ||
-		!validUUID(receipt.OperationID) || !validUUID(receipt.ConflictID) || !validUUID(receipt.ResultID) ||
+	if err := readStrictPrivateJSON(path, &receipt, 64<<10); err != nil {
+		if os.IsNotExist(err) {
+			return protocol.ConflictResolutionReceipt{}, err
+		}
+		return protocol.ConflictResolutionReceipt{}, fmt.Errorf("invalid conflict resolution receipt")
+	}
+	if !validUUID(receipt.OperationID) || !validUUID(receipt.ConflictID) || !validUUID(receipt.ResultID) ||
 		!validCapabilityHash(receipt.EntriesSHA256) || receipt.FileCount < 0 || receipt.TotalBytes < 0 ||
 		receipt.PreservedSources < 2 {
 		return protocol.ConflictResolutionReceipt{}, fmt.Errorf("invalid conflict resolution receipt")
