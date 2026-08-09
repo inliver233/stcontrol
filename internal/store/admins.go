@@ -192,8 +192,9 @@ func (s *Store) SetAdminStatus(ctx context.Context, adminID int64, status string
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE admins SET status=$2,disabled_at=CASE WHEN $2='disabled' THEN $3 ELSE NULL END,
-		  updated_at=$3 WHERE id=$1`, adminID, status, now); err != nil {
+		UPDATE admins SET status=$2,
+		  disabled_at=CASE WHEN $2='disabled' THEN $3::timestamptz ELSE NULL END,
+		  updated_at=$3::timestamptz WHERE id=$1`, adminID, status, now); err != nil {
 		return err
 	}
 	if status == "disabled" {

@@ -35,6 +35,10 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Get("/registration/status", s.handleRegistrationStatus)
 		r.Post("/login", s.handleLogin)
 		r.Post("/admin/login", s.handleAdminLogin)
+		// Keep logout inside this route tree. Mounting /api/auth/logout
+		// later under /api is shadowed by chi's existing /api/auth subtree
+		// and produces a 404 before the authenticated handler is reached.
+		r.With(s.userAuthMiddleware).Post("/logout", s.handleLogout)
 		r.Post("/oauth/complete", s.handleOAuthComplete)
 		r.Get("/oauth/{provider}", s.handleOAuthBegin)
 		r.Get("/oauth/{provider}/callback", s.handleOAuthCallback)
@@ -67,7 +71,6 @@ func (s *Server) routes(r *chi.Mux) {
 	// 用户区（需登录）
 	r.Route("/api", func(r chi.Router) {
 		r.Use(s.userAuthMiddleware)
-		r.Post("/auth/logout", s.handleLogout)
 		r.Get("/users/me", s.handleMe)
 		r.Get("/users/me/nodes", s.handleMyNodes)
 		r.Get("/users/me/protection", s.handleMyProtection)

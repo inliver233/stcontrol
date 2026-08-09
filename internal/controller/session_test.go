@@ -35,6 +35,56 @@ func TestCSRFTokenIsSessionBoundAndValidated(t *testing.T) {
 	}
 }
 
+func TestLogoutRouteLivesInsideAuthSubtreeAndRevokesSession(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	cfg := config.DefaultController()
+	cfg.StaticDir = t.TempDir()
+	server := New(cfg, &store.Store{DB: db}, []byte("01234567890123456789012345678901"))
+	handler := server.Handler()
+
+	unauthenticated := httptest.NewRecorder()
+	handler.ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil))
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated logout status=%d body=%s", unauthenticated.Code, unauthenticated.Body.String())
+	}
+
+	const rawSession = "opaque-session-token"
+	sessionDigest := sha256.Sum256([]byte(rawSession))
+	csrfToken := server.deriveCSRFToken("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+	csrfDigest := sha256.Sum256([]byte(csrfToken))
+	now := time.Now().UTC()
+	mock.ExpectQuery(`SELECT s.id, gu.legacy_user_id`).
+		WithArgs(sessionDigest[:], sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "legacy_user_id", "user_id", "admin_id", "username", "is_admin",
+			"csrf_hash", "expires_at", "last_seen_at", "controller_generation",
+		}).AddRow(
+			"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", int64(7), int64(70), nil, "alice", false,
+			csrfDigest[:], now.Add(time.Hour), now, int64(1),
+		))
+	mock.ExpectExec(`UPDATE controller_sessions SET revoked_at`).
+		WithArgs(sessionDigest[:], sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	authenticated := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	authenticated.AddCookie(&http.Cookie{Name: sessionCookie, Value: rawSession})
+	authenticated.AddCookie(&http.Cookie{Name: csrfCookie, Value: csrfToken})
+	authenticated.Header.Set("X-CSRF-Token", csrfToken)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authenticated)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("authenticated logout status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
 func TestCreateUserSessionPersistsOnlyDigestsAndSetsSecureCookies(t *testing.T) {
 	t.Parallel()
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
