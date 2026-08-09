@@ -75,8 +75,9 @@ func (s *Store) BindOAuthIdentity(
 		return identityInsertError("bind oauth identity", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE node_accounts SET oauth_subjects=oauth_subjects || jsonb_build_object($2,$3),
-		  account_version=account_version+1,updated_at=$4
+		UPDATE node_accounts SET
+		  oauth_subjects=oauth_subjects || jsonb_build_object($2::text,$3::text),
+		  account_version=account_version+1,updated_at=$4::timestamptz
 		WHERE user_id=$1`, globalUserID, provider, providerSubject, now); err != nil {
 		return err
 	}

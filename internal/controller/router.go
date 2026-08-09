@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"log"
 	"net/http"
+	"os"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -11,10 +13,39 @@ func newRouter() *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
+	r.Use(middleware.RequestLogger(queryRedactingLogFormatter{delegate: &middleware.DefaultLogFormatter{
+		Logger: log.New(os.Stdout, "", log.LstdFlags), NoColor: true,
+	}}))
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Compress(5))
 	return r
+}
+
+// queryRedactingLogFormatter keeps request query parameters available to the
+// handler but removes their values from the request clone passed to chi's
+// access logger. OAuth authorization codes/state and future bearer-like query
+// values must never be copied into process logs.
+type queryRedactingLogFormatter struct {
+	delegate middleware.LogFormatter
+}
+
+func (formatter queryRedactingLogFormatter) NewLogEntry(r *http.Request) middleware.LogEntry {
+	if formatter.delegate == nil {
+		formatter.delegate = &middleware.DefaultLogFormatter{
+			Logger: log.New(os.Stdout, "", log.LstdFlags), NoColor: true,
+		}
+	}
+	logged := r.Clone(r.Context())
+	if r.URL != nil {
+		loggedURL := *r.URL
+		if loggedURL.RawQuery != "" || loggedURL.ForceQuery {
+			loggedURL.RawQuery = "redacted"
+			loggedURL.ForceQuery = false
+		}
+		logged.URL = &loggedURL
+		logged.RequestURI = loggedURL.RequestURI()
+	}
+	return formatter.delegate.NewLogEntry(logged)
 }
 
 func (s *Server) routes(r *chi.Mux) {

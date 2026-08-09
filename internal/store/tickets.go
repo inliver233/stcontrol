@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -60,8 +62,15 @@ func (s *Store) ConsumeRegisterToken(ctx context.Context, token string) (bool, e
 
 // Audit 写审计日志。
 func (s *Store) Audit(ctx context.Context, actor, action, target string, detail []byte) error {
+	var detailValue any
+	if len(detail) > 0 {
+		if !json.Valid(detail) {
+			return fmt.Errorf("invalid audit detail JSON")
+		}
+		detailValue = detail
+	}
 	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO audit_logs (actor, action, target, detail) VALUES ($1,$2,$3,$4)`,
-		actor, action, target, detail)
+		actor, action, target, detailValue)
 	return err
 }
