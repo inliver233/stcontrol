@@ -881,7 +881,102 @@ function UsersAdmin() {
 }
 
 // ---------- 备份任务 ----------
-function BackupsAdmin() {
+export type AdminBackupJobView = Record<string, any>
+
+export function backupWorkflowState(job: AdminBackupJobView): string {
+  return String(job.workflow_state ?? job.WorkflowState ?? '')
+}
+
+export function backupWorkflowStateLabel(state: string): string {
+  const labels: Record<string, string> = {
+    scheduled: '等待调度',
+    quiescing: '排空写入',
+    drained: '已排空',
+    snapshotting: '生成快照',
+    transferring: '传输中',
+    verifying: '校验中',
+    publishing: '原子发布',
+    retry_wait: '等待重试',
+    succeeded: '已完成',
+    cancelled: '已取消',
+    failed: '失败',
+  }
+  return labels[state] || '旧版任务'
+}
+
+function backupStatusBadge(status: string): string {
+  const classes: Record<string, string> = {
+    done: 'green', running: 'yellow', verifying: 'yellow', failed: 'red', aborted: 'gray', pending: 'gray',
+  }
+  return `badge ${classes[status] || 'gray'}`
+}
+
+function backupPhaseBadge(state: string): string {
+  if (state === 'succeeded') return 'badge green'
+  if (state === 'failed') return 'badge red'
+  if (state === 'cancelled' || !state) return 'badge gray'
+  return 'badge yellow'
+}
+
+function backupCleanupLabel(state: string): string {
+  const labels: Record<string, string> = {
+    not_required: '无需清理', pending: '待清理', running: '清理中', succeeded: '已清理', failed: '清理失败',
+  }
+  return labels[state] || '-'
+}
+
+export function BackupJobRow({
+  job,
+  aborting = false,
+  onAbort,
+}: {
+  job: AdminBackupJobView
+  aborting?: boolean
+  onAbort: (id: number) => void | Promise<void>
+}) {
+  const id = Number(job.ID ?? job.id)
+  const status = String(job.Status ?? job.status ?? '')
+  const workflowState = backupWorkflowState(job)
+  const attempt = Number(job.attempt ?? job.Attempt ?? 0)
+  const nextAttemptAt = job.next_attempt_at ?? job.NextAttemptAt
+  const cleanupState = String(job.cleanup_state ?? job.CleanupState ?? '')
+  const errorCode = String(job.error_code ?? job.ErrorCode ?? '')
+  const errorSummary = String(job.error_summary ?? job.ErrorSummary ?? '')
+  const legacyError = String(job.Error?.String ?? job.error?.String ?? '')
+  const reason = workflowState ? (errorSummary || errorCode) : legacyError
+  const canAbort = (job.can_abort ?? job.CanAbort) === true
+  const retryFacts = attempt > 0
+    ? `第 ${attempt} 次重试${nextAttemptAt ? ` · ${new Date(nextAttemptAt).toLocaleString()}` : ''}`
+    : '-'
+  return (
+    <tr>
+      <td>{id}</td>
+      <td>{job.UserID ?? job.user_id}</td>
+      <td>{job.SrcNodeID ?? job.src_node_id}</td>
+      <td>{job.DstNodeID ?? job.dst_node_id}</td>
+      <td>{job.Trigger ?? job.trigger}</td>
+      <td><span className={backupStatusBadge(status)}>{status}</span></td>
+      <td><span className={backupPhaseBadge(workflowState)}>{backupWorkflowStateLabel(workflowState)}</span></td>
+      <td style={{ fontSize: 12 }}>{((job.Bytes?.Int64 ?? job.bytes ?? 0) / 1048576).toFixed(1)}MB</td>
+      <td style={{ fontSize: 12 }}>
+        <div>{retryFacts}</div>
+        <div>{backupCleanupLabel(cleanupState)}</div>
+      </td>
+      <td style={{ fontSize: 12, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis' }} title={reason}>
+        {reason || '-'}
+      </td>
+      <td>
+        {canAbort && (
+          <button className="btn-sm danger" disabled={aborting} onClick={() => onAbort(id)}>
+            {aborting ? '中止中…' : '中止'}
+          </button>
+        )}
+      </td>
+    </tr>
+  )
+}
+
+export function BackupsAdmin() {
   const [jobs, setJobs] = useState<any[]>([])
   const [error, setError] = useState('')
   const [status, setStatus] = useState('')
@@ -892,6 +987,7 @@ function BackupsAdmin() {
   const [nextCursor, setNextCursor] = useState(0)
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [abortingJobs, setAbortingJobs] = useState<Set<number>>(() => new Set())
   const load = (pageCursor = cursor, pageStatus = status, pageUserID = userID) => {
     setLoading(true)
     return adminApi.backups(pageCursor, pageStatus, pageUserID)
@@ -921,9 +1017,21 @@ function BackupsAdmin() {
     setCursorHistory(history => history.slice(0, -1)); setCursor(previous)
   }
 
-  const statusBadge = (s: string) => {
-    const map: any = { done: 'green', running: 'yellow', verifying: 'yellow', failed: 'red', aborted: 'gray', pending: 'gray' }
-    return `badge ${map[s] || 'gray'}`
+  const abortBackup = async (id: number) => {
+    if (!Number.isSafeInteger(id) || id <= 0 || abortingJobs.has(id)) return
+    setAbortingJobs(current => new Set(current).add(id))
+    try {
+      await adminApi.abortBackup(id)
+      await load()
+    } catch (err: any) {
+      setError(err?.message || '中止备份失败')
+    } finally {
+      setAbortingJobs(current => {
+        const next = new Set(current)
+        next.delete(id)
+        return next
+      })
+    }
   }
 
   return (
@@ -937,27 +1045,18 @@ function BackupsAdmin() {
       </form>
       <table className="table">
         <thead>
-          <tr><th>ID</th><th>用户</th><th>源节点</th><th>目标节点</th><th>触发</th><th>状态</th><th>大小</th><th>错误</th><th>操作</th></tr>
+          <tr><th>ID</th><th>用户</th><th>源节点</th><th>目标节点</th><th>触发</th><th>任务状态</th><th>阶段</th><th>大小</th><th>重试 / 清理</th><th>原因</th><th>操作</th></tr>
         </thead>
         <tbody>
           {jobs.map(j => (
-            <tr key={j.ID ?? j.id}>
-              <td>{j.ID ?? j.id}</td>
-              <td>{j.UserID ?? j.user_id}</td>
-              <td>{j.SrcNodeID ?? j.src_node_id}</td>
-              <td>{j.DstNodeID ?? j.dst_node_id}</td>
-              <td>{j.Trigger ?? j.trigger}</td>
-              <td><span className={statusBadge(j.Status ?? j.status)}>{j.Status ?? j.status}</span></td>
-              <td style={{ fontSize: 12 }}>{((j.Bytes?.Int64 ?? j.bytes ?? 0) / 1048576).toFixed(1)}MB</td>
-              <td style={{ fontSize: 12, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{j.Error?.String ?? j.error?.String ?? ''}</td>
-              <td>
-                {(j.Status ?? j.status) === 'running' && (
-                  <button className="btn-sm danger" onClick={() => adminApi.abortBackup(j.ID ?? j.id).then(() => load())}>中止</button>
-                )}
-              </td>
-            </tr>
+            <BackupJobRow
+              key={j.ID ?? j.id}
+              job={j}
+              aborting={abortingJobs.has(Number(j.ID ?? j.id))}
+              onAbort={abortBackup}
+            />
           ))}
-          {!loading && jobs.length === 0 && <tr><td colSpan={9}>没有符合条件的备份任务</td></tr>}
+          {!loading && jobs.length === 0 && <tr><td colSpan={11}>没有符合条件的备份任务</td></tr>}
         </tbody>
       </table>
       <div style={{ marginTop: 12 }}>

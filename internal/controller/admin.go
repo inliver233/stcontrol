@@ -331,7 +331,7 @@ func (s *Server) handleAdminAbortBackup(w http.ResponseWriter, r *http.Request) 
 		protocol.WriteError(w, http.StatusNotFound, "任务不存在")
 		return
 	}
-	if job.Status == "done" || job.Status == "failed" {
+	if job.Status == "done" || job.Status == "failed" || job.Status == "aborted" {
 		protocol.WriteError(w, http.StatusConflict, "任务已经结束")
 		return
 	}
@@ -345,6 +345,10 @@ func (s *Server) handleAdminAbortBackup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := s.Store.AbortBackupJobAndSnapshotWorkflow(r.Context(), job.ID, "管理员中止", time.Now().UTC()); err != nil {
+		if errors.Is(err, store.ErrBackupJobTerminal) {
+			protocol.WriteError(w, http.StatusConflict, "任务已经结束")
+			return
+		}
 		protocol.WriteError(w, http.StatusInternalServerError, "更新任务状态失败")
 		return
 	}

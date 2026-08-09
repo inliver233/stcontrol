@@ -367,7 +367,8 @@ func (s *Store) GetSnapshotWorkflowExecution(ctx context.Context, workflowID str
 		JOIN LATERAL (
 		  SELECT id, token_hash, expires_at, state
 		  FROM snapshot_transfer_capabilities
-		  WHERE workflow_id=workflow.id ORDER BY created_at DESC LIMIT 1
+		  WHERE workflow_id=workflow.id
+		  ORDER BY created_at DESC,expires_at DESC,id DESC LIMIT 1
 		) capability ON true
 		WHERE workflow.id=$1`, workflowID).
 		Scan(
@@ -433,6 +434,51 @@ func (s *Store) ClaimSnapshotWorkflow(
 	return rows == 1, err
 }
 
+func (s *Store) RenewSnapshotWorkflow(
+	ctx context.Context,
+	workflowID, workerID string,
+	now time.Time,
+	ttl time.Duration,
+) error {
+	if workflowID == "" || workerID == "" || now.IsZero() || ttl <= 0 {
+		return ErrInvalidSnapshotWorkflow
+	}
+	result, err := s.DB.ExecContext(ctx, `
+		UPDATE workflows workflow SET lease_until=$4,updated_at=$3
+		FROM controller_epochs epoch
+		WHERE workflow.id=$1 AND workflow.workflow_type='snapshot'
+		  AND workflow.lease_owner=$2 AND workflow.lease_until>$3
+		  AND workflow.state NOT IN ('succeeded','cancelled','failed')
+		  AND workflow.controller_generation=epoch.generation AND epoch.state='active'`,
+		workflowID, workerID, now, now.Add(ttl))
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		var state string
+		if err := s.DB.QueryRowContext(ctx, `
+			SELECT state FROM workflows WHERE id=$1 AND workflow_type='snapshot'`, workflowID).
+			Scan(&state); err != nil {
+			if err == sql.ErrNoRows {
+				return ErrSnapshotStateConflict
+			}
+			return err
+		}
+		// A concurrent successful publication may commit while the final lease
+		// renewal is in flight. That terminal receipt is authoritative and must
+		// not turn an already-published workflow into an apparent failure.
+		if state == "succeeded" {
+			return nil
+		}
+		return ErrSnapshotStateConflict
+	}
+	return nil
+}
+
 func (s *Store) ScheduleSnapshotRetry(
 	ctx context.Context,
 	workflowID, errorCode, errorSummary string,
@@ -445,17 +491,96 @@ func (s *Store) ScheduleSnapshotRetry(
 	if len(errorSummary) > 512 {
 		errorSummary = errorSummary[:512]
 	}
-	var attempt int
-	err := s.DB.QueryRowContext(ctx, `
-		UPDATE workflows SET resume_state='quiescing', state='retry_wait', attempt=attempt+1,
-		  next_attempt_at=$4, error_code=$2, error_summary=$3, updated_at=$5,
-		  lease_owner=NULL, lease_until=NULL
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var workflowType string
+	err = tx.QueryRowContext(ctx, `
+		SELECT workflow_type FROM workflows
 		WHERE id=$1 AND state NOT IN ('succeeded','cancelled','failed','retry_wait')
-		RETURNING attempt`, workflowID, errorCode, nullIfEmpty(errorSummary), now.Add(delay), now).Scan(&attempt)
+		FOR UPDATE`, workflowID).Scan(&workflowType)
 	if err == sql.ErrNoRows {
 		return 0, ErrSnapshotStateConflict
 	}
-	return attempt, err
+	if err != nil {
+		return 0, err
+	}
+	resumeState := ""
+	stepQuery := ""
+	expectedStepRows := int64(0)
+	switch workflowType {
+	case "snapshot":
+		resumeState = "quiescing"
+		expectedStepRows = 6
+		stepQuery = `
+			UPDATE workflow_steps SET state='retry_wait',attempt=attempt+1,error_code=$2,
+			  lease_owner=NULL,lease_until=NULL,started_at=NULL,finished_at=NULL,updated_at=$3
+			WHERE workflow_id=$1
+			  AND step_name IN ('quiesce','snapshot','prepare_target','transfer','verify','publish')`
+	case "restore":
+		resumeState = "scheduled"
+		expectedStepRows = 4
+		stepQuery = `
+			UPDATE workflow_steps SET state='retry_wait',attempt=attempt+1,error_code=$2,
+			  lease_owner=NULL,lease_until=NULL,started_at=NULL,finished_at=NULL,updated_at=$3
+			WHERE workflow_id=$1
+			  AND step_name IN ('prepare_target','transfer','verify','publish')`
+	case "conflict_resolution":
+		resumeState = "scheduled"
+		expectedStepRows = 5
+		stepQuery = `
+			UPDATE workflow_steps SET state='retry_wait',attempt=attempt+1,error_code=$2,
+			  lease_owner=NULL,lease_until=NULL,started_at=NULL,finished_at=NULL,updated_at=$3
+			WHERE workflow_id=$1
+			  AND step_name IN ('transfer_evidence','prepare','apply_decisions','publish','finalize')`
+	default:
+		return 0, ErrSnapshotStateConflict
+	}
+	var attempt int
+	err = tx.QueryRowContext(ctx, `
+		UPDATE workflows SET resume_state=$2, state='retry_wait', attempt=attempt+1,
+		  next_attempt_at=$5, error_code=$3, error_summary=$4, updated_at=$6,
+		  lease_owner=NULL, lease_until=NULL
+		WHERE id=$1 AND workflow_type=$7
+		RETURNING attempt`, workflowID, resumeState, errorCode, nullIfEmpty(errorSummary), now.Add(delay), now, workflowType).Scan(&attempt)
+	if err == sql.ErrNoRows {
+		return 0, ErrSnapshotStateConflict
+	}
+	if err != nil {
+		return 0, err
+	}
+	if workflowType == "snapshot" || workflowType == "restore" {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE snapshot_transfer_capabilities SET state='revoked'
+			WHERE workflow_id=$1 AND state='prepared'`, workflowID)
+		if err != nil {
+			return 0, err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		if rows != 1 {
+			return 0, ErrSnapshotStateConflict
+		}
+	}
+	result, err := tx.ExecContext(ctx, stepQuery, workflowID, errorCode, now)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if rows != expectedStepRows {
+		return 0, ErrSnapshotStateConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return attempt, nil
 }
 
 // SwitchSnapshotWorkflowToRelay is a one-way durable transition. A workflow
@@ -490,11 +615,41 @@ func (s *Store) SwitchSnapshotWorkflowToRelay(ctx context.Context, workflowID st
 }
 
 func (s *Store) ResumeSnapshotRetry(ctx context.Context, workflowID string, now time.Time) error {
-	result, err := s.DB.ExecContext(ctx, `
+	if workflowID == "" || now.IsZero() {
+		return ErrInvalidSnapshotWorkflow
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var workflowType string
+	err = tx.QueryRowContext(ctx, `
 		UPDATE workflows SET state=resume_state, resume_state=NULL, next_attempt_at=NULL,
-		  updated_at=$2
+		  error_code=NULL,error_summary=NULL,updated_at=$2
 		WHERE id=$1 AND state='retry_wait' AND resume_state IS NOT NULL
-		  AND next_attempt_at<=$2`, workflowID, now)
+		  AND next_attempt_at<=$2
+		RETURNING workflow_type`, workflowID, now).Scan(&workflowType)
+	if err == sql.ErrNoRows {
+		return ErrSnapshotStateConflict
+	}
+	if err != nil {
+		return err
+	}
+	expectedStepRows := int64(0)
+	switch workflowType {
+	case "snapshot":
+		expectedStepRows = 6
+	case "restore":
+		expectedStepRows = 4
+	case "conflict_resolution":
+		expectedStepRows = 5
+	default:
+		return ErrSnapshotStateConflict
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE workflow_steps SET state='pending',error_code=NULL,updated_at=$2
+		WHERE workflow_id=$1 AND state='retry_wait'`, workflowID, now)
 	if err != nil {
 		return err
 	}
@@ -502,10 +657,10 @@ func (s *Store) ResumeSnapshotRetry(ctx context.Context, workflowID string, now 
 	if err != nil {
 		return err
 	}
-	if rows != 1 {
+	if rows != expectedStepRows {
 		return ErrSnapshotStateConflict
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (s *Store) ReleaseSnapshotWorkflow(ctx context.Context, workflowID, workerID string) error {
@@ -568,7 +723,12 @@ func (s *Store) SetSnapshotWorkflowState(ctx context.Context, workflowID, fromSt
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	result, err := s.DB.ExecContext(ctx, `
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
 		UPDATE workflows workflow SET state=$3, updated_at=$4
 		FROM controller_epochs epoch
 		WHERE workflow.id=$1 AND workflow.state=$2
@@ -584,7 +744,27 @@ func (s *Store) SetSnapshotWorkflowState(ctx context.Context, workflowID, fromSt
 	if rows != 1 {
 		return ErrSnapshotStateConflict
 	}
-	return nil
+	runningStep := map[string]string{
+		"quiescing":    "quiesce",
+		"transferring": "transfer",
+	}[toState]
+	if runningStep != "" {
+		result, err = tx.ExecContext(ctx, `
+			UPDATE workflow_steps SET state='running',started_at=COALESCE(started_at,$3),
+			  finished_at=NULL,error_code=NULL,updated_at=$3
+			WHERE workflow_id=$1 AND step_name=$2
+			  AND state IN ('pending','retry_wait','running')`, workflowID, runningStep, now)
+		if err != nil {
+			return err
+		}
+		if rows, err = result.RowsAffected(); err != nil {
+			return err
+		}
+		if rows != 1 {
+			return ErrSnapshotStateConflict
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) SetSnapshotWorkflowProgress(
@@ -636,20 +816,59 @@ func (s *Store) SetSnapshotWorkflowProgress(
 		"publishing":   {from: "verifying", actor: targetNodeID},
 	}
 	rule, ok := allowed[toState]
-	if !ok || rule.from != state || rule.actor != nodeID {
+	if !ok || rule.actor != nodeID {
+		return ErrSnapshotStateConflict
+	}
+	// Progress reports are causal state receipts. Replaying the exact receipt
+	// after an HTTP response loss must succeed without advancing or rewriting
+	// any later phase.
+	if state == toState {
+		return tx.Commit()
+	}
+	if rule.from != state {
 		return ErrSnapshotStateConflict
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE workflows SET state=$2, updated_at=$3 WHERE id=$1`, workflowID, toState, now); err != nil {
 		return err
 	}
-	stepName := map[string]string{
-		"drained": "quiesce", "snapshotting": "snapshot", "transferring": "transfer",
+	completedStep := map[string]string{
+		"drained": "quiesce", "transferring": "snapshot",
+		"verifying": "transfer", "publishing": "verify",
+	}[toState]
+	if completedStep != "" {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE workflow_steps SET state='succeeded',finished_at=$3,updated_at=$3
+			WHERE workflow_id=$1 AND step_name=$2`, workflowID, completedStep, now)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return ErrSnapshotStateConflict
+		}
+	}
+	runningStep := map[string]string{
+		"snapshotting": "snapshot", "transferring": "transfer",
 		"verifying": "verify", "publishing": "publish",
 	}[toState]
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE workflow_steps SET state='succeeded', finished_at=$3, updated_at=$3
-		WHERE workflow_id=$1 AND step_name=$2`, workflowID, stepName, now); err != nil {
-		return err
+	if runningStep != "" {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE workflow_steps SET state='running',started_at=COALESCE(started_at,$3),
+			  finished_at=NULL,error_code=NULL,updated_at=$3
+			WHERE workflow_id=$1 AND step_name=$2`, workflowID, runningStep, now)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return ErrSnapshotStateConflict
+		}
 	}
 	return tx.Commit()
 }

@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"math"
 	"strings"
+	"time"
 )
 
 var ErrInvalidAdminPage = errors.New("invalid admin page request")
@@ -112,9 +114,23 @@ type BackupPageParams struct {
 }
 
 type BackupPage struct {
-	Jobs       []*BackupJob
+	Jobs       []*AdminBackupJob
 	NextCursor int64
 	HasMore    bool
+}
+
+// AdminBackupJob is a bounded, credential-free read model for the operator UI.
+// The workflow identifier, leases, capabilities, and command payloads are
+// deliberately omitted.
+type AdminBackupJob struct {
+	BackupJob
+	WorkflowState string     `json:"workflow_state"`
+	Attempt       int        `json:"attempt"`
+	NextAttemptAt *time.Time `json:"next_attempt_at"`
+	CleanupState  string     `json:"cleanup_state"`
+	ErrorCode     string     `json:"error_code"`
+	ErrorSummary  string     `json:"error_summary"`
+	CanAbort      bool       `json:"can_abort"`
 }
 
 func (s *Store) ListBackupJobsPage(ctx context.Context, params BackupPageParams) (BackupPage, error) {
@@ -129,24 +145,36 @@ func (s *Store) ListBackupJobsPage(ctx context.Context, params BackupPageParams)
 		beforeID = math.MaxInt64
 	}
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id,user_id,src_node_id,dst_node_id,trigger,status,data_version,bytes,
-		  file_count,error,started_at,finished_at,created_at
-		FROM backup_jobs
-		WHERE id<$1 AND ($2='' OR status=$2) AND ($3=0 OR user_id=$3)
-		ORDER BY id DESC LIMIT $4`, beforeID, params.Status, params.UserID, params.Limit+1)
+		SELECT job.id,job.user_id,job.src_node_id,job.dst_node_id,job.trigger,job.status,
+		  job.data_version,job.bytes,job.file_count,job.error,job.started_at,job.finished_at,job.created_at,
+		  COALESCE(workflow.state,''),COALESCE(workflow.attempt,0),workflow.next_attempt_at,
+		  COALESCE(workflow.cleanup_state,''),COALESCE(workflow.error_code,''),
+		  COALESCE(workflow.error_summary,''),
+		  (job.status IN ('pending','running','verifying')
+		    AND (workflow.id IS NULL OR workflow.state NOT IN ('succeeded','cancelled','failed')))
+		FROM backup_jobs job
+		LEFT JOIN workflows workflow ON workflow.id=job.workflow_id
+		WHERE job.id<$1 AND ($2='' OR job.status=$2) AND ($3=0 OR job.user_id=$3)
+		ORDER BY job.id DESC LIMIT $4`, beforeID, params.Status, params.UserID, params.Limit+1)
 	if err != nil {
 		return BackupPage{}, err
 	}
 	defer rows.Close()
-	page := BackupPage{Jobs: make([]*BackupJob, 0, params.Limit)}
+	page := BackupPage{Jobs: make([]*AdminBackupJob, 0, params.Limit)}
 	for rows.Next() {
-		job := &BackupJob{}
+		job := &AdminBackupJob{}
+		var nextAttemptAt sql.NullTime
 		if err := rows.Scan(
 			&job.ID, &job.UserID, &job.SrcNodeID, &job.DstNodeID, &job.Trigger, &job.Status,
 			&job.DataVersion, &job.Bytes, &job.FileCount, &job.Error, &job.StartedAt,
-			&job.FinishedAt, &job.CreatedAt,
+			&job.FinishedAt, &job.CreatedAt, &job.WorkflowState, &job.Attempt, &nextAttemptAt,
+			&job.CleanupState, &job.ErrorCode, &job.ErrorSummary, &job.CanAbort,
 		); err != nil {
 			return BackupPage{}, err
+		}
+		if nextAttemptAt.Valid {
+			next := nextAttemptAt.Time
+			job.NextAttemptAt = &next
 		}
 		if len(page.Jobs) == params.Limit {
 			page.HasMore = true

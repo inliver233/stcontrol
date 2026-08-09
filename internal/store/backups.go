@@ -81,15 +81,20 @@ func (s *Store) AbortBackupJobAndSnapshotWorkflow(
 	defer func() { _ = tx.Rollback() }()
 	var status string
 	var workflowID sql.NullString
+	var workflowState string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT status,workflow_id::text FROM backup_jobs WHERE id=$1 FOR UPDATE`, id).
-		Scan(&status, &workflowID); err != nil {
+		SELECT job.status,job.workflow_id::text,COALESCE(workflow.state,'')
+		FROM backup_jobs job
+		LEFT JOIN workflows workflow ON workflow.id=job.workflow_id
+		WHERE job.id=$1 FOR UPDATE OF job`, id).
+		Scan(&status, &workflowID, &workflowState); err != nil {
 		if err == sql.ErrNoRows {
 			return ErrInvalidBackupJob
 		}
 		return err
 	}
-	if status == "done" || status == "failed" {
+	if status == "done" || status == "failed" || status == "aborted" ||
+		workflowState == "succeeded" || workflowState == "cancelled" || workflowState == "failed" {
 		return ErrBackupJobTerminal
 	}
 	if _, err := tx.ExecContext(ctx, `

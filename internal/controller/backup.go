@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -15,7 +16,8 @@ import (
 
 const (
 	snapshotCapabilityTTL      = 8 * time.Hour
-	snapshotWorkflowLeaseTTL   = 9 * time.Hour
+	snapshotWorkflowLeaseTTL   = 30 * time.Second
+	snapshotWorkflowLeaseRenew = 10 * time.Second
 	snapshotWorkflowCommandTTL = 8 * time.Hour
 )
 
@@ -147,15 +149,36 @@ func (s *Server) TriggerUserBackup(ctx context.Context, userID, srcNodeID int64,
 	return s.executeSnapshotWorkflow(ctx, workflow.WorkflowID)
 }
 
-func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string) error {
+func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string) (resultErr error) {
 	if s.workflowWorkerID == "" {
 		return fmt.Errorf("snapshot worker identity unavailable")
 	}
-	claimed, err := s.Store.ClaimSnapshotWorkflow(ctx, workflowID, s.workflowWorkerID, time.Now().UTC(), snapshotWorkflowLeaseTTL)
+	leaseOwnerID, err := newUUID()
+	if err != nil {
+		return fmt.Errorf("create snapshot lease identity: %w", err)
+	}
+	claimed, err := s.Store.ClaimSnapshotWorkflow(ctx, workflowID, leaseOwnerID, time.Now().UTC(), snapshotWorkflowLeaseTTL)
 	if err != nil || !claimed {
 		return err
 	}
-	defer func() { _ = s.Store.ReleaseSnapshotWorkflow(context.Background(), workflowID, s.workflowWorkerID) }()
+	workflowCtx, cancelWorkflow := context.WithCancel(ctx)
+	leaseDone := make(chan error, 1)
+	go func() {
+		leaseDone <- s.maintainSnapshotWorkflowLease(
+			workflowCtx, cancelWorkflow, workflowID, leaseOwnerID,
+		)
+	}()
+	defer func() {
+		cancelWorkflow()
+		if leaseErr := <-leaseDone; leaseErr != nil &&
+			(resultErr == nil || errors.Is(resultErr, context.Canceled) || errors.Is(resultErr, context.DeadlineExceeded)) {
+			resultErr = leaseErr
+		}
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer releaseCancel()
+		_ = s.Store.ReleaseSnapshotWorkflow(releaseCtx, workflowID, leaseOwnerID)
+	}()
+	ctx = workflowCtx
 	execution, err := s.Store.GetSnapshotWorkflowExecution(ctx, workflowID)
 	if err != nil || execution == nil {
 		return err
@@ -271,6 +294,49 @@ func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string)
 		return s.retrySnapshotWorkflow(ctx, execution, "unexpected_relay_receipt", "直连传输返回了无效中转回执", nil)
 	}
 	return s.completeSnapshotExecution(ctx, execution, result.Snapshot)
+}
+
+func (s *Server) maintainSnapshotWorkflowLease(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	workflowID, workerID string,
+) error {
+	return s.maintainSnapshotWorkflowLeaseWithTiming(
+		ctx, cancel, workflowID, workerID, snapshotWorkflowLeaseRenew, snapshotWorkflowLeaseTTL,
+	)
+}
+
+func (s *Server) maintainSnapshotWorkflowLeaseWithTiming(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	workflowID, workerID string,
+	renewEvery, leaseTTL time.Duration,
+) error {
+	ticker := time.NewTicker(renewEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case now := <-ticker.C:
+			renewTimeout := renewEvery / 2
+			if renewTimeout < time.Second {
+				renewTimeout = time.Second
+			}
+			renewCtx, renewCancel := context.WithTimeout(ctx, renewTimeout)
+			err := s.Store.RenewSnapshotWorkflow(
+				renewCtx, workflowID, workerID, now.UTC(), leaseTTL,
+			)
+			renewCancel()
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				cancel()
+				return fmt.Errorf("snapshot workflow lease renewal failed: %w", err)
+			}
+		}
+	}
 }
 
 func (s *Server) loadPublishedSnapshotReceipt(

@@ -8,11 +8,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -193,6 +195,113 @@ func TestAgentHTTPClientRejectsRedirects(t *testing.T) {
 	}
 	if err := a.httpClient.CheckRedirect(nil, nil); err != http.ErrUseLastResponse {
 		t.Fatalf("redirect policy error=%v", err)
+	}
+}
+
+func TestReportSnapshotProgressRetriesLostResponseWithFreshNonce(t *testing.T) {
+	t.Parallel()
+	const psk = "snapshot-progress-test-secret"
+	var mu sync.Mutex
+	var bodies [][]byte
+	var nonces []string
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil || protocol.VerifyRequest(r, psk, body) != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		mu.Lock()
+		bodies = append(bodies, append([]byte(nil), body...))
+		nonces = append(nonces, r.Header.Get(protocol.HeaderNonce))
+		call := len(bodies)
+		mu.Unlock()
+		if call == 1 {
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("test server cannot simulate a lost response")
+				return
+			}
+			conn, _, err := hijacker.Hijack()
+			if err != nil {
+				t.Errorf("hijack first progress response: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}))
+	defer controller.Close()
+	a := &Agent{
+		Cfg:        &config.AgentConfig{ControllerURL: controller.URL, NodeID: 8, AgentPSK: psk},
+		httpClient: controller.Client(),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := a.reportSnapshotProgress(ctx, testWorkflowID, testSnapshotID, "drained"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 2 || !bytes.Equal(bodies[0], bodies[1]) {
+		t.Fatalf("progress calls=%d bodies_equal=%v", len(bodies), len(bodies) == 2 && bytes.Equal(bodies[0], bodies[1]))
+	}
+	if nonces[0] == "" || nonces[0] == nonces[1] {
+		t.Fatalf("progress retries did not use fresh nonces: %q %q", nonces[0], nonces[1])
+	}
+}
+
+func TestReportSnapshotProgressDoesNotRetryStateConflict(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	calls := 0
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		http.Error(w, "state conflict", http.StatusConflict)
+	}))
+	defer controller.Close()
+	a := &Agent{
+		Cfg:        &config.AgentConfig{ControllerURL: controller.URL, NodeID: 8, AgentPSK: "secret"},
+		httpClient: controller.Client(),
+	}
+	err := a.reportSnapshotProgress(context.Background(), testWorkflowID, testSnapshotID, "drained")
+	if err == nil {
+		t.Fatal("state conflict was accepted")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("non-retryable progress calls=%d, want 1", calls)
+	}
+}
+
+func TestReportSnapshotProgressBackoffHonorsCancellation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	var mu sync.Mutex
+	calls := 0
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.WriteHeader(http.StatusServiceUnavailable)
+		cancel()
+	}))
+	defer controller.Close()
+	a := &Agent{
+		Cfg:        &config.AgentConfig{ControllerURL: controller.URL, NodeID: 8, AgentPSK: "secret"},
+		httpClient: controller.Client(),
+	}
+	err := a.reportSnapshotProgress(ctx, testWorkflowID, testSnapshotID, "drained")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v, want context cancellation", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("cancelled progress calls=%d, want 1", calls)
 	}
 }
 

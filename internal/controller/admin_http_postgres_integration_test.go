@@ -142,6 +142,40 @@ func TestControllerAdminAndUserHTTPRoutesUseDurableFacts(t *testing.T) {
 
 	var lifecycleNodeID int64
 	t.Run("admin read models validate empty, filtered and bounded pages", func(t *testing.T) {
+		job := &store.BackupJob{
+			UserID: user.ID, SrcNodeID: compute.ID, DstNodeID: compute.ID,
+			Trigger: "offline", Status: "running",
+		}
+		if err := st.CreateBackupJob(ctx, job); err != nil {
+			t.Fatalf("create admin workflow-phase backup job: %v", err)
+		}
+		workflowID, err := newUUID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		operationID, err := newUUID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var generation int64
+		if err := st.DB.QueryRowContext(ctx, `SELECT generation FROM controller_epochs WHERE state='active'`).Scan(&generation); err != nil {
+			t.Fatalf("read active Controller generation: %v", err)
+		}
+		now := time.Now().UTC()
+		if _, err := st.DB.ExecContext(ctx, `
+			INSERT INTO workflows (
+			  id,operation_id,workflow_type,state,resume_state,user_id,source_node_id,target_node_id,
+			  activity_epoch,controller_generation,attempt,next_attempt_at,error_code,error_summary,
+			  cleanup_state,created_at,updated_at
+			) VALUES ($1,$2,'snapshot','retry_wait','quiescing',$3,$4,$4,1,$5,2,$6,
+			  'target_unavailable','目标节点暂不可用','not_required',$7,$7)`,
+			workflowID, operationID, user.GlobalID, compute.ID, generation, now.Add(time.Minute), now); err != nil {
+			t.Fatalf("insert admin workflow-phase facts: %v", err)
+		}
+		if _, err := st.DB.ExecContext(ctx, `UPDATE backup_jobs SET workflow_id=$2 WHERE id=$1`, job.ID, workflowID); err != nil {
+			t.Fatalf("link admin backup workflow: %v", err)
+		}
+
 		for _, path := range []string{
 			"/api/admin/overview",
 			"/api/admin/controller/rebuild",
@@ -156,6 +190,48 @@ func TestControllerAdminAndUserHTTPRoutesUseDurableFacts(t *testing.T) {
 		}
 		assertControllerHTTPStatus(t, adminClient, http.MethodGet, httpServer.URL+"/api/admin/users?limit=101", nil, false, http.StatusBadRequest)
 		assertControllerHTTPStatus(t, adminClient, http.MethodGet, httpServer.URL+"/api/admin/backups?before=-1", nil, false, http.StatusBadRequest)
+
+		status, _, backupBody := controllerHTTPRequest(
+			t, adminClient, http.MethodGet,
+			httpServer.URL+"/api/admin/backups?limit=10&user_id="+strconv.FormatInt(user.ID, 10), nil, false,
+		)
+		var backupPage struct {
+			Backups []struct {
+				ID            int64      `json:"ID"`
+				WorkflowState string     `json:"workflow_state"`
+				Attempt       int        `json:"attempt"`
+				NextAttemptAt *time.Time `json:"next_attempt_at"`
+				CleanupState  string     `json:"cleanup_state"`
+				ErrorCode     string     `json:"error_code"`
+				ErrorSummary  string     `json:"error_summary"`
+				CanAbort      bool       `json:"can_abort"`
+			} `json:"backups"`
+		}
+		if status != http.StatusOK || json.Unmarshal(backupBody, &backupPage) != nil || len(backupPage.Backups) != 1 {
+			t.Fatalf("admin backup workflow page: status=%d body=%s", status, backupBody)
+		}
+		backup := backupPage.Backups[0]
+		if backup.ID != job.ID || backup.WorkflowState != "retry_wait" || backup.Attempt != 2 ||
+			backup.NextAttemptAt == nil || backup.CleanupState != "not_required" ||
+			backup.ErrorCode != "target_unavailable" || backup.ErrorSummary != "目标节点暂不可用" || !backup.CanAbort {
+			t.Fatalf("admin backup workflow facts=%+v", backup)
+		}
+		if bytes.Contains(backupBody, []byte(workflowID)) || bytes.Contains(backupBody, []byte("lease_owner")) ||
+			bytes.Contains(backupBody, []byte("capability")) {
+			t.Fatalf("admin backup page exposed internal workflow authority: %s", backupBody)
+		}
+		if _, err := st.DB.ExecContext(ctx, `
+			UPDATE workflows SET state='succeeded',cleanup_state='succeeded',finished_at=now() WHERE id=$1`, workflowID); err != nil {
+			t.Fatalf("finish admin backup workflow facts: %v", err)
+		}
+		if _, err := st.DB.ExecContext(ctx, `UPDATE backup_jobs SET status='done',finished_at=now() WHERE id=$1`, job.ID); err != nil {
+			t.Fatalf("finish admin backup job facts: %v", err)
+		}
+		assertControllerHTTPStatus(
+			t, adminClient, http.MethodPost,
+			httpServer.URL+"/api/admin/backups/"+strconv.FormatInt(job.ID, 10)+"/abort",
+			nil, true, http.StatusConflict,
+		)
 
 		status, _, body := controllerHTTPRequest(t, adminClient, http.MethodGet, httpServer.URL+"/api/admin/admins", nil, false)
 		if status != http.StatusOK || bytes.Contains(body, []byte(rootHash)) || bytes.Contains(body, []byte(rootPassword)) || bytes.Contains(body, []byte("password_hash")) {

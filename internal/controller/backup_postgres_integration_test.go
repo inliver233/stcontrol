@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -88,6 +89,129 @@ func TestControllerSnapshotWorkflowThroughDurableAgentCommands(t *testing.T) {
 		}
 	})
 
+	t.Run("every intermediate phase survives lease-owner process loss", func(t *testing.T) {
+		progress := []struct {
+			state  string
+			nodeID int64
+		}{
+			{state: "drained", nodeID: source.ID},
+			{state: "snapshotting", nodeID: source.ID},
+			{state: "transferring", nodeID: source.ID},
+			{state: "verifying", nodeID: target.ID},
+			{state: "publishing", nodeID: target.ID},
+		}
+		phases := []struct {
+			state         string
+			progressCount int
+			retry         bool
+		}{
+			{state: "scheduled"},
+			{state: "quiescing"},
+			{state: "drained", progressCount: 1},
+			{state: "snapshotting", progressCount: 2},
+			{state: "transferring", progressCount: 3},
+			{state: "verifying", progressCount: 4},
+			{state: "publishing", progressCount: 5},
+			{state: "retry_wait", retry: true},
+		}
+		for _, phase := range phases {
+			phase := phase
+			t.Run(phase.state, func(t *testing.T) {
+				workflowID, snapshotID := createControllerSnapshotWorkflowFixture(
+					t, ctx, st, source, target, "lease-phase-"+phase.state,
+				)
+				now := time.Now().UTC()
+				if phase.retry {
+					if _, err := st.ScheduleSnapshotRetry(
+						ctx, workflowID, "simulated_process_loss", "retry after process loss",
+						now.Add(-time.Second), time.Millisecond,
+					); err != nil {
+						t.Fatalf("schedule retry phase: %v", err)
+					}
+				} else if phase.state != "scheduled" {
+					if err := st.SetSnapshotWorkflowState(ctx, workflowID, "scheduled", "quiescing", now); err != nil {
+						t.Fatalf("enter quiescing: %v", err)
+					}
+					for index := 0; index < phase.progressCount; index++ {
+						report := progress[index]
+						if err := st.SetSnapshotWorkflowProgress(
+							ctx, workflowID, snapshotID, report.nodeID, report.state,
+							now.Add(time.Duration(index+1)*time.Millisecond),
+						); err != nil {
+							t.Fatalf("advance to %s: %v", report.state, err)
+						}
+					}
+				}
+				var currentState string
+				if err := st.DB.QueryRowContext(ctx, `SELECT state FROM workflows WHERE id=$1`, workflowID).Scan(&currentState); err != nil || currentState != phase.state {
+					t.Fatalf("phase state=%q err=%v, want %q", currentState, err, phase.state)
+				}
+				if phase.retry {
+					var retrySteps int
+					if err := st.DB.QueryRowContext(ctx, `
+						SELECT count(*) FROM workflow_steps
+						WHERE workflow_id=$1 AND state='retry_wait'`, workflowID).Scan(&retrySteps); err != nil || retrySteps != 6 {
+						t.Fatalf("retry step facts=%d err=%v", retrySteps, err)
+					}
+				} else {
+					runningStep := map[string]string{
+						"quiescing": "quiesce", "snapshotting": "snapshot", "transferring": "transfer",
+						"verifying": "verify", "publishing": "publish",
+					}[phase.state]
+					if runningStep != "" {
+						var stepState string
+						if err := st.DB.QueryRowContext(ctx, `
+							SELECT state FROM workflow_steps WHERE workflow_id=$1 AND step_name=$2`,
+							workflowID, runningStep).Scan(&stepState); err != nil || stepState != "running" {
+							t.Fatalf("running step %s=%q err=%v", runningStep, stepState, err)
+						}
+					}
+				}
+				resumable, err := st.ListResumableSnapshotWorkflowIDs(ctx, 1000)
+				if err != nil || !slices.Contains(resumable, workflowID) {
+					t.Fatalf("phase %s missing from durable resume set: ids=%v err=%v", phase.state, resumable, err)
+				}
+
+				leaseNow := time.Now().UTC()
+				claimed, err := st.ClaimSnapshotWorkflow(ctx, workflowID, "dead-process-owner", leaseNow, 40*time.Millisecond)
+				if err != nil || !claimed {
+					t.Fatalf("claim dead process lease: claimed=%v err=%v", claimed, err)
+				}
+				claimed, err = st.ClaimSnapshotWorkflow(ctx, workflowID, "replacement-owner", leaseNow.Add(20*time.Millisecond), time.Second)
+				if err != nil || claimed {
+					t.Fatalf("replacement stole live lease: claimed=%v err=%v", claimed, err)
+				}
+				claimed, err = st.ClaimSnapshotWorkflow(ctx, workflowID, "replacement-owner", leaseNow.Add(50*time.Millisecond), time.Second)
+				if err != nil || !claimed {
+					t.Fatalf("replacement failed to reclaim expired lease: claimed=%v err=%v", claimed, err)
+				}
+				if err := st.RenewSnapshotWorkflow(
+					ctx, workflowID, "dead-process-owner", leaseNow.Add(51*time.Millisecond), time.Second,
+				); !errors.Is(err, store.ErrSnapshotStateConflict) {
+					t.Fatalf("stale process renewed replacement lease: %v", err)
+				}
+				if err := st.ReleaseSnapshotWorkflow(ctx, workflowID, "dead-process-owner"); err != nil {
+					t.Fatalf("release stale process lease: %v", err)
+				}
+				var owner string
+				if err := st.DB.QueryRowContext(ctx, `SELECT lease_owner FROM workflows WHERE id=$1`, workflowID).Scan(&owner); err != nil || owner != "replacement-owner" {
+					t.Fatalf("stale release cleared replacement lease: owner=%q err=%v", owner, err)
+				}
+				if err := st.RenewSnapshotWorkflow(
+					ctx, workflowID, "replacement-owner", leaseNow.Add(52*time.Millisecond), time.Second,
+				); err != nil {
+					t.Fatalf("replacement could not renew owned lease: %v", err)
+				}
+				if err := st.ReleaseSnapshotWorkflow(ctx, workflowID, "replacement-owner"); err != nil {
+					t.Fatalf("release replacement lease: %v", err)
+				}
+				if err := st.CancelSnapshotWorkflow(ctx, workflowID, "phase lease test complete", time.Now().UTC()); err != nil {
+					t.Fatalf("cancel phase fixture: %v", err)
+				}
+			})
+		}
+	})
+
 	t.Run("published receipt survives lost source response", func(t *testing.T) {
 		user := createControllerBackupUser(t, ctx, st, source.ID, "backup-lost-receipt")
 		if err := server.TriggerUserBackup(ctx, user.ID, source.ID, "offline"); err != nil {
@@ -129,6 +253,7 @@ func TestControllerSnapshotWorkflowThroughDurableAgentCommands(t *testing.T) {
 		if err != nil || execution == nil || execution.State != "retry_wait" || execution.Attempt != 1 {
 			t.Fatalf("retry facts after failed target prepare: execution=%+v err=%v", execution, err)
 		}
+		failedCapabilityID := execution.CapabilityID
 		if _, err := st.DB.ExecContext(ctx, `
 			UPDATE workflows SET next_attempt_at=now()-interval '1 second' WHERE id=$1`, workflowID); err != nil {
 			t.Fatalf("advance deterministic snapshot retry: %v", err)
@@ -147,7 +272,7 @@ func TestControllerSnapshotWorkflowThroughDurableAgentCommands(t *testing.T) {
 			t.Fatalf("load completed retry execution: execution=%+v err=%v", execution, err)
 		}
 		failedPrepareOperationID := deriveWorkflowOperationID(
-			workflowID, fmt.Sprintf("prepare-target:%s:%d", execution.CapabilityID, 0),
+			workflowID, fmt.Sprintf("prepare-target:%s:%d", failedCapabilityID, 0),
 		)
 		succeededPrepareOperationID := deriveWorkflowOperationID(
 			workflowID, fmt.Sprintf("prepare-target:%s:%d", execution.CapabilityID, 1),
@@ -293,6 +418,7 @@ func assertControllerRelaySnapshot(
 		execution.TransferMode != "relay" || execution.Attempt != 1 {
 		t.Fatalf("direct-to-relay transition: execution=%+v err=%v", execution, err)
 	}
+	directCapabilityID := execution.CapabilityID
 	if _, err := st.DB.ExecContext(ctx, `
 		UPDATE workflows SET next_attempt_at=now()-interval '1 second' WHERE id=$1`, workflowID); err != nil {
 		t.Fatalf("advance relay retry: %v", err)
@@ -313,7 +439,7 @@ func assertControllerRelaySnapshot(
 
 	relayTaskID := deriveWorkflowOperationID(workflowID, "relay-task:1")
 	directOperationID := deriveWorkflowOperationID(
-		workflowID, fmt.Sprintf("start-source:%s:%d", execution.CapabilityID, 0),
+		workflowID, fmt.Sprintf("start-source:%s:%d", directCapabilityID, 0),
 	)
 	sourceOperationID := deriveWorkflowOperationID(
 		workflowID, fmt.Sprintf("start-relay-source:%s:%d", relayTaskID, 1),
@@ -865,6 +991,52 @@ func createControllerBackupUser(
 	return user
 }
 
+func createControllerSnapshotWorkflowFixture(
+	t *testing.T,
+	ctx context.Context,
+	st *store.Store,
+	source, target *store.Node,
+	handle string,
+) (string, string) {
+	t.Helper()
+	user := createControllerBackupUser(t, ctx, st, source.ID, handle)
+	job := &store.BackupJob{
+		UserID: user.ID, SrcNodeID: source.ID, DstNodeID: target.ID,
+		Trigger: "offline", Status: "running",
+	}
+	if err := st.CreateBackupJob(ctx, job); err != nil {
+		t.Fatalf("create snapshot fixture job: %v", err)
+	}
+	workflowID, err := newUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationID, err := newUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotID, err := newUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityID, err := newUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityHash := sha256.Sum256([]byte("lease-fixture:" + capabilityID))
+	now := time.Now().UTC()
+	if _, err := st.CreateSnapshotWorkflow(ctx, store.CreateSnapshotWorkflowParams{
+		WorkflowID: workflowID, OperationID: operationID, SnapshotID: snapshotID,
+		CapabilityID: capabilityID, CapabilityHash: capabilityHash[:],
+		LegacyBackupJobID: job.ID, LegacyUserID: user.ID, GlobalUserID: user.GlobalID,
+		SourceNodeID: source.ID, TargetNodeID: target.ID, DestinationKind: "archive",
+		CapabilityExpires: now.Add(10 * time.Minute), Now: now,
+	}); err != nil {
+		t.Fatalf("create snapshot workflow fixture: %v", err)
+	}
+	return workflowID, snapshotID
+}
+
 func controllerBackupWorkflowID(t *testing.T, ctx context.Context, st *store.Store, globalUserID int64) string {
 	t.Helper()
 	var workflowID string
@@ -907,7 +1079,11 @@ func assertControllerBackupPublished(
 		FROM workflows workflow
 		JOIN backup_jobs job ON job.workflow_id=workflow.id
 		JOIN snapshot_manifests manifest ON manifest.workflow_id=workflow.id
-		JOIN snapshot_transfer_capabilities capability ON capability.workflow_id=workflow.id
+		JOIN LATERAL (
+		  SELECT state FROM snapshot_transfer_capabilities
+		  WHERE workflow_id=workflow.id
+		  ORDER BY created_at DESC,expires_at DESC,id DESC LIMIT 1
+		) capability ON true
 		JOIN replica_copies copy ON copy.user_id=workflow.user_id
 		  AND copy.node_id=workflow.target_node_id AND copy.snapshot_id=manifest.id
 		WHERE workflow.id=$1 AND workflow.user_id=$2 AND workflow.target_node_id=$3`,

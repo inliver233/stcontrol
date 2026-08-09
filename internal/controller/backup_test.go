@@ -1,15 +1,50 @@
 package controller
 
 import (
+	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"stcontrol/internal/config"
 	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
+
+func TestSnapshotWorkflowLeaseMaintainerCancelsOnFenceLoss(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server := &Server{Store: &store.Store{DB: db}}
+	mock.ExpectExec(`UPDATE workflows workflow SET lease_until`).
+		WithArgs("workflow", "unique-lease-owner", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT state FROM workflows`).WithArgs("workflow").
+		WillReturnRows(sqlmock.NewRows([]string{"state"}).AddRow("snapshotting"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err = server.maintainSnapshotWorkflowLeaseWithTiming(
+		ctx, cancel, "workflow", "unique-lease-owner", 10*time.Millisecond, time.Second,
+	)
+	if !errors.Is(err, store.ErrSnapshotStateConflict) {
+		t.Fatalf("error=%v, want lease fence conflict", err)
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("lease fence loss did not cancel workflow execution")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestTransferCapabilityIsDeterministicButScoped(t *testing.T) {
 	t.Parallel()

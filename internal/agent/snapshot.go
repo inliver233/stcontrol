@@ -29,13 +29,18 @@ import (
 )
 
 const (
-	snapshotManifestPath = ".stcontrol/manifest.json"
-	archiveMetadataPath  = ".stcontrol-archive.json"
-	maxSnapshotFiles     = 100_000
-	maxSnapshotBytes     = int64(100 << 30)
-	maxSnapshotFileBytes = int64(10 << 30)
-	maxManifestBytes     = int64(32 << 20)
-	maxDecoderWindow     = uint64(64 << 20)
+	snapshotManifestPath           = ".stcontrol/manifest.json"
+	archiveMetadataPath            = ".stcontrol-archive.json"
+	maxSnapshotFiles               = 100_000
+	maxSnapshotBytes               = int64(100 << 30)
+	maxSnapshotFileBytes           = int64(10 << 30)
+	maxManifestBytes               = int64(32 << 20)
+	maxDecoderWindow               = uint64(64 << 20)
+	snapshotProgressAttempts       = 8
+	snapshotProgressRetryWindow    = time.Minute
+	snapshotProgressRequestTimeout = 10 * time.Second
+	snapshotProgressInitialBackoff = 250 * time.Millisecond
+	snapshotProgressMaxBackoff     = 5 * time.Second
 )
 
 var errSnapshotDirectUnreachable = errors.New("direct snapshot target unreachable")
@@ -186,9 +191,62 @@ func (a *Agent) RunSnapshot(ctx context.Context, req protocol.StartSnapshotReque
 }
 
 func (a *Agent) reportSnapshotProgress(ctx context.Context, workflowID, snapshotID, state string) error {
-	return a.callController(ctx, http.MethodPost, "/api/agent/snapshots/progress", protocol.SnapshotProgressRequest{
+	payload := protocol.SnapshotProgressRequest{
 		WorkflowID: workflowID, SnapshotID: snapshotID, State: state,
-	}, nil)
+	}
+	retryCtx, cancelRetry := context.WithTimeout(ctx, snapshotProgressRetryWindow)
+	defer cancelRetry()
+	backoff := snapshotProgressInitialBackoff
+	var lastErr error
+	for attempt := 0; attempt < snapshotProgressAttempts; attempt++ {
+		requestCtx, cancelRequest := context.WithTimeout(retryCtx, snapshotProgressRequestTimeout)
+		status, _, _, err := a.doControllerRequest(
+			requestCtx, http.MethodPost, "/api/agent/snapshots/progress", payload,
+		)
+		cancelRequest()
+		if err == nil && status >= http.StatusOK && status < http.StatusMultipleChoices {
+			return nil
+		}
+		if err == nil && !retryableSnapshotProgressStatus(status) {
+			return fmt.Errorf("report snapshot progress %s: controller returned status %d", state, status)
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("controller returned status %d", status)
+		}
+		if attempt == snapshotProgressAttempts-1 {
+			break
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-retryCtx.Done():
+			timer.Stop()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("report snapshot progress %s timed out: %w", state, retryCtx.Err())
+		case <-timer.C:
+		}
+		if backoff < snapshotProgressMaxBackoff {
+			backoff *= 2
+			if backoff > snapshotProgressMaxBackoff {
+				backoff = snapshotProgressMaxBackoff
+			}
+		}
+	}
+	if retryCtx.Err() != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("report snapshot progress %s timed out: %w", state, retryCtx.Err())
+	}
+	return fmt.Errorf("report snapshot progress %s failed after %d attempts: %w", state, snapshotProgressAttempts, lastErr)
+}
+
+func retryableSnapshotProgressStatus(status int) bool {
+	return status == http.StatusRequestTimeout || status == http.StatusTooEarly ||
+		status == http.StatusTooManyRequests || status >= http.StatusInternalServerError
 }
 
 func validateStartSnapshotRequest(req protocol.StartSnapshotRequest) error {
