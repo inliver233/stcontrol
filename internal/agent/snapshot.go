@@ -59,6 +59,7 @@ type snapshotGateResponse struct {
 	OK          bool   `json:"ok"`
 	Drained     bool   `json:"drained"`
 	FreezeToken string `json:"freeze_token"`
+	ExpiresAt   int64  `json:"expires_at"`
 }
 
 type snapshotReleaseRequest struct {
@@ -85,13 +86,31 @@ func (a *Agent) RunSnapshot(ctx context.Context, req protocol.StartSnapshotReque
 		cancel()
 		a.unregisterSnapshotJob(req.JobID)
 	}()
+	if a.backupCancelled(req.JobID) {
+		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("snapshot job cancelled")
+	}
 
 	gate, err := a.quiesceSnapshotUser(snapshotCtx, req)
 	if err != nil {
 		return protocol.SnapshotTransferReceipt{}, err
 	}
+	gateLeaseCtx, stopGateLease := context.WithCancel(snapshotCtx)
+	gateLeaseDone := make(chan error, 1)
+	go func() {
+		gateLeaseDone <- a.maintainSnapshotUserGate(gateLeaseCtx, cancel, req, gate)
+	}()
+	gateLeaseStopped := false
+	stopGateLeaseAndWait := func() error {
+		if gateLeaseStopped {
+			return nil
+		}
+		gateLeaseStopped = true
+		stopGateLease()
+		return <-gateLeaseDone
+	}
 	released := false
 	defer func() {
+		_ = stopGateLeaseAndWait()
 		if !released {
 			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer releaseCancel()
@@ -128,6 +147,9 @@ func (a *Agent) RunSnapshot(ctx context.Context, req protocol.StartSnapshotReque
 	}
 	archiveDigest, err := hashFile(archivePath)
 	if err != nil {
+		return protocol.SnapshotTransferReceipt{}, err
+	}
+	if err := stopGateLeaseAndWait(); err != nil {
 		return protocol.SnapshotTransferReceipt{}, err
 	}
 	if err := a.releaseSnapshotUser(snapshotCtx, req, gate.FreezeToken); err != nil {
@@ -410,13 +432,17 @@ func (a *Agent) unregisterSnapshotJob(jobID int64) {
 	a.mu.Unlock()
 }
 
-func (a *Agent) AbortBackup(jobID int64) {
+func (a *Agent) AbortBackup(jobID int64) error {
+	if err := a.persistBackupCancellation(jobID, time.Now().UTC()); err != nil {
+		return err
+	}
 	a.mu.Lock()
 	cancel := a.backupJobs[jobID]
 	a.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	return nil
 }
 
 func (a *Agent) quiesceSnapshotUser(ctx context.Context, req protocol.StartSnapshotRequest) (snapshotGateResponse, error) {
@@ -425,10 +451,112 @@ func (a *Agent) quiesceSnapshotUser(ctx context.Context, req protocol.StartSnaps
 		WorkflowID: req.WorkflowID, SnapshotID: req.SnapshotID, GlobalUserID: req.GlobalUserID,
 		Handle: req.Handle, ActivityEpoch: req.ActivityEpoch,
 	}, &out)
-	if err != nil || !out.OK || !out.Drained || out.FreezeToken == "" {
+	if err != nil || !out.OK || !out.Drained || !validSnapshotFreezeToken(out.FreezeToken) ||
+		!validSnapshotGateExpiry(out.ExpiresAt, time.Now().UTC()) {
 		return snapshotGateResponse{}, fmt.Errorf("user quiesce failed")
 	}
 	return out, nil
+}
+
+func validSnapshotFreezeToken(value string) bool {
+	if len(value) < 32 || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') && character != '-' && character != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func validSnapshotGateExpiry(expiresAtMillis int64, now time.Time) bool {
+	expiresAt := time.UnixMilli(expiresAtMillis)
+	return expiresAt.After(now.Add(2*time.Second)) && expiresAt.Before(now.Add(6*time.Minute))
+}
+
+func (a *Agent) maintainSnapshotUserGate(
+	ctx context.Context,
+	cancelSnapshot context.CancelFunc,
+	req protocol.StartSnapshotRequest,
+	gate snapshotGateResponse,
+) error {
+	expiresAt := time.UnixMilli(gate.ExpiresAt)
+	backoff := 250 * time.Millisecond
+	for {
+		remaining := time.Until(expiresAt)
+		if remaining <= 0 {
+			cancelSnapshot()
+			return fmt.Errorf("snapshot user write gate lease expired")
+		}
+		wait := remaining / 2
+		if wait > 10*time.Second {
+			wait = 10 * time.Second
+		}
+		if wait < 250*time.Millisecond {
+			wait = 250 * time.Millisecond
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+
+		remaining = time.Until(expiresAt)
+		if remaining <= 0 {
+			cancelSnapshot()
+			return fmt.Errorf("snapshot user write gate lease expired")
+		}
+		requestTimeout := 5 * time.Second
+		if remaining < requestTimeout {
+			requestTimeout = remaining
+		}
+		renewCtx, renewCancel := context.WithTimeout(ctx, requestTimeout)
+		var out struct {
+			OK        bool  `json:"ok"`
+			ExpiresAt int64 `json:"expires_at"`
+		}
+		err := a.callTavernAdapter(renewCtx, "/api/stcontrol/internal/snapshots/renew", snapshotReleaseRequest{
+			WorkflowID: req.WorkflowID, SnapshotID: req.SnapshotID, Handle: req.Handle,
+			ActivityEpoch: req.ActivityEpoch, FreezeToken: gate.FreezeToken,
+		}, &out)
+		renewCancel()
+		if err == nil && out.OK && validSnapshotGateExpiry(out.ExpiresAt, time.Now().UTC()) &&
+			time.UnixMilli(out.ExpiresAt).After(expiresAt) {
+			expiresAt = time.UnixMilli(out.ExpiresAt)
+			backoff = 250 * time.Millisecond
+			continue
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		remaining = time.Until(expiresAt)
+		if remaining <= 0 {
+			cancelSnapshot()
+			return fmt.Errorf("snapshot user write gate renewal failed")
+		}
+		retryAfter := backoff
+		if retryAfter >= remaining {
+			retryAfter = remaining / 2
+		}
+		if retryAfter <= 0 {
+			cancelSnapshot()
+			return fmt.Errorf("snapshot user write gate renewal failed")
+		}
+		retryTimer := time.NewTimer(retryAfter)
+		select {
+		case <-ctx.Done():
+			retryTimer.Stop()
+			return nil
+		case <-retryTimer.C:
+		}
+		if backoff < 2*time.Second {
+			backoff *= 2
+		}
+	}
 }
 
 func (a *Agent) releaseSnapshotUser(ctx context.Context, req protocol.StartSnapshotRequest, freezeToken string) error {
@@ -958,6 +1086,9 @@ func (a *Agent) targetSnapshotPaths(transfer pendingTransfer) (taskRoot, finalPa
 		finalPath = filepath.Join(root, ".stcontrol-conflict-inputs", transfer.WorkflowID, transfer.SnapshotID)
 	} else {
 		return "", "", fmt.Errorf("invalid destination kind")
+	}
+	if root == "" || filepath.Clean(root) == "." || filepath.Dir(filepath.Clean(root)) == filepath.Clean(root) {
+		return "", "", fmt.Errorf("snapshot destination root unavailable")
 	}
 	taskRoot = filepath.Join(root, ".stcontrol-tasks", transfer.WorkflowID, transfer.SnapshotID)
 	return taskRoot, finalPath, nil

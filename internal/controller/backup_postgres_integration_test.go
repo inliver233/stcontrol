@@ -171,6 +171,87 @@ func TestControllerSnapshotWorkflowThroughDurableAgentCommands(t *testing.T) {
 		}
 	})
 
+	t.Run("user return atomically cancels durable workflow", func(t *testing.T) {
+		user := createControllerBackupUser(t, ctx, st, source.ID, "backup-user-return")
+		job := &store.BackupJob{
+			UserID: user.ID, SrcNodeID: source.ID, DstNodeID: target.ID,
+			Trigger: "offline", Status: "running",
+		}
+		if err := st.CreateBackupJob(ctx, job); err != nil {
+			t.Fatalf("create active backup before user return: %v", err)
+		}
+		workflowID, err := newUUID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		operationID, err := newUUID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshotID, err := newUUID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		capabilityID, err := newUUID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		capabilityHash := sha256.Sum256([]byte("user-return-capability"))
+		now := time.Now().UTC()
+		if _, err := st.CreateSnapshotWorkflow(ctx, store.CreateSnapshotWorkflowParams{
+			WorkflowID: workflowID, OperationID: operationID, SnapshotID: snapshotID,
+			CapabilityID: capabilityID, CapabilityHash: capabilityHash[:],
+			LegacyBackupJobID: job.ID, LegacyUserID: user.ID, GlobalUserID: user.GlobalID,
+			SourceNodeID: source.ID, TargetNodeID: target.ID, DestinationKind: "archive",
+			CapabilityExpires: now.Add(5 * time.Minute), Now: now,
+		}); err != nil {
+			t.Fatalf("create active snapshot workflow before user return: %v", err)
+		}
+		if _, err := st.DB.ExecContext(ctx, `
+			UPDATE workflows SET state='snapshotting',lease_owner='11111111-1111-4111-8111-111111111111',
+			  lease_until=now()+interval '1 hour' WHERE id=$1`, workflowID); err != nil {
+			t.Fatalf("lease snapshot workflow before simulated crash: %v", err)
+		}
+		if _, err := st.DB.ExecContext(ctx, `
+			UPDATE workflow_steps SET state='running' WHERE workflow_id=$1 AND step_name='snapshot'`, workflowID); err != nil {
+			t.Fatalf("mark in-flight snapshot step: %v", err)
+		}
+
+		before := controllerBackupCommandCount(t, ctx, st)
+		if err := st.AbortBackupJobAndSnapshotWorkflow(ctx, job.ID, "用户登录,中止备份", now.Add(time.Second)); err != nil {
+			t.Fatalf("atomically cancel backup after durable Agent abort: %v", err)
+		}
+		var jobState, workflowState, errorCode, capabilityState string
+		var activeLeases, unfinishedSteps int
+		if err := st.DB.QueryRowContext(ctx, `
+			SELECT job.status,workflow.state,workflow.error_code,capability.state,
+			       count(*) FILTER (WHERE workflow.lease_owner IS NOT NULL OR workflow.lease_until IS NOT NULL),
+			       count(*) FILTER (WHERE step.state NOT IN ('succeeded','cancelled','failed'))
+			FROM backup_jobs job
+			JOIN workflows workflow ON workflow.id=job.workflow_id
+			JOIN snapshot_transfer_capabilities capability ON capability.workflow_id=workflow.id
+			JOIN workflow_steps step ON step.workflow_id=workflow.id
+			WHERE job.id=$1
+			GROUP BY job.status,workflow.state,workflow.error_code,capability.state`, job.ID).Scan(
+			&jobState, &workflowState, &errorCode, &capabilityState, &activeLeases, &unfinishedSteps,
+		); err != nil {
+			t.Fatalf("query atomic user-return cancellation: %v", err)
+		}
+		if jobState != "aborted" || workflowState != "cancelled" || errorCode != "user_returned" ||
+			capabilityState != "revoked" || activeLeases != 0 || unfinishedSteps != 0 {
+			t.Fatalf("user-return convergence: job=%s workflow=%s code=%s capability=%s leases=%d unfinished=%d",
+				jobState, workflowState, errorCode, capabilityState, activeLeases, unfinishedSteps)
+		}
+
+		restarted := New(cfg, st, secretKey)
+		if err := restarted.executeSnapshotWorkflow(ctx, workflowID); err != nil {
+			t.Fatalf("cancelled workflow replay after Controller restart: %v", err)
+		}
+		if after := controllerBackupCommandCount(t, ctx, st); after != before {
+			t.Fatalf("cancelled workflow replay enqueued Agent commands: before=%d after=%d", before, after)
+		}
+	})
+
 	t.Run("direct unreachable switches once to encrypted relay", func(t *testing.T) {
 		assertControllerRelaySnapshot(
 			t, ctx, st, cfg, secretKey, server, source, target,

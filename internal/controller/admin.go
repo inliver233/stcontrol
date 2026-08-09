@@ -331,6 +331,10 @@ func (s *Server) handleAdminAbortBackup(w http.ResponseWriter, r *http.Request) 
 		protocol.WriteError(w, http.StatusNotFound, "任务不存在")
 		return
 	}
+	if job.Status == "done" || job.Status == "failed" {
+		protocol.WriteError(w, http.StatusConflict, "任务已经结束")
+		return
+	}
 	node, err := s.Store.GetNodeByID(r.Context(), job.SrcNodeID)
 	if err != nil || node == nil {
 		protocol.WriteError(w, http.StatusConflict, "源节点不可用")
@@ -340,7 +344,7 @@ func (s *Server) handleAdminAbortBackup(w http.ResponseWriter, r *http.Request) 
 		protocol.WriteError(w, http.StatusBadGateway, "中止命令未被节点确认")
 		return
 	}
-	if err := s.Store.UpdateBackupJobStatus(r.Context(), job.ID, "aborted", 0, 0, 0, "管理员中止"); err != nil {
+	if err := s.Store.AbortBackupJobAndSnapshotWorkflow(r.Context(), job.ID, "管理员中止", time.Now().UTC()); err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "更新任务状态失败")
 		return
 	}

@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,6 +34,7 @@ const (
 	snapshotRunTargetPSK     = "snapshot-target-controller-credential"
 	snapshotRunRestorePSK    = "snapshot-restore-controller-credential"
 	snapshotRunAdapterPSK    = "snapshot-source-adapter-credential"
+	snapshotRunFreezeToken   = "0123456789abcdef0123456789abcdef0123456789a"
 	snapshotRunRestoreID     = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 )
 
@@ -275,7 +277,9 @@ func TestAbortBackupCancelsSnapshotAndEventuallyReleasesUserGate(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("snapshot did not reach the cancellable stage")
 	}
-	source.AbortBackup(request.JobID)
+	if err := source.AbortBackup(request.JobID); err != nil {
+		t.Fatalf("abort snapshot: %v", err)
+	}
 	select {
 	case err := <-result:
 		if err == nil {
@@ -292,6 +296,90 @@ func TestAbortBackupCancelsSnapshotAndEventuallyReleasesUserGate(t *testing.T) {
 	wantEvents := []string{"adapter:quiesce", "8:drained", "8:snapshotting", "adapter:release"}
 	if got := events.snapshot(); !reflect.DeepEqual(got, wantEvents) {
 		t.Fatalf("cancel event order=%v want=%v", got, wantEvents)
+	}
+}
+
+func TestRunSnapshotStopsWhenGateRenewalCannotBeConfirmed(t *testing.T) {
+	t.Parallel()
+	events := &snapshotRunEvents{}
+	released := make(chan struct{})
+	blocked := make(chan struct{})
+	var releaseOnce sync.Once
+	var renewCalls atomic.Int32
+	adapter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+		if err != nil || r.Method != http.MethodPost ||
+			r.Header.Get(protocol.HeaderAgentID) != "8" || protocol.VerifyRequest(r, snapshotRunAdapterPSK, body) != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/stcontrol/internal/snapshots/quiesce":
+			events.add("adapter:quiesce")
+			protocol.WriteJSON(w, http.StatusOK, snapshotGateResponse{
+				OK: true, Drained: true, FreezeToken: snapshotRunFreezeToken,
+				ExpiresAt: time.Now().Add(4 * time.Second).UnixMilli(),
+			})
+		case "/api/stcontrol/internal/snapshots/renew":
+			renewCalls.Add(1)
+			events.add("adapter:renew-failed")
+			http.Error(w, "renewal unavailable", http.StatusServiceUnavailable)
+		case "/api/stcontrol/internal/snapshots/release":
+			events.add("adapter:release")
+			releaseOnce.Do(func() { close(released) })
+			protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(adapter.Close)
+	controller := newSnapshotRunController(t, events, "snapshotting", blocked)
+	t.Cleanup(controller.Close)
+	target := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(target.Close)
+	source := newSnapshotRunSource(t, t.TempDir(), adapter.URL, controller.URL)
+	userRoot := filepath.Join(source.dataRoot(), "alice")
+	if err := os.MkdirAll(userRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "chat.jsonl"), []byte("must-not-publish"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request, _ := snapshotRunRequest(time.Now().UTC().Add(5 * time.Minute))
+	request.TargetTransferURL = target.URL
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := source.RunSnapshot(context.Background(), request)
+		result <- err
+	}()
+	select {
+	case <-blocked:
+	case err := <-result:
+		t.Fatalf("snapshot failed before the gate-protected stage: %v events=%v", err, events.snapshot())
+	case <-time.After(3 * time.Second):
+		t.Fatal("snapshot did not reach the gate-protected stage")
+	}
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("snapshot succeeded after losing its write-gate lease")
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("snapshot did not stop after the write-gate lease expired")
+	}
+	select {
+	case <-released:
+	case <-time.After(2 * time.Second):
+		t.Fatal("failed gate renewal did not attempt an exact gate release")
+	}
+	if renewCalls.Load() == 0 {
+		t.Fatal("snapshot never tried to renew its bounded write gate")
+	}
+	for _, event := range events.snapshot() {
+		if event == "8:transferring" {
+			t.Fatal("snapshot advanced after its write-gate lease was lost")
+		}
 	}
 }
 
@@ -482,12 +570,25 @@ func newSnapshotRunAdapter(
 				return
 			}
 			events.add("adapter:quiesce")
-			protocol.WriteJSON(w, http.StatusOK, snapshotGateResponse{OK: true, Drained: true, FreezeToken: "exact-freeze-token"})
+			protocol.WriteJSON(w, http.StatusOK, snapshotGateResponse{
+				OK: true, Drained: true, FreezeToken: snapshotRunFreezeToken, ExpiresAt: time.Now().Add(30 * time.Second).UnixMilli(),
+			})
+		case "/api/stcontrol/internal/snapshots/renew":
+			var request snapshotReleaseRequest
+			if json.Unmarshal(body, &request) != nil || request.WorkflowID != testWorkflowID ||
+				request.SnapshotID != testSnapshotID || request.Handle != "alice" ||
+				request.ActivityEpoch != 4 || request.FreezeToken != snapshotRunFreezeToken {
+				http.Error(w, "invalid renew scope", http.StatusConflict)
+				return
+			}
+			protocol.WriteJSON(w, http.StatusOK, map[string]any{
+				"ok": true, "expires_at": time.Now().Add(30 * time.Second).UnixMilli(),
+			})
 		case "/api/stcontrol/internal/snapshots/release":
 			var request snapshotReleaseRequest
 			if json.Unmarshal(body, &request) != nil || request.WorkflowID != testWorkflowID ||
 				request.SnapshotID != testSnapshotID || request.Handle != "alice" ||
-				request.ActivityEpoch != 4 || request.FreezeToken != "exact-freeze-token" {
+				request.ActivityEpoch != 4 || request.FreezeToken != snapshotRunFreezeToken {
 				http.Error(w, "invalid release scope", http.StatusConflict)
 				return
 			}

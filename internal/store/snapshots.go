@@ -929,9 +929,16 @@ func (s *Store) CancelSnapshotWorkflow(ctx context.Context, workflowID, reason s
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := cancelSnapshotWorkflowTx(ctx, tx, workflowID, reason, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func cancelSnapshotWorkflowTx(ctx context.Context, tx *sql.Tx, workflowID, reason string, now time.Time) error {
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE workflows SET state='cancelled', error_code='user_returned', error_summary=$2,
-		  cleanup_state='pending', updated_at=$3, finished_at=$3
+		  cleanup_state='pending', lease_owner=NULL, lease_until=NULL, updated_at=$3, finished_at=$3
 		WHERE id=$1 AND state NOT IN ('succeeded','cancelled','failed')`, workflowID, nullIfEmpty(reason), now); err != nil {
 		return err
 	}
@@ -945,5 +952,5 @@ func (s *Store) CancelSnapshotWorkflow(ctx context.Context, workflowID, reason s
 		WHERE workflow_id=$1 AND state='prepared'`, workflowID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }

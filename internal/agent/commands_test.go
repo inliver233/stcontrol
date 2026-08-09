@@ -63,6 +63,32 @@ func TestRuntimeStateRejectsCorruptFile(t *testing.T) {
 	}
 }
 
+func TestAbortBackupCancellationSurvivesAgentRestart(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	agent, err := New(&config.AgentConfig{DataDir: dataDir})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := agent.AbortBackup(77); err != nil {
+		t.Fatalf("AbortBackup: %v", err)
+	}
+	if !agent.backupCancelled(77) {
+		t.Fatal("live Agent forgot the cancelled job")
+	}
+
+	reloaded, err := New(&config.AgentConfig{DataDir: dataDir})
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !reloaded.backupCancelled(77) {
+		t.Fatal("restarted Agent would run a command cancelled while it was offline")
+	}
+	if err := reloaded.AbortBackup(77); err != nil {
+		t.Fatalf("idempotent AbortBackup: %v", err)
+	}
+}
+
 func TestConflictEvidencePagesDoNotEnterGeneralCommandCache(t *testing.T) {
 	t.Parallel()
 	if shouldCacheCommandResult("read_conflict_evidence_page") {

@@ -211,7 +211,9 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		if err := json.Unmarshal(plaintext, &payload); err != nil || payload.JobID <= 0 {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
 		}
-		a.AbortBackup(payload.JobID)
+		if err := a.AbortBackup(payload.JobID); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "backup_cancel_failed"})
+		}
 		return true, marshalSafeResult(safeCommandResult{OK: true})
 	case "provision_user":
 		var payload protocol.ProvisionUserRequest

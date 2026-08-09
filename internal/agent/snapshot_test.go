@@ -27,7 +27,7 @@ const (
 	testSnapshotID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 )
 
-func TestTransferCapabilityIsScopedPersistentAndOneUse(t *testing.T) {
+func TestTransferCapabilityIsScopedSingleUseAndCrashRecoverable(t *testing.T) {
 	t.Parallel()
 	dataDir := t.TempDir()
 	a, err := New(&config.AgentConfig{DataDir: dataDir, NodeID: 9})
@@ -55,8 +55,11 @@ func TestTransferCapabilityIsScopedPersistentAndOneUse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := reloaded.consumeTransfer(testSnapshotID, testWorkflowID, token, time.Now()); err != nil {
+		t.Fatalf("exact interrupted transfer was not re-armed after restart: %v", err)
+	}
 	if _, err := reloaded.consumeTransfer(testSnapshotID, testWorkflowID, token, time.Now()); err == nil {
-		t.Fatal("transfer capability replay was accepted after restart")
+		t.Fatal("recovered transfer capability was accepted twice")
 	}
 	newDigest := sha256.Sum256([]byte("new-token"))
 	transfer.CapabilityHash = hex.EncodeToString(newDigest[:])
@@ -94,6 +97,53 @@ func TestFailedTransferRequiresAReplacedCapability(t *testing.T) {
 	transfer.CapabilityHash = hex.EncodeToString(replacement[:])
 	if err := a.prepareTransfer(transfer); err != nil {
 		t.Fatalf("replacement capability rejected: %v", err)
+	}
+}
+
+func TestRestartRearmsInterruptedTransferAndRemovesPartialTargetTask(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	backupDir := filepath.Join(t.TempDir(), "backups")
+	newTarget := func() *Agent {
+		target, err := New(&config.AgentConfig{
+			Role: "storage", NodeID: 9, DataDir: dataDir, BackupDir: backupDir,
+		})
+		if err != nil {
+			t.Fatalf("New target: %v", err)
+		}
+		return target
+	}
+	token := "interrupted-transfer-token"
+	digest := sha256.Sum256([]byte(token))
+	transfer := pendingTransfer{
+		WorkflowID: testWorkflowID, SnapshotID: testSnapshotID, GlobalUserID: 70, TargetNodeID: 9,
+		Handle: "alice", DestinationKind: "archive", SourceNodeID: 8, ActivityEpoch: 4,
+		CapabilityHash: hex.EncodeToString(digest[:]), ExpiresAt: time.Now().Add(time.Minute),
+	}
+	target := newTarget()
+	if err := target.prepareTransfer(transfer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.consumeTransfer(testSnapshotID, testWorkflowID, token, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	taskRoot, _, err := target.targetSnapshotPaths(target.state.Transfers[testSnapshotID])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(taskRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(taskRoot, "incoming.tar.zst"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := newTarget()
+	if _, err := os.Stat(taskRoot); !os.IsNotExist(err) {
+		t.Fatalf("partial task survived target restart: %v", err)
+	}
+	if _, err := restarted.consumeTransfer(testSnapshotID, testWorkflowID, token, time.Now()); err != nil {
+		t.Fatalf("exact interrupted capability was not recoverable: %v", err)
 	}
 }
 

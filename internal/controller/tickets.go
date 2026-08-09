@@ -96,7 +96,7 @@ func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 				protocol.WriteError(w, http.StatusConflict, "节点正在结束备份，请稍后重试")
 				return
 			}
-			if err := s.Store.UpdateBackupJobStatus(ctx, job.ID, "aborted", 0, 0, 0, "用户登录,中止备份"); err != nil {
+			if err := s.Store.AbortBackupJobAndSnapshotWorkflow(ctx, job.ID, "用户登录,中止备份", time.Now().UTC()); err != nil {
 				protocol.WriteError(w, http.StatusInternalServerError, "备份状态更新失败")
 				return
 			}

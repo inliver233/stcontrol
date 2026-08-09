@@ -3,7 +3,13 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
+)
+
+var (
+	ErrInvalidBackupJob  = errors.New("invalid backup job")
+	ErrBackupJobTerminal = errors.New("backup job is already terminal")
 )
 
 // CreateBackupJob 创建备份任务。
@@ -47,6 +53,56 @@ func (s *Store) UpdateBackupJobStatus(ctx context.Context, id int64, status stri
 		id, status, nullableInt64(dataVersion), nullableInt64(bytes),
 		nullableInt32(int32(fileCount)), nullableString(errMsg), startedAt, finishedAt)
 	return err
+}
+
+// AbortBackupJobAndSnapshotWorkflow records the user-facing job cancellation
+// and revokes the durable snapshot workflow in the same serializable commit.
+// This prevents a Controller crash between the two facts from resuming a
+// snapshot after the Agent has already reopened the user's write gate.
+func (s *Store) AbortBackupJobAndSnapshotWorkflow(
+	ctx context.Context,
+	id int64,
+	reason string,
+	now time.Time,
+) error {
+	if id <= 0 {
+		return ErrInvalidBackupJob
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if len(reason) > 512 {
+		reason = reason[:512]
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var status string
+	var workflowID sql.NullString
+	if err := tx.QueryRowContext(ctx, `
+		SELECT status,workflow_id::text FROM backup_jobs WHERE id=$1 FOR UPDATE`, id).
+		Scan(&status, &workflowID); err != nil {
+		if err == sql.ErrNoRows {
+			return ErrInvalidBackupJob
+		}
+		return err
+	}
+	if status == "done" || status == "failed" {
+		return ErrBackupJobTerminal
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE backup_jobs SET status='aborted',error=$2,finished_at=COALESCE(finished_at,$3)
+		WHERE id=$1`, id, nullableString(reason), now); err != nil {
+		return err
+	}
+	if workflowID.Valid && workflowID.String != "" {
+		if err := cancelSnapshotWorkflowTx(ctx, tx, workflowID.String, reason, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // FindRunningBackupForUserOnNode 查询某用户在某节点上是否有 running 备份任务。

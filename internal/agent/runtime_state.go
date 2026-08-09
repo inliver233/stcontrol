@@ -36,6 +36,7 @@ type agentRuntimeState struct {
 	ActivityOwnership       map[string]activityOwnershipClaim     `json:"activity_ownership,omitempty"`
 	OwnershipTakeovers      map[string]ownershipTakeoverOperation `json:"ownership_takeovers,omitempty"`
 	ActivityLeases          agentActivityLeaseState               `json:"activity_leases"`
+	CancelledBackups        map[int64]time.Time                   `json:"cancelled_backups,omitempty"`
 }
 
 type agentActivityLeaseState struct {
@@ -74,6 +75,32 @@ type pendingTransfer struct {
 	Receipt         *protocol.SnapshotTransferReceipt `json:"receipt,omitempty"`
 }
 
+// Snapshot commands and their one-use transfer capabilities expire after at
+// most eight hours. Keep cancellation tombstones substantially longer so an
+// offline/restarted Agent cannot execute a previously queued start command.
+const backupCancellationRetention = 24 * time.Hour
+
+func validatePendingTransferState(transfer pendingTransfer, nodeID int64) error {
+	validState := transfer.State == "prepared" || transfer.State == "consumed" ||
+		transfer.State == "failed" || transfer.State == "published"
+	validKind := transfer.DestinationKind == "archive" || transfer.DestinationKind == "hot_standby" ||
+		transfer.DestinationKind == "restore" || transfer.DestinationKind == "conflict_input"
+	if !validUUID(transfer.WorkflowID) || !validUUID(transfer.SnapshotID) || transfer.GlobalUserID <= 0 ||
+		transfer.TargetNodeID <= 0 || (nodeID > 0 && transfer.TargetNodeID != nodeID) ||
+		!validHandle(transfer.Handle) || !validKind || transfer.SourceNodeID <= 0 ||
+		transfer.ActivityEpoch <= 0 || !validCapabilityHash(transfer.CapabilityHash) ||
+		transfer.ExpiresAt.IsZero() || transfer.UpdatedAt.IsZero() || !validState ||
+		(transfer.State == "published" && transfer.Receipt == nil) ||
+		(transfer.State != "published" && transfer.Receipt != nil) {
+		return fmt.Errorf("invalid snapshot transfer state")
+	}
+	if transfer.RelayTaskID != "" && (!validUUID(transfer.RelayTaskID) ||
+		transfer.RelayPrivateKey == "" || transfer.RelayPublicKey == "") {
+		return fmt.Errorf("invalid relay transfer state")
+	}
+	return nil
+}
+
 func (a *Agent) runtimeStatePath() string {
 	directory := a.Cfg.DataDir
 	if directory == "" {
@@ -100,11 +127,44 @@ func (a *Agent) loadRuntimeState() error {
 	if a.state.Transfers == nil {
 		a.state.Transfers = make(map[string]pendingTransfer)
 	}
+	for snapshotID, transfer := range a.state.Transfers {
+		if snapshotID != transfer.SnapshotID || validatePendingTransferState(transfer, a.Cfg.NodeID) != nil {
+			return fmt.Errorf("invalid persisted snapshot transfer")
+		}
+		if transfer.State == "consumed" {
+			// A consumed transfer can only still exist at process startup when the
+			// receive handler died before persisting failed/published. Re-arm the
+			// exact still-valid capability; the retry recreates the task directory
+			// and remains bound to the same workflow/snapshot/scope.
+			if transfer.ExpiresAt.After(time.Now().UTC()) {
+				transfer.State = "prepared"
+			} else {
+				transfer.State = "failed"
+			}
+			transfer.UpdatedAt = time.Now().UTC()
+			a.state.Transfers[snapshotID] = transfer
+			if taskRoot, _, err := a.targetSnapshotPaths(transfer); err == nil {
+				removeTaskDirectory(taskRoot)
+			}
+		}
+	}
 	if a.state.ActivityOwnership == nil {
 		a.state.ActivityOwnership = make(map[string]activityOwnershipClaim)
 	}
 	if a.state.OwnershipTakeovers == nil {
 		a.state.OwnershipTakeovers = make(map[string]ownershipTakeoverOperation)
+	}
+	if a.state.CancelledBackups == nil {
+		a.state.CancelledBackups = make(map[int64]time.Time)
+	}
+	now := time.Now().UTC()
+	for jobID, cancelledAt := range a.state.CancelledBackups {
+		if jobID <= 0 || cancelledAt.IsZero() || cancelledAt.After(now.Add(5*time.Minute)) {
+			return fmt.Errorf("invalid persisted cancelled backup job")
+		}
+		if cancelledAt.Before(now.Add(-backupCancellationRetention)) {
+			delete(a.state.CancelledBackups, jobID)
+		}
 	}
 	for handle, claim := range a.state.ActivityOwnership {
 		if handle != claim.Handle || validateActivityOwnershipClaim(claim) != nil {
@@ -420,6 +480,30 @@ func (a *Agent) snapshotReceipt(workflowID, snapshotID string) (*protocol.Snapsh
 	}
 	receipt := *transfer.Receipt
 	return &receipt, true
+}
+
+func (a *Agent) backupCancelled(jobID int64) bool {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	_, ok := a.state.CancelledBackups[jobID]
+	return ok
+}
+
+func (a *Agent) persistBackupCancellation(jobID int64, now time.Time) error {
+	if jobID <= 0 || now.IsZero() {
+		return fmt.Errorf("invalid backup cancellation")
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if _, exists := a.state.CancelledBackups[jobID]; !exists {
+		a.state.CancelledBackups[jobID] = now.UTC()
+	}
+	for id, cancelledAt := range a.state.CancelledBackups {
+		if cancelledAt.Before(now.Add(-backupCancellationRetention)) {
+			delete(a.state.CancelledBackups, id)
+		}
+	}
+	return a.saveRuntimeStateLocked()
 }
 
 func (a *Agent) saveRuntimeStateLocked() error {
