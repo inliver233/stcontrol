@@ -244,6 +244,142 @@ func TestDirectSnapshotConnectivityFailureIsClassifiedForRelayFallback(t *testin
 	}
 }
 
+func TestUserSnapshotBoundaryExcludesNodeGlobalsAndCarriesPrivatePluginData(t *testing.T) {
+	t.Parallel()
+	tavernDir := t.TempDir()
+	dataRoot := filepath.Join(tavernDir, "data")
+	privateFiles := map[string][]byte{
+		"chats/session.jsonl":                              []byte(`{"mes":"private chat"}`),
+		"extensions/example-plugin/settings.json":          []byte(`{"enabled":true}`),
+		"user/extensions/example-plugin/private-data.json": []byte(`{"state":"private"}`),
+		"secrets.json": []byte(`{"api_key":"private"}`),
+	}
+	for relative, content := range privateFiles {
+		path := filepath.Join(dataRoot, "alice", filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	nodeGlobalDirectories := []string{
+		"_storage", "_uploads", "_cache", "_exports", "_webpack", "_global", "_stcontrol",
+		"default-user", "default-template", "announcements", "forum_data", "public_characters", "system-monitor", "backups",
+	}
+	sourceGlobal := make(map[string][]byte, len(nodeGlobalDirectories))
+	for _, name := range nodeGlobalDirectories {
+		content := []byte("source-global:" + name)
+		path := filepath.Join(dataRoot, name, "node-global.json")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sourceGlobal[name] = content
+	}
+
+	a := &Agent{Cfg: &config.AgentConfig{TavernDir: tavernDir, DataDir: t.TempDir(), NodeID: 8}}
+	immutableDir := filepath.Join(t.TempDir(), "immutable")
+	req := protocol.StartSnapshotRequest{
+		WorkflowID: testWorkflowID, SnapshotID: testSnapshotID, GlobalUserID: 70,
+		Handle: "alice", ActivityEpoch: 4, TargetNodeID: 9, DestinationKind: "archive",
+	}
+	manifest, totalBytes, err := a.copySnapshotTree(context.Background(), req, immutableDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPaths := []string{
+		"chats/session.jsonl",
+		"extensions/example-plugin/settings.json",
+		"secrets.json",
+		"user/extensions/example-plugin/private-data.json",
+	}
+	if len(manifest.Files) != len(wantPaths) {
+		t.Fatalf("manifest files=%+v", manifest.Files)
+	}
+	var wantBytes int64
+	for index, wantPath := range wantPaths {
+		if manifest.Files[index].Path != wantPath {
+			t.Fatalf("manifest[%d]=%q want %q", index, manifest.Files[index].Path, wantPath)
+		}
+		wantBytes += int64(len(privateFiles[wantPath]))
+	}
+	if totalBytes != wantBytes {
+		t.Fatalf("snapshot bytes=%d want %d", totalBytes, wantBytes)
+	}
+	for name := range sourceGlobal {
+		if _, err := os.Stat(filepath.Join(immutableDir, name, "node-global.json")); !os.IsNotExist(err) {
+			t.Fatalf("node-global directory %q entered immutable snapshot: %v", name, err)
+		}
+	}
+
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "snapshot.tar.zst")
+	if err := createSnapshotArchive(context.Background(), archivePath, immutableDir, manifestJSON, manifest.Files); err != nil {
+		t.Fatal(err)
+	}
+	archiveDigest, err := hashFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	targetDataRoot := filepath.Join(t.TempDir(), "data")
+	targetGlobal := make(map[string][]byte, len(nodeGlobalDirectories))
+	for _, name := range nodeGlobalDirectories {
+		content := []byte("target-global:" + name)
+		path := filepath.Join(targetDataRoot, name, "node-global.json")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		targetGlobal[name] = content
+	}
+	finalPath := filepath.Join(targetDataRoot, "alice")
+	if err := os.MkdirAll(finalPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(finalPath, "stale.txt"), []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	taskRoot := filepath.Join(t.TempDir(), "publish-task")
+	if err := os.MkdirAll(taskRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := extractVerifyAndPublish(
+		context.Background(), archivePath, taskRoot, finalPath,
+		pendingTransfer{
+			WorkflowID: testWorkflowID, SnapshotID: testSnapshotID, GlobalUserID: 70,
+			TargetNodeID: 9, Handle: "alice", DestinationKind: "archive",
+			SourceNodeID: 8, ActivityEpoch: 4,
+		}, archiveDigest[:], func() error { return nil },
+	); err != nil {
+		t.Fatal(err)
+	}
+	for relative, want := range privateFiles {
+		got, err := os.ReadFile(filepath.Join(finalPath, filepath.FromSlash(relative)))
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("private file %q=%q err=%v", relative, got, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(finalPath, "stale.txt")); !os.IsNotExist(err) {
+		t.Fatalf("stale user data survived atomic publication: %v", err)
+	}
+	for name, want := range targetGlobal {
+		got, err := os.ReadFile(filepath.Join(targetDataRoot, name, "node-global.json"))
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("target node-global directory %q changed: got=%q err=%v", name, got, err)
+		}
+	}
+}
+
 func TestSnapshotArchiveVerificationAndPublish(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

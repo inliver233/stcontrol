@@ -21,9 +21,18 @@ import (
 // 酒馆 data 目录下需要排除的非用户目录。
 var excludedDirs = map[string]bool{
 	"_storage": true, "_uploads": true, "_cache": true, "_exports": true,
-	"_webpack": true, "_global": true, "default-user": true,
+	"_webpack": true, "_global": true, "_stcontrol": true,
+	"default-user": true, "default-template": true,
 	"announcements": true, "forum_data": true, "public_characters": true,
 	"system-monitor": true, "backups": true,
+}
+
+// isManagedUserDirectory mirrors SillyTavern's canonical handle namespace.
+// The explicit list documents known node-global directories, while the handle
+// check fails closed for new underscore/space-delimited global directories so
+// they cannot silently become user inventory or capacity facts.
+func isManagedUserDirectory(name string) bool {
+	return validHandle(name) && !excludedDirs[name]
 }
 
 var errInvalidAdapterInventory = errors.New("invalid adapter inventory")
@@ -163,11 +172,8 @@ func (a *Agent) scanExistingUsersFromDiskPage(
 			continue
 		}
 		name := e.Name()
-		if excludedDirs[name] || strings.HasPrefix(name, ".") {
+		if !isManagedUserDirectory(name) {
 			continue
-		}
-		if !safeInventoryString(name, 128) {
-			return protocol.ScanExistingPageResult{}, fmt.Errorf("invalid inventory directory name")
 		}
 		names = append(names, name)
 	}
@@ -283,7 +289,7 @@ func (a *Agent) scanUserActivityAndSize() ([]protocol.UserStatus, int64, error) 
 			continue
 		}
 		name := e.Name()
-		if excludedDirs[name] || strings.HasPrefix(name, ".") {
+		if !isManagedUserDirectory(name) {
 			continue
 		}
 		info, err := e.Info()

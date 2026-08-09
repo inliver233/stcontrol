@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -202,6 +203,56 @@ func TestExecuteScanExistingReturnsOnlySafeSummary(t *testing.T) {
 	}
 	if string(raw) == "" || jsonContainsKey(raw, "path") {
 		t.Fatalf("unsafe result=%s", raw)
+	}
+}
+
+func TestFallbackInventoryAndActivityExcludeNodeGlobalData(t *testing.T) {
+	t.Parallel()
+	tavernDir := t.TempDir()
+	dataRoot := filepath.Join(tavernDir, "data")
+	privateData := []byte("private plugin settings")
+	privatePath := filepath.Join(dataRoot, "alice", "extensions", "example-plugin", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(privatePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(privatePath, privateData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// These names cover the current SillyTavern-online node-global data roots.
+	// future_global proves that a newly introduced non-handle directory also
+	// fails closed before the explicit list is updated.
+	nodeGlobalDirectories := []string{
+		"_storage", "_uploads", "_cache", "_exports", "_webpack", "_global", "_stcontrol",
+		"default-user", "default-template", "announcements", "forum_data", "public_characters", "system-monitor", "backups",
+		".hidden", "future_global",
+	}
+	for _, name := range nodeGlobalDirectories {
+		path := filepath.Join(dataRoot, name, "must-not-be-inventoried.json")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, bytes.Repeat([]byte(name), 8), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a := &Agent{Cfg: &config.AgentConfig{AgentPSK: "agent-secret", TavernDir: tavernDir}}
+	page, err := a.ScanExistingUsersPage(context.Background(), protocol.ScanExistingPageRequest{
+		Limit: protocol.MaxAccountInventoryPageUsers,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Users) != 1 || page.Users[0].Handle != "alice" || page.TotalUsers != 1 {
+		t.Fatalf("global directories leaked into inventory: %+v", page)
+	}
+	statuses, allocatedBytes, err := a.scanUserActivityAndSize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].Handle != "alice" || allocatedBytes != int64(len(privateData)) {
+		t.Fatalf("global directories leaked into activity/capacity: users=%+v bytes=%d", statuses, allocatedBytes)
 	}
 }
 
