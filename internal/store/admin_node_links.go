@@ -160,7 +160,7 @@ func (s *Store) CompleteAdminNodeVerification(
 		occurred_at,actor_type,actor_id,action,target_type,target_id,operation_id,
 		controller_generation,input_digest,outcome,detail
 		) VALUES ($9,'admin',$1::text,'verify-node-admin','node',$2::text,$3,$4,$5,$6,
-		jsonb_build_object('local_handle',$7,'permission_version',$8))`, p.AdminID, p.NodeID,
+		jsonb_build_object('local_handle',$7::text,'permission_version',$8::bigint))`, p.AdminID, p.NodeID,
 		p.OperationID, generation, p.RequestDigest, resultOutcome, p.LocalHandle,
 		p.PermissionVersion, p.Now); err != nil {
 		return nil, err

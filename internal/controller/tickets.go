@@ -108,11 +108,10 @@ func (s *Server) handleLoginRedirect(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusInternalServerError, "安全随机数生成失败")
 		return
 	}
-	sessionID, err := newUUID()
-	if err != nil {
-		protocol.WriteError(w, http.StatusInternalServerError, "安全随机数生成失败")
-		return
-	}
+	// The operation ID is the idempotency key. Derive the local session fence
+	// deterministically so a response-loss retry reaches the Store with the
+	// same request instead of conflicting with a newly generated session ID.
+	sessionID := deriveWorkflowOperationID(req.OperationID, "login-handoff-session")
 	secret := deriveLoginHandoffSecret(s.secretKey, jti)
 	secretHash := sha256.Sum256(secret)
 	ticketTTL := time.Duration(s.Cfg.Ticket.TTLSec) * time.Second

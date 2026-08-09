@@ -103,7 +103,7 @@ func (s *Store) CreateAdminHandoff(ctx context.Context, p CreateAdminHandoffPara
 		occurred_at,actor_type,actor_id,action,target_type,target_id,operation_id,
 		controller_generation,outcome,detail
 		) VALUES ($6,'admin',$1::text,'node-admin-handoff','node',$2::text,$3,$4,
-		'issued',jsonb_build_object('expires_at',$5))`, p.AdminID, p.NodeID,
+		'issued',jsonb_build_object('expires_at',$5::timestamptz))`, p.AdminID, p.NodeID,
 		p.OperationID, handoff.ControllerGeneration, handoff.ExpiresAt, p.Now); err != nil {
 		return AdminHandoff{}, err
 	}
