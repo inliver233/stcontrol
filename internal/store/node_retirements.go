@@ -411,7 +411,7 @@ func (s *Store) RetryNodeRetirementItem(
 		UPDATE node_retirement_items item SET state=$2,error_code=$3,next_attempt_at=$4,
 		  workflow_id=CASE WHEN $5 THEN NULL ELSE workflow_id END,
 		  target_node_id=CASE WHEN $5 THEN NULL ELSE target_node_id END,
-		  attempt=CASE WHEN $2='waiting_offline' THEN attempt ELSE attempt+1 END,updated_at=$6
+		  attempt=CASE WHEN $2='waiting_offline' THEN item.attempt ELSE item.attempt+1 END,updated_at=$6
 		FROM node_retirement_operations operation
 		WHERE item.id=$1 AND operation.id=item.retirement_id
 		  AND operation.state IN ('migrating','retry_wait','blocked')
