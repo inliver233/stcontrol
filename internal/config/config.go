@@ -28,6 +28,25 @@ type ControllerConfig struct {
 	Relay            RelayConfig                    `yaml:"relay"`
 	ControllerBackup ControllerDisasterBackupPolicy `yaml:"controller_backup"`
 	ImportScan       ImportScanPolicy               `yaml:"import_scan"`
+	AISupervisor     AISupervisorPolicy             `yaml:"ai_supervisor"`
+}
+
+// AISupervisorPolicy controls the AI 监管层 (read-only advisory layer, Phase 0).
+// It is fully optional: when disabled (default) the system behaves exactly as
+// before. When enabled, a background worker builds redacted observations and
+// asks a user-configured LLM provider for structured advisory JSON; every
+// advisory is validated against allowlists/hard gates and never executes
+// anything by itself. Model/URL/key are entirely user-defined (Cherry Studio
+// style); the API key comes only from STCONTROL_AI_API_KEY env.
+type AISupervisorPolicy struct {
+	Enabled         bool   `yaml:"enabled"`           // default false; AI off = zero behavior difference
+	Mode            string `yaml:"mode"`              // shadow|advisory|auto_low_risk; default shadow
+	Provider        string `yaml:"provider"`          // openai|openai_responses|anthropic|gemini|openai_compatible
+	BaseURL         string `yaml:"base_url"`          // provider endpoint (user-defined)
+	Model           string `yaml:"model"`             // pinned model snapshot (user-defined)
+	APIKeyEnv       string `yaml:"api_key_env"`       // env var name holding the API key; default STCONTROL_AI_API_KEY
+	TimeoutMS       int    `yaml:"timeout_ms"`        // per-call timeout; default 5000
+	InspectEverySec int    `yaml:"inspect_every_sec"` // monitoring inspection cadence; default 600
 }
 
 // ControllerDisasterBackupPolicy controls automatic backup of the Controller's
@@ -203,6 +222,10 @@ func DefaultController() *ControllerConfig {
 		},
 		ImportScan: ImportScanPolicy{
 			Enabled: false, IntervalSec: 6 * 3600, MaxNodesPerRun: 2,
+		},
+		AISupervisor: AISupervisorPolicy{
+			Enabled: false, Mode: "shadow", Provider: "openai_compatible",
+			APIKeyEnv: "STCONTROL_AI_API_KEY", TimeoutMS: 5000, InspectEverySec: 600,
 		},
 	}
 }
