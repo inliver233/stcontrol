@@ -1,13 +1,19 @@
 package main
 
 import (
+	"archive/tar"
 	"context"
+	"encoding/base64"
 	"flag"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 
 	"stcontrol/internal/config"
 	"stcontrol/internal/controller"
@@ -19,11 +25,16 @@ func main() {
 	cfgPath := flag.String("config", "controller.yaml", "配置文件路径")
 	passive := flag.Bool("passive", false, "作为被动副控等待 PostgreSQL 领导锁，取得后自动提升")
 	promote := flag.Bool("promote", false, "把本次启动标记为显式恢复（每次取得领导锁都会提升世代）")
+	recoverKey := flag.String("recover-master-key", "", "从总控灾备归档解出主密钥恢复信封并输出 base64 主密钥（Round 61）")
 	flag.Parse()
 
 	cfg := config.DefaultController()
 	if err := config.Load(*cfgPath, cfg); err != nil {
 		log.Fatalf("加载配置失败: %v", err)
+	}
+	if *recoverKey != "" {
+		runMasterKeyRecovery(*recoverKey, cfg)
+		return
 	}
 	if err := controller.ValidateRuntimeConfig(cfg); err != nil {
 		log.Fatalf("总控监听配置无效: %v", err)
@@ -121,4 +132,67 @@ func main() {
 	if err := srv.Run(runCtx); err != nil && runCtx.Err() == nil {
 		log.Fatalf("服务退出: %v", err)
 	}
+}
+// runMasterKeyRecovery extracts the master-key recovery envelope from a
+// controller disaster backup archive and, with the recovery passphrase,
+// prints the unwrapped base64 master key (Round 61).  The archive is a
+// tar.zst containing master_key_recovery.json plus the pg dump and config.
+func runMasterKeyRecovery(archivePath string, cfg *config.ControllerConfig) {
+	passphraseEnv := "CONTROLLER_RECOVERY_PASSPHRASE"
+	if cfg != nil && cfg.ControllerBackup.RecoveryPassphraseEnv != "" {
+		passphraseEnv = cfg.ControllerBackup.RecoveryPassphraseEnv
+	}
+	passphrase := os.Getenv(passphraseEnv)
+	if len(passphrase) < 8 {
+		log.Fatalf("必须通过环境变量 %s 提供至少 8 位的恢复口令", passphraseEnv)
+	}
+	archive, err := os.Open(archivePath)
+	if err != nil {
+		log.Fatalf("打开灾备归档失败: %v", err)
+	}
+	defer archive.Close()
+	info, err := archive.Stat()
+	if err != nil || info.Size() <= 0 {
+		log.Fatalf("无效的灾备归档")
+	}
+	decoder, err := zstd.NewReader(archive, zstd.WithDecoderMaxMemory(256<<20), zstd.WithDecoderMaxWindow(256<<20))
+	if err != nil {
+		log.Fatalf("解压灾备归档失败: %v", err)
+	}
+	defer decoder.Close()
+	tarReader := tar.NewReader(decoder)
+	var found []byte
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatalf("读取灾备归档失败: %v", err)
+		}
+		if header.Typeflag != tar.TypeReg || header.Name != "master_key_recovery.json" {
+			continue
+		}
+		if header.Size <= 0 || header.Size > 1<<20 {
+			log.Fatalf("恢复信封大小非法")
+		}
+		data, err := io.ReadAll(io.LimitReader(tarReader, header.Size+1))
+		if err != nil || int64(len(data)) != header.Size {
+			log.Fatalf("读取恢复信封失败")
+		}
+		found = data
+		break
+	}
+	if found == nil {
+		log.Fatalf("归档中不存在 master_key_recovery.json；该备份未包含主密钥恢复材料")
+	}
+	envelope, err := crypto.DecodeMasterKeyRecoveryJSON(found)
+	if err != nil {
+		log.Fatalf("解析恢复信封失败: %v", err)
+	}
+	masterKey, err := crypto.OpenMasterKeyRecovery(passphrase, envelope)
+	if err != nil {
+		log.Fatalf("解出主密钥失败（口令错误或信封损坏）: %v", err)
+	}
+	fmt.Printf("%s\n", base64.StdEncoding.EncodeToString(masterKey))
 }

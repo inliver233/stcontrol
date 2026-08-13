@@ -151,6 +151,11 @@
 - **Round 26 管理员可改存储修复目标**：迁移 0045 给 storage_repair_tasks 增加 `preferred_target_node_id`；新增 `SetStorageRepairPreferredTarget`（校验目标是纯存储节点、0 清除、无待办任务返回 ErrNoRows）；`ClaimAndCreateStorageRepair` 目标选择 ORDER BY 优先管理员指定节点（仍强制健康/容量/兼容门禁，不合格自动回落确定性选择）；新增 `POST /api/admin/users/{uuid}/storage-repair-target` 管理端点与 `GetUserByUUID` store 方法。测试覆盖校验/持久化/清除/无任务/非法输入。
 - **R16 老账号自动扫描（可选）**：新增 `import_scan` 配置（默认关闭、6h 间隔、每轮最多 2 节点）；`ListUnscannedComputeNodes` 列出从未扫描或最近一次 review 批次早于窗口的在线计算节点；`importScanReconciler` 后台协程用与管理员按钮完全相同的幂等扫描路径（scanAccountInventory + operationID 派生）执行无人值守扫描，失败下轮重试。默认关闭保持管理员完全控制。测试覆盖候选筛选与空结果。
 
+
+## 2026-08-14 flash 分支阶段记录（Round 61 主密钥恢复材料）
+
+- **Round 61 主密钥恢复材料**：新增 `internal/crypto/master_key_recovery.go`——用恢复口令（scrypt N=2^15 派生 AES-256-GCM）把控制面主密钥密封为可 JSON 序列化的信封（随机 salt、带格式版本与 KDF 参数白名单校验、GCM 认证防篡改）。总控灾备备份在配置 `controller_backup.recovery_passphrase_env`（环境变量名）后，把 `master_key_recovery.json` 写入归档并把信封摘要记入 manifest（归档内绝不存明文密钥；未配置则完全不含密钥材料）。`cmd/controller --recover-master-key <archive>` 用 `CONTROLLER_RECOVERY_PASSPHRASE` 解出 base64 主密钥，供丢失密钥后重建/恢复演练。测试覆盖密封/解封回环、JSON 往返、错误口令/篡改/弱口令/非法 KDF 参数拒绝。
+
 ## 完成判定规则
 
 每一行只有同时满足以下条件才可改为 `完成`：

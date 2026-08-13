@@ -34,11 +34,16 @@ type ControllerConfig struct {
 // own control-plane state (postgres dump + control snapshot + keys/config) to a
 // pure-storage node.
 type ControllerDisasterBackupPolicy struct {
-	Enabled        bool  `yaml:"enabled"`
-	IntervalSec    int   `yaml:"interval_sec"` // default 86400 (24h)
-	RetryMax       int   `yaml:"retry_max"`    // default 3
-	KeepLatestOnly bool  `yaml:"keep_latest_only"`
-	PgDump         bool  `yaml:"pg_dump"`      // include postgres dump; default true (graceful if pg_dump missing)
+	Enabled        bool   `yaml:"enabled"`
+	IntervalSec    int    `yaml:"interval_sec"` // default 86400 (24h)
+	RetryMax       int    `yaml:"retry_max"`    // default 3
+	KeepLatestOnly bool   `yaml:"keep_latest_only"`
+	PgDump         bool   `yaml:"pg_dump"`      // include postgres dump; default true (graceful if pg_dump missing)
+	// RecoveryPassphraseEnv names an environment variable holding the out-of-band
+	// passphrase used to seal the master key into the backup (Round 61).  Empty
+	// means the backup omits master-key recovery material (key stays out of the
+	// archive entirely).
+	RecoveryPassphraseEnv string `yaml:"recovery_passphrase_env,omitempty"`
 }
 
 // ImportScanPolicy controls the unattended legacy-account import scanner

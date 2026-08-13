@@ -20,6 +20,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"stcontrol/internal/config"
+	controlcrypto "stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
@@ -29,6 +30,7 @@ const controllerBackupLeaseTTL = 6 * time.Hour
 const controllerBackupManifestName = "controller_manifest.json"
 const controllerBackupPgDumpName = "controller_postgres_dump.sql"
 const controllerBackupConfigName = "controller.yaml"
+const controllerBackupRecoveryName = "master_key_recovery.json"
 
 func (s *Server) controllerBackupPolicy() config.ControllerDisasterBackupPolicy {
 	if s == nil || s.Cfg == nil || (s.Cfg.ControllerBackup == (config.ControllerDisasterBackupPolicy{})) { return config.DefaultController().ControllerBackup }
@@ -113,6 +115,30 @@ func (s *Server) executeControllerBackup(ctx context.Context, run *store.Control
 	configPath := ""
 	if s.ConfigPath != "" { if info, statErr := os.Stat(s.ConfigPath); statErr == nil && !info.IsDir() { configPath = s.ConfigPath } }
 
+	// Round 61: if the operator configured a recovery passphrase, seal the
+	// master key into the archive so a lost key can be unwrapped without ever
+	// storing it in plaintext.  The manifest only records a digest proving the
+	// envelope is present.
+	recoveryPath := ""
+	recoveryDigest := ""
+	if s.Cfg != nil && s.Cfg.ControllerBackup.RecoveryPassphraseEnv != "" {
+		passphrase := os.Getenv(s.Cfg.ControllerBackup.RecoveryPassphraseEnv)
+		if len(passphrase) >= 8 {
+			envelope, sealErr := controlcrypto.SealMasterKeyRecovery(passphrase, s.secretKey)
+			if sealErr != nil {
+				fail("recovery_seal_failed")
+				return fmt.Errorf("seal master key recovery envelope: %w", sealErr)
+			}
+			recoveryJSON, _ := controlcrypto.EncodeMasterKeyRecoveryJSON(envelope)
+			recoveryPath = filepath.Join(tempDir, controllerBackupRecoveryName)
+			if err := os.WriteFile(recoveryPath, recoveryJSON, 0o600); err != nil {
+				fail("recovery_seal_failed")
+				return fmt.Errorf("write master key recovery envelope: %w", err)
+			}
+			recoveryDigest = controlcrypto.HashMasterKeyRecovery(envelope)
+		}
+	}
+
 	manifestState := map[string]any{
 		"operation_id": claimed.OperationID,
 		"controller_generation": claimed.ControllerGeneration,
@@ -120,12 +146,13 @@ func (s *Server) executeControllerBackup(ctx context.Context, run *store.Control
 		"created_at": now.Format(time.RFC3339Nano),
 		"db_dump": map[string]any{"enabled": pgDumpPath != "", "name": controllerBackupPgDumpName},
 		"config_file": configPath != "",
+		"master_key_recovery": map[string]any{"enabled": recoveryPath != "", "digest": recoveryDigest},
 	}
 	manifestJSON, err := json.Marshal(manifestState)
 	if err != nil { fail("manifest_failed"); return err }
 
 	archivePath := filepath.Join(tempDir, "controller_backup.tar.zst")
-	if err := buildControllerBackupArchive(ctx, archivePath, pgDumpPath, configPath, manifestJSON); err != nil { fail("archive_failed"); return err }
+	if err := buildControllerBackupArchive(ctx, archivePath, pgDumpPath, configPath, manifestJSON, recoveryPath); err != nil { fail("archive_failed"); return err }
 	archiveDigest, err := controllerFileSHA256(archivePath)
 	if err != nil { fail("archive_hash_failed"); return err }
 	archiveSize, err := controllerFileSize(archivePath)
@@ -192,7 +219,7 @@ func runPgDump(ctx context.Context, dsn, outPath string) error {
 
 // buildControllerBackupArchive writes a tar.zst archive containing the
 // manifest plus (optionally) the postgres dump and the controller config file.
-func buildControllerBackupArchive(ctx context.Context, archivePath, pgDumpPath, configPath string, manifestJSON []byte) error {
+func buildControllerBackupArchive(ctx context.Context, archivePath, pgDumpPath, configPath string, manifestJSON []byte, recoveryPath string) error {
 	archive, err := os.OpenFile(archivePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil { return err }
 	encoder, err := zstd.NewWriter(archive, zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(3)))
@@ -201,7 +228,11 @@ func buildControllerBackupArchive(ctx context.Context, archivePath, pgDumpPath, 
 	fail := func(cause error) error { _ = tw.Close(); _ = encoder.Close(); _ = archive.Close(); _ = os.Remove(archivePath); return cause }
 	if err := tw.WriteHeader(&tar.Header{Name: controllerBackupManifestName, Mode: 0o400, Size: int64(len(manifestJSON)), Typeflag: tar.TypeReg}); err != nil { return fail(err) }
 	if _, err := tw.Write(manifestJSON); err != nil { return fail(err) }
-	for name, path := range map[string]string{controllerBackupPgDumpName: pgDumpPath, controllerBackupConfigName: configPath} {
+	for name, path := range map[string]string{
+		controllerBackupPgDumpName: pgDumpPath,
+		controllerBackupConfigName: configPath,
+		controllerBackupRecoveryName: recoveryPath,
+	} {
 		if path == "" { continue }
 		info, err := os.Stat(path)
 		if err != nil || info.IsDir() { return fail(fmt.Errorf("controller backup payload missing: %s", path)) }
