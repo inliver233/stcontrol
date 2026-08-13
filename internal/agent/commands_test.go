@@ -487,6 +487,56 @@ func TestPasswordCommandPassesCommandOperationToAdapter(t *testing.T) {
 	}
 }
 
+func TestPasswordRemovalCommandForwardsRemoveFlagWithoutHashMaterial(t *testing.T) {
+	t.Parallel()
+	operationID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	var adapterRequest protocol.SetPasswordRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/stcontrol/internal/users/password" {
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&adapterRequest); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	}))
+	defer server.Close()
+	a, err := New(&config.AgentConfig{
+		TavernURL: server.URL, AgentPSK: "agent-secret", NodeID: 12, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Removal intents carry handle + Remove=true and no password material.
+	command := encryptedTestCommand(t, a.Cfg.AgentPSK, "set_password", []byte(`{"handle":"alice","remove":true}`))
+	command.OperationID = operationID
+	succeeded, result := a.executeCommand(context.Background(), command)
+	if !succeeded || !adapterRequest.Remove || adapterRequest.Handle != "alice" ||
+		adapterRequest.OperationID != operationID {
+		t.Fatalf("succeeded=%v request=%+v result=%s", succeeded, adapterRequest, result)
+	}
+}
+
+func TestPasswordRemovalWithoutRemoveFlagStillRequiresHashMaterial(t *testing.T) {
+	t.Parallel()
+	a, err := New(&config.AgentConfig{
+		AgentPSK: "agent-secret", NodeID: 12, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := encryptedTestCommand(t, a.Cfg.AgentPSK, "set_password", []byte(`{"handle":"alice"}`))
+	command.OperationID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	succeeded, result := a.executeCommand(context.Background(), command)
+	var summary safeCommandResult
+	if err := json.Unmarshal(result, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if succeeded || summary.Code != "invalid_command_payload" {
+		t.Fatalf("succeeded=%v code=%q result=%s", succeeded, summary.Code, result)
+	}
+}
+
 func TestProvisionCommandPassesStableRegistrationAndDeliveryOperations(t *testing.T) {
 	t.Parallel()
 	operationID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"

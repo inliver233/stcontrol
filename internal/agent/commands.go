@@ -251,8 +251,12 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		return true, marshalSafeResult(safeCommandResult{OK: true, LocalUserID: restored.LocalUserID})
 	case "set_password":
 		var payload protocol.SetPasswordRequest
-		if err := json.Unmarshal(plaintext, &payload); err != nil || payload.Handle == "" ||
-			payload.PasswordHash == "" || payload.PasswordSalt == "" || payload.Version <= 0 {
+		if err := json.Unmarshal(plaintext, &payload); err != nil || payload.Handle == "" {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		// Removal intents carry only handle + Remove=true (no hash material).
+		// Set intents must carry full password material.
+		if !payload.Remove && (payload.PasswordHash == "" || payload.PasswordSalt == "" || payload.Version <= 0) {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
 		}
 		payload.OperationID = command.OperationID
