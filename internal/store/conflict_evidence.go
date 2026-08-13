@@ -127,7 +127,7 @@ func (s *Store) ClaimConflictEvidenceTask(
 		  AND (source.evidence_state='pending'
 		    OR (source.evidence_state='retry_wait' AND source.evidence_next_attempt_at<=$3)
 		    OR (source.evidence_state='capturing' AND source.evidence_lease_until<=$3)
-		    OR (source.evidence_state='failed' AND source.evidence_updated_at<=$4))
+		    OR (source.evidence_state='failed' AND source.evidence_updated_at<=$5))
 		RETURNING source.conflict_id::text,source.evidence_attempt`, evidenceID, workerID, now, now.Add(leaseTTL), now.Add(-ConflictEvidenceFailedRearmWindow)).
 		Scan(&conflictID, &attempt)
 	if err == sql.ErrNoRows {
