@@ -22,9 +22,9 @@ export default function AccountPage() {
   const load = async () => {
     try {
       const [result, imported] = await Promise.all([api.identities(), api.importClaims()])
-      setIdentities(result.identities)
+      setIdentities(result.identities ?? [])
       setCanUnbind(result.can_unbind)
-      setClaims(imported.claims)
+      setClaims(imported.claims ?? [])
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '加载登录方式失败')
     } finally {

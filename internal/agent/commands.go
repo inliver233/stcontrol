@@ -38,6 +38,7 @@ type safeCommandResult struct {
 	RelayPublicKey     string                              `json:"relay_public_key,omitempty"`
 	ReplicaIntegrity   *protocol.ReplicaIntegrityReceipt   `json:"replica_integrity,omitempty"`
 	ReplicaCleanup     *protocol.DeleteReplicaReceipt      `json:"replica_cleanup,omitempty"`
+	ControllerBackup   *protocol.ControllerBackupReceipt   `json:"controller_backup,omitempty"`
 }
 
 // StartCommandLoop maintains the Agent-initiated control channel. It never
@@ -393,6 +394,22 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "snapshot_receipt_unavailable"})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, Snapshot: receipt})
+	case "receive_controller_backup":
+		var payload protocol.PrepareControllerBackupRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "storage" ||
+			!validUUID(payload.OperationID) || payload.ControllerGeneration <= 0 ||
+			!validCapabilityHash(payload.CapabilityHash) || !payload.ExpiresAt.After(time.Now().UTC()) ||
+			payload.ExpiresAt.After(time.Now().UTC().Add(9*time.Hour)) ||
+			(payload.BackupKind != "full" && payload.BackupKind != "pg_dump" && payload.BackupKind != "control_snapshot") {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		if payload.ExpectedSHA256 != "" && !validCapabilityHash(payload.ExpectedSHA256) {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		if err := a.prepareControllerBackup(payload); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "controller_backup_prepare_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true})
 	case "verify_replica_integrity", "verify_replica_integrity_v2":
 		var payload protocol.VerifyReplicaIntegrityRequest
 		if err := json.Unmarshal(plaintext, &payload); err != nil {

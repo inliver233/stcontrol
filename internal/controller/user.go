@@ -1,12 +1,14 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
 
 	"stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
+	"stcontrol/internal/store"
 )
 
 // handleMe 当前用户信息。
@@ -60,8 +62,8 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusBadRequest, "请先绑定密码登录方式")
 		return
 	}
-	// 校验旧密码
-	if user.PasswordHash.Valid && !crypto.CheckPassword(user.PasswordHash.String, req.OldPassword) {
+	// 校验旧密码。同步收敛完成前，前一版本 hash 仍作为回退，避免分裂窗口。
+	if !s.passwordMatches(r.Context(), user, req.OldPassword) {
 		protocol.WriteError(w, http.StatusForbidden, "原密码错误")
 		return
 	}
@@ -97,4 +99,25 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "node_sync": "active", "synced_nodes": synced, "pending_nodes": 0,
 	})
+}
+
+// passwordMatches reports whether the supplied cleartext satisfies the user's
+// password identity. The control-plane verifier is checked first; while the
+// password-sync saga is incomplete (a node has not yet converged to the newest
+// material) the stored immediately-previous verifier is also accepted so an
+// offline node does not create a split where only some locations recognize the
+// old password. Once all nodes converge or the fallback window expires the
+// previous verifier is dropped automatically.
+func (s *Server) passwordMatches(ctx context.Context, user *store.User, password string) bool {
+	if user == nil || !user.PasswordHash.Valid {
+		return false
+	}
+	if crypto.CheckPassword(user.PasswordHash.String, password) {
+		return true
+	}
+	previous, err := s.Store.PasswordFallbackHash(ctx, user.GlobalID, time.Now().UTC())
+	if err != nil || previous == "" {
+		return false
+	}
+	return crypto.CheckPassword(previous, password)
 }

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"stcontrol/internal/config"
 	"stcontrol/internal/protocol"
@@ -128,5 +129,75 @@ func TestConflictResolutionDecisionPagesArePrivateAndImmutable(t *testing.T) {
 	}
 	if _, err := agent.RunConflictEvidenceTransfer(context.Background(), protocol.StartConflictEvidenceTransferRequest{}); err == nil {
 		t.Fatal("invalid conflict evidence transfer was accepted")
+	}
+}
+
+func newTestConflictResolutionAgent(t *testing.T) *Agent {
+	t.Helper()
+	root := t.TempDir()
+	agent, err := New(&config.AgentConfig{
+		Role: "compute", NodeID: 8, TavernDir: filepath.Join(root, "tavern"),
+		DataDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.state.ControlMode.Mode = protocol.NodeModeManaged
+	return agent
+}
+
+func TestConflictResolutionPublishAllowedWithoutActiveLease(t *testing.T) {
+	t.Parallel()
+	agent := newTestConflictResolutionAgent(t)
+	if err := agent.conflictResolutionPublishAllowedLocked("alice", time.Now().UTC()); err != nil {
+		t.Fatalf("no-lease publish refused: %v", err)
+	}
+	// An expired lease must not block publication either.
+	agent.state.ActivityLeases.Leases = []protocol.ActivityLeaseConfirmation{{
+		Handle: "alice", SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		ActivityEpoch: 4, ControllerGeneration: 1,
+		LeaseExpiresAt: time.Now().Add(-time.Minute).UnixMilli(),
+	}}
+	if err := agent.conflictResolutionPublishAllowedLocked("alice", time.Now().UTC()); err != nil {
+		t.Fatalf("expired-lease publish refused: %v", err)
+	}
+}
+
+func TestConflictResolutionPublishBlockedByActiveWriterLease(t *testing.T) {
+	t.Parallel()
+	agent := newTestConflictResolutionAgent(t)
+	agent.state.ActivityLeases.Leases = []protocol.ActivityLeaseConfirmation{{
+		Handle: "alice", SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		ActivityEpoch: 4, ControllerGeneration: 1,
+		LeaseExpiresAt: time.Now().Add(time.Minute).UnixMilli(),
+	}}
+	if err := agent.conflictResolutionPublishAllowedLocked("alice", time.Now().UTC()); err == nil {
+		t.Fatal("publish with a live writer lease was accepted")
+	}
+	// A lease for a different handle is irrelevant and must not block.
+	agent.state.ActivityLeases.Leases[0].Handle = "bob"
+	if err := agent.conflictResolutionPublishAllowedLocked("alice", time.Now().UTC()); err != nil {
+		t.Fatalf("unrelated lease blocked publish: %v", err)
+	}
+}
+
+func TestConflictResolutionPublishAllowsOnlyMatchingLocalSessionEpoch(t *testing.T) {
+	t.Parallel()
+	agent := newTestConflictResolutionAgent(t)
+	agent.state.ActivityOwnership = map[string]activityOwnershipClaim{
+		"alice": {Handle: "alice", OwnerNodeID: 8, ActivityEpoch: 4},
+	}
+	agent.state.ActivityLeases.Leases = []protocol.ActivityLeaseConfirmation{{
+		Handle: "alice", SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		ActivityEpoch: 4, ControllerGeneration: 1,
+		LeaseExpiresAt: time.Now().Add(time.Minute).UnixMilli(),
+	}}
+	if err := agent.conflictResolutionPublishAllowedLocked("alice", time.Now().UTC()); err != nil {
+		t.Fatalf("publish matching the current local session epoch refused: %v", err)
+	}
+	// A newer session epoch means new writes since resolution capture: refuse.
+	agent.state.ActivityLeases.Leases[0].ActivityEpoch = 5
+	if err := agent.conflictResolutionPublishAllowedLocked("alice", time.Now().UTC()); err == nil {
+		t.Fatal("publish over a newer writer session epoch was accepted")
 	}
 }

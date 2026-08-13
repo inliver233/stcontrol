@@ -174,6 +174,8 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	for _, takeover := range req.ControlMode.ConfirmedTakeovers {
 		acknowledgedTakeovers = append(acknowledgedTakeovers, takeover.OperationID)
 	}
+	// Node quota policy: echo the administrator's expected quota + version so
+	// the Agent can validate and apply it, then report the effective value back.
 	protocol.WriteJSON(w, http.StatusOK, protocol.HeartbeatResponse{
 		OK: true, ControllerGeneration: decision.ControllerGeneration,
 		DesiredMode: decision.DesiredMode, ModeGeneration: decision.ModeGeneration,
@@ -181,6 +183,8 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		CredentialRotation:             rotation,
 		ActivityLeaseConfirmedAt:       req.ActivityObservedAt,
 		ActivityLeaseConfirmations:     leaseConfirmations,
+		ExpectedDiskQuotaBytes:         node.ExpectedDiskQuotaBytes,
+		QuotaPolicyVersion:             node.QuotaPolicyVersion,
 	})
 }
 

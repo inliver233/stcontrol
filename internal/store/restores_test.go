@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -227,6 +228,8 @@ func TestCompleteRestoreWorkflowAtomicallyPromotesVerifiedTarget(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"state"}).AddRow("recovery_available"))
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(4)))
+	mock.ExpectQuery(`SELECT user_id, writer_node_id`).WithArgs(int64(70)).
+		WillReturnRows(sqlmock.NewRows([]string{"user_id"}))
 	mock.ExpectQuery(`(?s)SELECT copy.snapshot_id::text FROM replica_copies copy.*copy.published_at=\$4`).
 		WithArgs(int64(70), int64(10), "source-snapshot", sourcePublished).
 		WillReturnRows(sqlmock.NewRows([]string{"snapshot_id"}).AddRow("source-snapshot"))
@@ -278,6 +281,48 @@ func TestCompleteRestoreWorkflowAtomicallyPromotesVerifiedTarget(t *testing.T) {
 
 	if err := st.CompleteRestoreWorkflow(context.Background(), p); err != nil {
 		t.Fatal(err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestCompleteRestoreWorkflowRefusesPublishOverActiveWriterLease(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 8, 15, 5, 0, 0, time.UTC)
+	p := CompleteRestoreWorkflowParams{
+		WorkflowID: "workflow", RestoreSnapshotID: "restore-snapshot",
+		CapabilityHash: bytes.Repeat([]byte{2}, 32), ManifestSHA256: bytes.Repeat([]byte{4}, 32),
+		ArchiveSHA256: bytes.Repeat([]byte{5}, 32), FileCount: 3, TotalBytes: 120, Now: now,
+	}
+	sourcePublished := now.Add(-2 * time.Hour)
+	operationID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT workflow.state,global_user.status,legacy.status.*FROM workflows workflow`).
+		WithArgs(p.WorkflowID, p.RestoreSnapshotID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"state", "global_status", "legacy_status", "operation_id", "user_id", "legacy_user_id",
+			"source_node_id", "target_node_id", "home_node_id", "generation", "source_snapshot_id", "published_at",
+		}).AddRow("publishing", "active", "active", operationID, int64(70), int64(7), int64(10), int64(9),
+			int64(8), int64(4), "source-snapshot", sourcePublished))
+	mock.ExpectQuery(`SELECT state FROM user_data_faults`).WithArgs(int64(70)).
+		WillReturnRows(sqlmock.NewRows([]string{"state"}).AddRow("recovery_available"))
+	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
+		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(4)))
+	// The user came back online while the transfer was in flight: an unexpired
+	// active lease must abort the publish before any replica is promoted.
+	mock.ExpectQuery(`SELECT user_id, writer_node_id`).WithArgs(int64(70)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"user_id", "writer_node_id", "session_id", "activity_epoch", "state",
+			"lease_expires_at", "last_page_heartbeat_at", "last_request_at",
+			"in_flight_reads", "in_flight_writes", "controller_generation", "updated_at",
+		}).AddRow(int64(70), int64(11), "sess-1", int64(9), "active",
+			now.Add(15*time.Minute), now, now, 1, 0, int64(7), now))
+	mock.ExpectRollback()
+
+	if err := st.CompleteRestoreWorkflow(context.Background(), p); !errors.Is(err, ErrReplicaTakeoverLeaseActive) {
+		t.Fatalf("err=%v, want ErrReplicaTakeoverLeaseActive", err)
 	}
 	assertMockExpectations(t, mock)
 }

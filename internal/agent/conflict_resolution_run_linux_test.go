@@ -141,6 +141,45 @@ func TestConflictResolutionCommandsPublishAtomicallyAndReplayReceipt(t *testing.
 	assertConflictResolutionCommand(t, a, "publish_conflict_resolution", operationID, publishPayload, false)
 }
 
+func TestConflictResolutionPublishIsSerializedByReplicaMutationMu(t *testing.T) {
+	const operationID = "81000000-0000-4000-8000-0000000000aa"
+	root := t.TempDir()
+	a, err := New(&config.AgentConfig{
+		Role: "compute", NodeID: 8, TavernDir: filepath.Join(root, "tavern"),
+		DataDir: filepath.Join(root, "agent-state"), AgentPSK: "conflict-resolution-agent-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A concurrent snapshot/cleanup command holds replicaMutationMu; a
+	// conflict-resolution publish must wait for it before touching the user's
+	// home directory, even though its plan is valid.
+	a.replicaMutationMu.Lock()
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		close(started)
+		_, _ = a.publishConflictResolution(context.Background(), operationID)
+		close(finished)
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("publish goroutine did not start")
+	}
+	select {
+	case <-finished:
+		t.Fatal("publish returned while replicaMutationMu was still held")
+	case <-time.After(100 * time.Millisecond):
+	}
+	a.replicaMutationMu.Unlock()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("publish did not proceed after the replica mutation mutex was released")
+	}
+}
+
 func assertConflictResolutionCommand(
 	t *testing.T,
 	a *Agent,

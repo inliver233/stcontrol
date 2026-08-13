@@ -23,6 +23,7 @@ import (
 type Server struct {
 	Cfg                   *config.ControllerConfig
 	Store                 *store.Store
+	ConfigPath            string // 总控配置文件路径（灾备备份纳入控制面快照）
 	secretKey             []byte // 用户凭据 AES 密钥
 	workflowWorkerID      string
 	snapshotSlots         chan struct{}
@@ -42,6 +43,11 @@ type Server struct {
 
 	oauthHTTP         *http.Client
 	dummyPasswordHash string
+
+	// R21/R22: HTTP rate limiting and login lockout (in-memory, single active controller)
+	rateLimiter   *rateLimiter
+	loginLimiter  *rateLimiter
+	loginLockout  *loginLockout
 }
 
 type session struct {
@@ -80,6 +86,9 @@ func New(cfg *config.ControllerConfig, st *store.Store, secretKey []byte) *Serve
 			},
 		},
 		dummyPasswordHash: dummyPasswordHash,
+		rateLimiter:  newRateLimiter(120, time.Minute, 100_000),
+		loginLimiter: newRateLimiter(20, time.Minute, 100_000),
+		loginLockout: newLoginLockout(5, 30*time.Second, 15*time.Minute),
 	}
 }
 
@@ -167,6 +176,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.independentReconciliationReconciler(ctx)
 	go s.nodeRetirementReconciler(ctx)
 	go s.userDataFaultReconciler(ctx)
+	go s.controllerBackupReconciler(ctx)
 
 	controlServer := newControlHTTPServer(s.Cfg, s.Handler())
 	servers := []*http.Server{controlServer}

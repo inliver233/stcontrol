@@ -444,7 +444,7 @@ func (s *Store) ListVisibleProtectionAlerts(ctx context.Context, limit int, now 
 		return nil, err
 	}
 	defer rows.Close()
-	var alerts []ProtectionAlert
+	alerts := make([]ProtectionAlert, 0)
 	for rows.Next() {
 		var alert ProtectionAlert
 		if err := rows.Scan(

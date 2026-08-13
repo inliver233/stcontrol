@@ -37,6 +37,9 @@ type agentRuntimeState struct {
 	OwnershipTakeovers      map[string]ownershipTakeoverOperation `json:"ownership_takeovers,omitempty"`
 	ActivityLeases          agentActivityLeaseState               `json:"activity_leases"`
 	CancelledBackups        map[int64]time.Time                   `json:"cancelled_backups,omitempty"`
+	ControllerBackups       map[string]pendingControllerBackup    `json:"controller_backups,omitempty"`
+	AppliedQuotaVersion     int64                                  `json:"applied_quota_version,omitempty"`
+	RuntimeDiskQuotaBytes   int64                                  `json:"runtime_disk_quota_bytes,omitempty"` // 0 = 继承 agent.yaml
 }
 
 type agentActivityLeaseState struct {
@@ -170,6 +173,9 @@ func (a *Agent) loadRuntimeState() error {
 	}
 	if a.state.CancelledBackups == nil {
 		a.state.CancelledBackups = make(map[int64]time.Time)
+	}
+	if a.state.ControllerBackups == nil {
+		a.state.ControllerBackups = make(map[string]pendingControllerBackup)
 	}
 	now := time.Now().UTC()
 	for jobID, cancelledAt := range a.state.CancelledBackups {

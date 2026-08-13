@@ -100,15 +100,38 @@ export default function ConflictPage() {
 
   useEffect(() => {
     if (!resolution || resolution.state === 'failed' || resolution.state === 'succeeded') return
-    const timer = window.setInterval(() => {
+    let timer: number | undefined
+    const terminalStates = ['resolved', 'succeeded', 'failed', 'cancelled']
+    const poll = () => {
       void api.conflictResolutionStatus(resolution.operation_id)
-        .then(setResolution)
-        .catch(() => {
-          window.clearInterval(timer)
-          navigate('/login', { replace: true, state: { message: '冲突处理已完成，请重新登录。' } })
+        .then(status => {
+          setResolution(status)
+          // A genuine 200 response reports the resolution as complete.
+          if (status.state === 'succeeded') {
+            if (timer !== undefined) window.clearInterval(timer)
+            navigate('/login', { replace: true, state: { message: '冲突处理已完成，请重新登录。' } })
+          }
         })
-    }, 2000)
-    return () => window.clearInterval(timer)
+        .catch((err: any) => {
+          const statusCode = typeof err?.status === 'number' ? err.status : 0
+          // Authentication/session loss: leave the page like any other login expiry.
+          if (statusCode === 401 || statusCode === 403) {
+            if (timer !== undefined) window.clearInterval(timer)
+            navigate('/login', { replace: true, state: { message: '冲突处理已完成，请重新登录。' } })
+            return
+          }
+          const reported = err?.data?.state as string | undefined
+          // Another 4xx is only terminal when the server says the case is done.
+          if (statusCode >= 400 && statusCode < 500 && reported && terminalStates.includes(reported)) {
+            if (timer !== undefined) window.clearInterval(timer)
+            setError(err?.message || '冲突处理无法继续。')
+            return
+          }
+          // Network or transient 5xx errors: keep polling so we don't lose the job.
+        })
+    }
+    timer = window.setInterval(poll, 2000)
+    return () => { if (timer !== undefined) window.clearInterval(timer) }
   }, [navigate, resolution])
 
   const updateDecision = (path: string, sourceNodeID: number, preserveBoth: boolean) => {

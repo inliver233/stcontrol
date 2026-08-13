@@ -162,6 +162,11 @@ export interface ConflictResolutionDecision {
   action: 'use_source' | 'preserve_both'
 }
 
+export interface ApiError extends Error {
+  status?: number
+  data?: any
+}
+
 export interface ConflictResolutionStatus {
   operation_id: string
   state: 'preparing' | 'publishing' | 'retrying' | 'failed' | 'succeeded'
@@ -187,11 +192,15 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   })
   if (!resp.ok) {
     let msg = `请求失败 (${resp.status})`
+    let data: any
     try {
-      const data = await resp.json()
+      data = await resp.json()
       if (data.error) msg = data.error
     } catch { /* ignore */ }
-    throw new Error(msg)
+    const err = new Error(msg) as ApiError
+    err.status = resp.status
+    err.data = data
+    throw err
   }
   return resp.json()
 }

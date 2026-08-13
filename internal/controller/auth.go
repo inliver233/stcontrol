@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
 )
 
@@ -32,6 +31,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	user, err := s.Store.GetUserByUsername(ctx, handle)
 	if err != nil || user == nil {
+		if s.loginLockout != nil {
+			s.loginLockout.recordFailure(handle)
+		}
 		protocol.WriteError(w, http.StatusForbidden, "用户名或密码错误")
 		return
 	}
@@ -39,11 +41,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusForbidden, "账号已被禁用")
 		return
 	}
-	if !user.PasswordHash.Valid || !crypto.CheckPassword(user.PasswordHash.String, req.Password) {
+	if !s.passwordMatches(r.Context(), user, req.Password) {
+		if s.loginLockout != nil {
+			s.loginLockout.recordFailure(handle)
+		}
 		protocol.WriteError(w, http.StatusForbidden, "用户名或密码错误")
 		return
 	}
 
+	if s.loginLockout != nil {
+		s.loginLockout.recordSuccess(handle)
+	}
 	if err := s.createUserSession(w, r, user); err != nil {
 		protocol.WriteError(w, http.StatusServiceUnavailable, "创建会话失败")
 		return

@@ -39,6 +39,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /agent/tickets/redeem", a.handleAdapterTicketRedeem(false))
 	mux.HandleFunc("POST /agent/tickets/redeem-admin", a.handleAdapterTicketRedeem(true))
 	mux.HandleFunc("POST "+a.snapshotTransferRoute()+"/{snapshotID}", a.handleSnapshotTransfer)
+	mux.HandleFunc("POST "+a.controllerBackupTransferRoute()+"/{operationID}", a.handleControllerBackupTransfer)
 	return mux
 }
 
@@ -92,6 +93,62 @@ func (a *Agent) handleSnapshotTransfer(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		protocol.WriteJSON(w, http.StatusUnprocessableEntity, protocol.APIError{
 			Error: "快照传输未通过验证", Code: "snapshot_transfer_rejected",
+		})
+		return
+	}
+	protocol.WriteJSON(w, http.StatusOK, receipt)
+}
+
+// controllerBackupTransferRoute returns the storage-scoped, capability-bound
+// ingress used by the Controller to stream its own disaster backup archive.
+func (a *Agent) controllerBackupTransferRoute() string {
+	basePath := ""
+	if a != nil && a.Cfg != nil && a.Cfg.TransferPublicURL != "" {
+		if parsed, err := url.Parse(a.Cfg.TransferPublicURL); err == nil {
+			basePath = strings.TrimRight(parsed.Path, "/")
+		}
+	}
+	return path.Clean("/" + strings.TrimLeft(basePath+"/transfer/v1/controller-backups", "/"))
+}
+
+func (a *Agent) handleControllerBackupTransfer(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.URL.RawQuery != "" || r.ContentLength <= 0 || r.ContentLength > maxSnapshotBytes ||
+		r.Header.Get("Content-Type") != "application/zstd" {
+		protocol.WriteJSON(w, http.StatusBadRequest, protocol.APIError{
+			Error: "总控备份传输请求无效", Code: "invalid_controller_backup_transfer",
+		})
+		return
+	}
+	operationID := r.PathValue("operationID")
+	archiveDigest := r.Header.Get("X-Archive-Sha256")
+	authorization := r.Header.Get("Authorization")
+	if !validUUID(operationID) || !archiveDigestPattern.MatchString(archiveDigest) ||
+		!strings.HasPrefix(authorization, "Bearer ") || len(authorization) <= len("Bearer ") ||
+		len(authorization) > len("Bearer ")+512 || strings.TrimSpace(authorization) != authorization {
+		protocol.WriteJSON(w, http.StatusBadRequest, protocol.APIError{
+			Error: "总控备份传输请求无效", Code: "invalid_controller_backup_transfer",
+		})
+		return
+	}
+	select {
+	case a.transferSlots <- struct{}{}:
+		defer func() { <-a.transferSlots }()
+	default:
+		w.Header().Set("Retry-After", "5")
+		protocol.WriteJSON(w, http.StatusTooManyRequests, protocol.APIError{
+			Error: "总控备份传输并发已满", Code: "controller_backup_transfer_busy",
+		})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxSnapshotBytes)
+	receipt, err := a.ReceiveControllerBackup(
+		r.Context(), operationID, strings.TrimPrefix(authorization, "Bearer "), archiveDigest, r.Body,
+	)
+	if err != nil {
+		protocol.WriteJSON(w, http.StatusUnprocessableEntity, protocol.APIError{
+			Error: "总控备份传输未通过验证", Code: "controller_backup_transfer_rejected",
 		})
 		return
 	}

@@ -208,6 +208,12 @@ func (a *Agent) publishConflictResolution(ctx context.Context, operationID strin
 	if runtime.GOOS != "linux" || !validUUID(operationID) {
 		return protocol.ConflictResolutionReceipt{}, fmt.Errorf("invalid conflict resolution publication")
 	}
+	// Hold the replica publication mutex for the entire publication: conflict
+	// resolution promotes a new authoritative home copy, so it must be
+	// serialized against replica cleanup and snapshot workflows that mutate the
+	// same user directory namespace.
+	a.replicaMutationMu.Lock()
+	defer a.replicaMutationMu.Unlock()
 	plan, planRoot, err := a.readConflictResolutionPlan(operationID)
 	if err != nil {
 		return protocol.ConflictResolutionReceipt{}, err
@@ -274,6 +280,9 @@ func (a *Agent) publishConflictResolution(ctx context.Context, operationID strin
 		return protocol.ConflictResolutionReceipt{}, err
 	}
 	digest := sha256.Sum256(entriesJSON)
+	if err := a.conflictResolutionPublishAllowedLocked(plan.Handle, time.Now().UTC()); err != nil {
+		return protocol.ConflictResolutionReceipt{}, err
+	}
 	finalPath := filepath.Join(dataRoot, plan.Handle)
 	if err := publishSnapshotDirectory(staging, finalPath, taskRoot); err != nil {
 		return protocol.ConflictResolutionReceipt{}, err
@@ -291,6 +300,36 @@ func (a *Agent) publishConflictResolution(ctx context.Context, operationID strin
 		return protocol.ConflictResolutionReceipt{}, err
 	}
 	return receipt, nil
+}
+
+// conflictResolutionPublishAllowedLocked is evaluated while replicaMutationMu
+// and stateMu are held (via the same activity-lease state that activity_leases.go
+// maintains). Publishing the resolved directory would overwrite the user's live
+// home copy, so it is refused whenever the user holds an unexpired confirmed
+// writer lease for the same handle unless that lease is the current local
+// session (this node owns it and the confirmed epoch matches the claim).
+func (a *Agent) conflictResolutionPublishAllowedLocked(handle string, now time.Time) error {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if a.state.ControlMode.Mode != protocol.NodeModeManaged {
+		return fmt.Errorf("conflict resolution publication requires managed mode")
+	}
+	var localEpoch int64
+	if claim, ok := a.state.ActivityOwnership[handle]; ok && claim.OwnerNodeID == a.Cfg.NodeID {
+		localEpoch = claim.ActivityEpoch
+	}
+	for _, lease := range a.state.ActivityLeases.Leases {
+		if lease.Handle != handle || lease.LeaseExpiresAt <= now.UnixMilli() {
+			continue
+		}
+		// A live writer lease is tolerated only when it matches the current
+		// local session epoch; a newer or foreign writer session must not be
+		// clobbered by the resolution publish.
+		if localEpoch == 0 || lease.ActivityEpoch != localEpoch {
+			return fmt.Errorf("conflict resolution publication blocked by active writer lease")
+		}
+	}
+	return nil
 }
 
 func (a *Agent) conflictResolutionPlanRoot(operationID string) (string, error) {

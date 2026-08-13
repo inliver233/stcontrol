@@ -5,6 +5,9 @@ controller.docker.yaml
 certs/
 .env
 *.local
+.live-secrets.cmd
+livecheck.log
+*.log
 
 # Build outputs
 /bin/

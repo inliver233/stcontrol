@@ -78,7 +78,54 @@
 - 本阶段以 Online 提交 `b98803b` 和 stcontrol 的 `internal/agent/activity_leases.go`、`internal/controller/agent.go`、`internal/store/leases.go`、`internal/store/handoffs.go` 关闭 R04：Controller 返回 PostgreSQL 精确截止时间与因果观察时间，Agent 对确认快照做有界校验、原子持久化、回滚拒绝和重启重投，adapter 只接收签名固定路由并逐请求围栏。`internal/agent/process_e2e_test.go` 在真实 PostgreSQL 上启动 Controller、两个 Agent 和两个真实 adapter，杀死 A Agent 保留 A 浏览器/adapter，覆盖 grace、提前围栏、自然到期、B 接管、A/B 同时写（A=409、B=200）、精确写日志、logout 与 Agent 重启；该进程测试 194.85 秒通过。Online 六个 stcontrol 套件 29/29 通过；连接真实 PostgreSQL 的 `go test ./... -count=1` 全部通过（Agent 225.395s、Controller 50.597s、Store 19.579s），`go vet ./...`、`go build ./cmd/controller ./cmd/agent` 通过。
 - 本阶段以 Online 提交 `f5674b5` 的 `src/stcontrol.js`、`src/endpoints/stcontrol.js` 及 adapter/routes 测试和 stcontrol 的 `internal/agent/snapshot.go`、`internal/agent/runtime_state.go`、`internal/store/backups.go` 关闭 R06。Online 六个 stcontrol 套件 30/30 通过，其中实际扩展路径的读写在途计数、单用户隔离、过期自动开门及精确 renew/release 均有断言。`internal/controller/snapshot_process_postgres_integration_linux_test.go` 在 Linux 真实启动 Controller 与两个 Agent 子进程并连接隔离 PostgreSQL，注入 source gate 后崩溃、target 上传中崩溃和同目录重启，最终只发布一份逐字节一致 immutable archive；`internal/controller/backup_postgres_integration_test.go` 另证明用户回归取消在数据库单事务收敛且新 Controller 不重放命令。WSL 精确续约失败/目标 capability 崩溃恢复矩阵和 Linux vet 通过；Windows 连接真实 PostgreSQL 的 `go test ./... -count=1` 全部通过（Agent 216.785s、Controller 51.317s、Store 20.267s），`go vet ./...`、`go build ./cmd/controller ./cmd/agent` 通过。
 - `Sillytarven-online` 当前只剩既有未跟踪 `简要开发思路.md`；它按协作规则视为其他工具的 WIP，本阶段未覆盖或提交。
-- `stcontrol` 已建立 `main` 并持续推送至指定远端 `https://github.com/inliver233/stcontrol.git`。
+- `stcontrol` 已建立 `flash`（自 2026-08-14 起所有实现均提交推送至 flash 分支）并持续推送至指定远端 `https://github.com/inliver233/stcontrol.git`。
+
+## 2026-08-14 flash 分支阶段记录（P0 修复 + R20/R21 配额下发）
+
+- **P0 WIP SQL 修复**：internal/store/replica_cleanup.go:67,111 与 internal/store/snapshots.go:1072 的 legacy.handle 改为 legacy.username（users 表无 handle 列）；internal/store/storage_repair.go 的 next_attempt_at CASE 表达式把 $1 显式定型为 timestamptz，避免 PostgreSQL 推断为 interval。修复前真实 PostgreSQL 上 TestPostgresCriticalConcurrency、TestPostgresStorageRepairTaskTerminalConstraints、TestControllerSnapshotWorkflowThroughDurableAgentCommands、TestControllerIndependentReconciliationSnapshotsAndCompletesAfterRetry、TestControllerArchiveRestoreThroughDurableAgentCommands 五个集成测试全部失败；修复后全部通过（store 13.9s / controller 12.1s），无 DSN 的默认单元套件全绿。R09/R19 的 storage 修复/副本清理路径恢复可用。
+- **R20 bug实测 7 项**：
+  1. 空列表 null 崩溃：后端 ListNodes/ListVisibleProtectionAlerts/ListAccountImportClaimTargets 空结果改为返回空切片（make(..., 0)），JSON 输出 [] 而非 null；前端 Admin.tsx（nodes/alerts/admins）、Account.tsx（claims/identities）全部加 ?? [] 防御。
+  2. 新增节点入口：Admin.tsx 节点管理页新增“+ 添加节点”向导（名称/角色 compute|storage/地区/酒馆地址/期望配额），调用既有 POST /api/admin/nodes，创建后提示点击“注册令牌”生成安装命令；角色注册后不可修改文案明确。
+  3. 登录页管理员入口：Login.tsx 移除“管理员登录”链接；管理员仍可直达 /admin（未登录/非管理员自动跳 /admin/login）。
+  4. 节点状态两层显示：Admin.tsx 新增 compositeStatus + StatusBadge，按 已退役→维护/排空→离线→不兼容→已满→繁忙→可用 优先级给出综合状态主徽章，下面小字显示连通性/运营/容量/兼容四维；离线时容量/兼容置灰并标注“（最后上报）/（最后检测）”。
+  5. 角色与备份策略文案：按钮按角色区分——计算节点“允许作为热备目标/停止接收热备”，存储节点“接收归档备份/暂停接收归档”，不再用误导性的“设为备份”。
+  6. 添加节点角色区分向导：随 #2 一并落地（角色单选+用途说明+安装参数区分）。
+  7. 节点配额下发配置：迁移 0041_node_quota_policy.sql 给 nodes 增加 expected_disk_quota_bytes/quota_policy_version/quota_sync_state/quota_sync_at/quota_sync_error_code；Store.UpdateNodeExpectedQuota 单调递增版本；handleAdminUpdateNode/handleAdminCreateNode 接受期望配额；心跳响应回显期望配额+版本（protocol.HeartbeatResponse），Agent 在 heartbeat.go 校验并应用后把生效配额与已应用版本上报（HeartbeatRequest.AppliedQuotaVersion/EffectiveQuotaBytes），心跳 UPDATE 按生效值自动收敛 quota_sync_state（synced/pending/applying/failed）；前端节点行显示“期望/生效/同步状态”，并有“配额策略”编辑面板。
+- **R21 说明**：HTTP 层限流（R21/R22 明确要求）仍缺失，属 P2 待办；本轮仅完成配额策略下发闭环与前端配额 UI。
+
+
+## 2026-08-14 flash 分支阶段记录（P1 安全修复）
+
+- **Online adapter 三处独立模式语义漏洞（R02/R04/R13）**：Sillytarven-online/src/stcontrol.js 的 stcontrolRequestTracker 修复——
+  1. 新 envelope 一律以 MANAGED（中性）创建，不再在 independent 模式下直接标记 INDEPENDENT；INDEPENDENT 写权只能由 canUseNativeLogin 归属证明分支授予（原 939 行按模式直接传参导致 945 行归属证明被跳过）。
+  2. 纵深防御：INDEPENDENT 写入要求 state.sessions 中存在匹配 handle、未登出的 durable INDEPENDENT 会话，否则 409 stale_writer_session（与既有语义一致，Go 侧协议零变化）。
+  3. 写门/租约准入检查移入同一个串行化 mutateState 线性化点，与 in-flight 计数原子化，消除“gate 已建立但写入已放行”的 TOCTOU 竞态；cleanExpiredSessions/cleanExpiredSnapshotGates 保留在同一原子点内执行。HTTP 状态码/响应体不变（423 user_quiescing/user_data_frozen + Retry-After、409 stale_writer_session）。
+  测试：tests/stcontrol-adapter.node.test.mjs 新增 independent 无证明 423、伪造 INDEPENDENT envelope 写 409、真实 durable 独立会话放行三条；全套件 node --test tests/stcontrol-*.node.test.mjs 32/32 通过。
+- **恢复/冲突发布竞态（R19）**：
+  1. internal/store/restores.go CompleteRestoreWorkflow 在串行化事务内（generation 校验后、任何副本晋升前）用 getActivityLeaseForUpdate + leaseBlocksNewWriter 复查用户活动租约；用户已重新活跃/排空/独立时返回 ErrReplicaTakeoverLeaseActive（Controller 映射 409），杜绝恢复发布覆盖活跃写入。新增 TestCompleteRestoreWorkflowRefusesPublishOverActiveWriterLease。
+  2. internal/agent/conflict_resolution.go 发布全程持有 replicaMutationMu，并在发布前以 conflictResolutionPublishAllowedLocked 复核写者租约（无租约/已过期/匹配本地会话 epoch 才允许），与副本清理/快照并发序列化。新增无租约放行、活跃租约拒绝、匹配 epoch 放行及 Linux 互斥序列化测试。
+  3. web/src/pages/Conflict.tsx 轮询修复：仅 succeeded 视为完成并跳登录；401/403 清定时器跳登录；其他 4xx 仅当响应体声明终态（resolved/succeeded/failed/cancelled）才停止；网络/5xx 继续轮询。web/src/api.ts 的 request() 现把 status/data 附加到 ApiError 供页面区分。
+
+
+## 2026-08-14 flash 分支阶段记录（P2 安全与灾备）
+
+- **R21 HTTP 限流 + R22 登录锁定**（internal/controller/ratelimit.go、login_lockout.go）：
+  1. 每 IP 固定窗口限流（默认 120 req/min，认证端点 20 req/min，键上限 100k 防内存膨胀，过期键每分钟 GC）；`X-Forwarded-For` 仅在直连对端为 loopback/私网时信任，公开客户端无法伪造身份绕过。
+  2. 认证路由组（/api/auth/*）挂 loginRateLimitMiddleware + loginLockoutMiddleware；登录/管理员登录成功清零、失败累计，连续 5 次失败后按指数退避锁定（30s 起，上限 15min），`Retry-After` 头返回。
+  3. 限流中间件在 Server.New 中初始化，agent/loopback 端点不受影响（Agent 通道有 HMAC/nonce/租约围栏，不应被管理流量饿死）。
+  4. 测试：TestRateLimiterAllowsUpToLimitThenRejects、TestRateLimiterRespectsMaxKeys、TestRateLimitMiddlewareRejectsBurst、TestLoginLockoutLocksAfterFailuresAndRecovers、TestLoginLockoutMiddlewareRejectsLockedUsername 全过。
+- **R22 审计读侧**（internal/store/audit_events.go、internal/controller/audit_admin.go、web/src/pages/Admin.tsx）：
+  1. 新增 ListAuditEventsPage（按 id 游标分页 + actor_type/action/target_type/outcome 过滤，detail 以 JSONB 返回，不落日志）。
+  2. 新增 GET /api/admin/audit 管理员端点，审计只读、仅管理员可见。
+  3. 前端新增“审计日志”页（筛选/分页/详情展开，空状态明确）。
+  4. 测试：TestListAuditEventsPageFiltersAndPaginates、TestListAuditEventsPageEmptyIsEmptySlice 全过。
+- **Round 60 总控灾备自动备份**（迁移 0040 + internal/store/controller_disaster_backups.go + internal/controller/controller_backup.go + internal/agent/controller_backup.go）：
+  1. 持久化 workflow 状态机（scheduled→snapshotting→transferring→verifying→publishing→succeeded，支持 retry_wait/failed/cancelled/superseded），operation_id 幂等、controller_generation 围栏、lease 认领、DB 内指数退避。
+  2. 后台 reconciler 每 5 分钟检查：有合格纯存储节点（storage/online/active/compatible/is_backup_target）且距上次成功超过配置间隔（默认 24h）时调度；pg_dump（PGPASSWORD 环境变量，不经命令行）+ config + manifest 打包 tar.zst，经一次性 capability 传输到目标 Agent，目标校验 sha256+size 后落 BackupDir/controller-backups/<operation_id>/，成功后只保留每节点最新一份。
+  3. 管理 API：GET /api/admin/controller-backups（分页列表）、POST /api/admin/controller-backups（立即触发，幂等）。
+  4. 配置：controller_backup.enabled/interval_sec/retry_max/keep_latest_only/pg_dump（默认启用、24h、3 次重试、仅留最新、含 pg_dump）。
+  5. 测试：store 层 schedule/claim/complete/fail/retention/idempotency sqlmock 测试、controller reconciler 测试、agent 接收路径测试全过。
+- **移除硬编码密钥**（run-live-controller.bat、.gitignore）：live 启动脚本不再内嵌 CONTROLLER_SECRET_KEY 与引导密码，改为要求环境变量或 git-ignored .live-secrets.cmd；.gitignore 增加 .live-secrets.cmd、livecheck.log、*.log。
 
 ## 完成判定规则
 

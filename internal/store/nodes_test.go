@@ -158,7 +158,8 @@ func TestGetNodeByIDReadsIndependentHealthDimensions(t *testing.T) {
 			"compatibility_fingerprint", "compatibility_reported_at", "metrics_observed_at",
 			"cpu_window_avg", "cpu_window_peak", "mem_window_avg", "mem_window_peak",
 			"disk_window_avg", "disk_window_peak", "disk_total_bytes", "disk_available_bytes",
-			"disk_quota_bytes", "allocated_disk_bytes", "online_users", "task_queue_depth", "telemetry_source",
+			"disk_quota_bytes", "expected_disk_quota_bytes", "quota_policy_version", "quota_sync_state",
+			"quota_sync_at", "quota_sync_error_code", "allocated_disk_bytes", "online_users", "task_queue_depth", "telemetry_source",
 			"allow_register", "is_backup_target", "registration_policy_state", "registration_policy_version",
 			"registration_policy_expires_at", "registration_policy_observed_at", "registration_policy_error_code", "created_at",
 		}).AddRow(
@@ -167,7 +168,8 @@ func TestGetNodeByIDReadsIndependentHealthDimensions(t *testing.T) {
 			"online", "active", "managed", int64(4), "managed", int64(4),
 			"busy", "cpu_busy", now, nil, "compatible", nil,
 			strings.Repeat("a", 64), now, now, 51.0, 62.0, 20.0, 25.0, 30.0, 35.0,
-			int64(200<<30), int64(100<<30), int64(180<<30), int64(20<<30), 3, 2, "directory_fallback",
+			int64(200<<30), int64(100<<30), int64(180<<30), int64(0), int64(0), "synced", nil, nil,
+			int64(20<<30), 3, 2, "directory_fallback",
 			true, false, "open", int64(4), now.Add(time.Minute), now, nil, now,
 		))
 	node, err := st.GetNodeByID(context.Background(), 12)
@@ -431,3 +433,58 @@ func TestTransitionNodeLifecycleCreatesDurableDrainOperationAndItems(t *testing.
 	}
 	assertMockExpectations(t, mock)
 }
+func TestUpdateNodeExpectedQuotaBumpsVersionOnceAndIsIdempotent(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC)
+
+	// 1) change from 0 to 200GB bumps version to 1 and marks pending
+	st, mock, closeDB := newMockStore(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT expected_disk_quota_bytes FROM nodes WHERE id=\$1 FOR UPDATE`).WithArgs(int64(12)).
+		WillReturnRows(sqlmock.NewRows([]string{"expected_disk_quota_bytes"}).AddRow(int64(0)))
+	mock.ExpectExec(`UPDATE nodes SET expected_disk_quota_bytes=\$2,.*quota_policy_version=quota_policy_version\+1,.*quota_sync_state=CASE WHEN \$2=0 THEN 'synced' ELSE 'pending' END,.*quota_sync_at=\$3, quota_sync_error_code=NULL`).
+		WithArgs(int64(12), int64(200<<30), now).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	if err := st.UpdateNodeExpectedQuota(context.Background(), 12, 200<<30, now); err != nil {
+		t.Fatal(err)
+	}
+	assertMockExpectations(t, mock)
+	closeDB()
+
+	// 2) same value again is a no-op (no version bump)
+	st, mock, closeDB = newMockStore(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT expected_disk_quota_bytes FROM nodes WHERE id=\$1 FOR UPDATE`).WithArgs(int64(12)).
+		WillReturnRows(sqlmock.NewRows([]string{"expected_disk_quota_bytes"}).AddRow(int64(200 << 30)))
+	mock.ExpectCommit()
+	if err := st.UpdateNodeExpectedQuota(context.Background(), 12, 200<<30, now); err != nil {
+		t.Fatal(err)
+	}
+	assertMockExpectations(t, mock)
+	closeDB()
+
+	// 3) back to 0 (inherit agent.yaml) marks synced
+	st, mock, closeDB = newMockStore(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT expected_disk_quota_bytes FROM nodes WHERE id=\$1 FOR UPDATE`).WithArgs(int64(12)).
+		WillReturnRows(sqlmock.NewRows([]string{"expected_disk_quota_bytes"}).AddRow(int64(200 << 30)))
+	mock.ExpectExec(`UPDATE nodes SET expected_disk_quota_bytes=\$2,.*quota_sync_state=CASE WHEN \$2=0 THEN 'synced' ELSE 'pending' END,.*quota_sync_at=\$3, quota_sync_error_code=NULL`).
+		WithArgs(int64(12), int64(0), now).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	if err := st.UpdateNodeExpectedQuota(context.Background(), 12, 0, now); err != nil {
+		t.Fatal(err)
+	}
+	assertMockExpectations(t, mock)
+	closeDB()
+
+	// 4) invalid inputs rejected
+	st, mock, closeDB = newMockStore(t)
+	if err := st.UpdateNodeExpectedQuota(context.Background(), 0, 1<<30, now); err == nil {
+		t.Fatal("zero node id was accepted")
+	}
+	if err := st.UpdateNodeExpectedQuota(context.Background(), 12, -1, now); err == nil {
+		t.Fatal("negative quota was accepted")
+	}
+	closeDB()
+}
+

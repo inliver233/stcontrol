@@ -153,7 +153,7 @@ func (s *Store) ListAccountImportClaimTargets(ctx context.Context, globalUserID 
 		return nil, err
 	}
 	defer rows.Close()
-	var targets []AccountImportClaimTarget
+	targets := make([]AccountImportClaimTarget, 0)
 	for rows.Next() {
 		var target AccountImportClaimTarget
 		if err := rows.Scan(&target.NodeID, &target.NodeName, &target.LocalHandle, &target.AccountKind); err != nil {

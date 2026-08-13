@@ -176,6 +176,9 @@ func (s *Store) UnbindUserIdentity(ctx context.Context, legacyUserID, globalUser
 			WHERE user_id=$1`, globalUserID, now); err != nil {
 			return err
 		}
+		if _, err := stagePasswordRemovals(ctx, tx, globalUserID, now); err != nil {
+			return err
+		}
 	} else {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE node_accounts SET oauth_subjects=oauth_subjects-$2,

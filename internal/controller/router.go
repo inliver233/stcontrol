@@ -60,8 +60,9 @@ func (s *Server) routes(r *chi.Mux) {
 	// 一键安装脚本分发(供 curl ... | bash)
 	r.Get("/install.sh", s.handleInstallScript)
 
-	// 认证
+	// 认证（R21/R22：登录/注册端点限流 + 用户名锁定，防暴力破解）
 	r.Route("/api/auth", func(r chi.Router) {
+		r.Use(s.loginRateLimitMiddleware, s.loginLockoutMiddleware)
 		r.Post("/register", s.handleRegister)
 		r.Get("/registration/status", s.handleRegistrationStatus)
 		r.Post("/login", s.handleLogin)
@@ -157,7 +158,10 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Post("/users/{id}/disable", s.handleAdminDisableUser)
 		r.Get("/backups", s.handleAdminListBackups)
 		r.Post("/backups/{id}/abort", s.handleAdminAbortBackup)
+		r.Get("/controller-backups", s.handleAdminListControllerBackups)
+		r.Post("/controller-backups", s.handleAdminTriggerControllerBackup)
 		r.Get("/alerts/protection", s.handleAdminProtectionAlerts)
+		r.Get("/audit", s.handleAdminListAuditEvents)
 		r.Get("/admins", s.handleAdminListAdmins)
 		r.Post("/admins", s.handleAdminCreateAdmin)
 		r.Put("/admins/{id}/status", s.handleAdminSetAdminStatus)

@@ -849,6 +849,19 @@ func (s *Store) CompleteRestoreWorkflow(
 	if generation != activeGeneration {
 		return ErrRestoreConflict
 	}
+	// The restore workflow was created while the user held no writer lease, but
+	// the user may have come back online while the transfer was in flight. Never
+	// promote a restored copy over live data: recheck the activity lease inside
+	// this same serializable transaction, and refuse the publish if the user has
+	// become an active (or quiescing) writer again.
+	lease, found, err := getActivityLeaseForUpdate(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+	if found && (leaseBlocksNewWriter(lease, p.Now) || lease.InFlightReads != 0 || lease.InFlightWrites != 0 ||
+		lease.State == "independent" || lease.State == "quiescing") {
+		return ErrReplicaTakeoverLeaseActive
+	}
 	var verifiedSource string
 	err = tx.QueryRowContext(ctx, `
 		SELECT copy.snapshot_id::text FROM replica_copies copy

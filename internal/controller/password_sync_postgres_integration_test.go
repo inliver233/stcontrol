@@ -116,15 +116,17 @@ func TestControllerPasswordChangeStagesAndResumesEveryNode(t *testing.T) {
 	if harness.commandCount("set_password") != 1 {
 		t.Fatalf("immediate password commands=%d", harness.commandCount("set_password"))
 	}
+	// While a node has not yet converged (the delayed node is still pending),
+	// login must still accept the immediately-previous password so an offline
+	// node does not create a split where only some locations recognize it.
 	assertControllerHTTPStatus(t, newControllerHTTPClient(t), http.MethodPost,
 		httpServer.URL+"/api/auth/login", map[string]string{
 			"username": user.Username, "password": oldPassword,
-		}, false, http.StatusForbidden)
+		}, false, http.StatusOK)
 	assertControllerHTTPStatus(t, newControllerHTTPClient(t), http.MethodPost,
 		httpServer.URL+"/api/auth/login", map[string]string{
 			"username": user.Username, "password": newPassword,
 		}, false, http.StatusOK)
-
 	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET connectivity_state='online' WHERE id=$1`, delayed.ID); err != nil {
 		t.Fatalf("restore delayed password-sync node: %v", err)
 	}
@@ -166,7 +168,12 @@ func TestControllerPasswordChangeStagesAndResumesEveryNode(t *testing.T) {
 	); err != nil || activeAccounts != 2 || materialMatches != 2 {
 		t.Fatalf("password convergence active=%d material=%d err=%v", activeAccounts, materialMatches, err)
 	}
-
+	// Once every node has confirmed the new version, the previous verifier is
+	// dropped and the old password is rejected everywhere (no permanent split).
+	assertControllerHTTPStatus(t, newControllerHTTPClient(t), http.MethodPost,
+		httpServer.URL+"/api/auth/login", map[string]string{
+			"username": user.Username, "password": oldPassword,
+		}, false, http.StatusForbidden)
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
 	restarted.passwordSyncReconciler(cancelled)

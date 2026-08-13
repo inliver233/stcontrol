@@ -139,7 +139,8 @@ const nodeSelectColumns = `
   compatibility_fingerprint,compatibility_reported_at,metrics_observed_at,
   cpu_window_avg,cpu_window_peak,mem_window_avg,mem_window_peak,
   disk_window_avg,disk_window_peak,disk_total_bytes,disk_available_bytes,
-  disk_quota_bytes,allocated_disk_bytes,online_users,task_queue_depth,telemetry_source,
+  disk_quota_bytes,expected_disk_quota_bytes,quota_policy_version,quota_sync_state,
+  quota_sync_at,quota_sync_error_code,allocated_disk_bytes,online_users,task_queue_depth,telemetry_source,
   allow_register,is_backup_target,registration_policy_state,
   registration_policy_version,registration_policy_expires_at,
   registration_policy_observed_at,registration_policy_error_code,created_at`
@@ -158,7 +159,8 @@ func scanNode(scanner nodeScanner, n *Node) error {
 		&n.CompatibilityFingerprint, &n.CompatibilityReportedAt, &n.MetricsObservedAt,
 		&n.CPUWindowAvg, &n.CPUWindowPeak, &n.MemWindowAvg, &n.MemWindowPeak,
 		&n.DiskWindowAvg, &n.DiskWindowPeak, &n.DiskTotalBytes, &n.DiskAvailableBytes,
-		&n.DiskQuotaBytes, &n.AllocatedDiskBytes, &n.OnlineUsers, &n.TaskQueueDepth, &n.TelemetrySource,
+		&n.DiskQuotaBytes, &n.ExpectedDiskQuotaBytes, &n.QuotaPolicyVersion, &n.QuotaSyncState,
+		&n.QuotaSyncAt, &n.QuotaSyncErrorCode, &n.AllocatedDiskBytes, &n.OnlineUsers, &n.TaskQueueDepth, &n.TelemetrySource,
 		&n.AllowRegister, &n.IsBackupTarget, &n.RegistrationPolicyState,
 		&n.RegistrationPolicyVersion, &n.RegistrationPolicyExpiresAt,
 		&n.RegistrationPolicyObservedAt, &n.RegistrationPolicyErrorCode, &n.CreatedAt,
@@ -193,7 +195,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]*Node, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*Node
+	out := make([]*Node, 0)
 	for rows.Next() {
 		n := &Node{}
 		if err := scanNode(rows, n); err != nil {
@@ -327,7 +329,17 @@ func (s *Store) UpdateNodeHeartbeat(
 	          OR ($31=registration_policy_version AND $30=registration_policy_state)) THEN NULL
 	      WHEN $31<registration_policy_version THEN 'version_rollback'
 	      WHEN $31=registration_policy_version AND $30<>registration_policy_state THEN 'version_reuse'
-	      ELSE $33 END
+	      ELSE $33 END,
+	    quota_sync_state=CASE
+	      WHEN expected_disk_quota_bytes=0 THEN 'synced'
+	      WHEN quota_policy_version<=0 THEN 'synced'
+	      WHEN $12=expected_disk_quota_bytes THEN 'synced'
+	      WHEN quota_sync_state='failed' THEN 'failed'
+	      ELSE 'pending' END,
+	    quota_sync_at=CASE
+	      WHEN expected_disk_quota_bytes=0 THEN quota_sync_at
+	      WHEN $12=expected_disk_quota_bytes THEN $8::timestamptz
+	      ELSE quota_sync_at END
 	  WHERE id=$1`,
 		id, metric(facts.CPUPct), metric(facts.MemPct), metric(facts.DiskPct),
 		facts.TavernVersion, facts.AgentVersion, facts.TransferURL, facts.ObservedAt,
@@ -374,6 +386,41 @@ func (s *Store) UpdateNodeSettings(ctx context.Context, n *Node) error {
 		n.ID, n.Name, n.BaseURL, n.Region, n.AllowRegister,
 		n.IsBackupTarget)
 	return err
+}
+
+// UpdateNodeExpectedQuota persists the administrator's expected disk quota and
+// bumps the monotonic policy version so the next heartbeat carries it to the
+// Agent.  expectedBytes==0 means "inherit the agent's local agent.yaml value".
+func (s *Store) UpdateNodeExpectedQuota(
+	ctx context.Context, nodeID, expectedBytes int64, now time.Time,
+) error {
+	if nodeID <= 0 || expectedBytes < 0 {
+		return fmt.Errorf("invalid node quota policy")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var current int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT expected_disk_quota_bytes FROM nodes WHERE id=$1 FOR UPDATE`, nodeID).Scan(&current); err != nil {
+		return err
+	}
+	if current != expectedBytes {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE nodes SET expected_disk_quota_bytes=$2,
+			  quota_policy_version=quota_policy_version+1,
+			  quota_sync_state=CASE WHEN $2=0 THEN 'synced' ELSE 'pending' END,
+			  quota_sync_at=$3, quota_sync_error_code=NULL
+			WHERE id=$1`, nodeID, expectedBytes, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // MarkStaleNodesOffline 把超过 timeout 未心跳的节点标记为 offline。

@@ -106,6 +106,8 @@ func TestUnbindIdentityUpdatesLegacyProjectionAtomically(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE node_accounts SET password_hash=NULL`).WithArgs(int64(70), now).
 		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(`INSERT INTO node_account_password_removals`).
+		WithArgs(int64(70), now).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectQuery(`SELECT provider,provider_subject,password_hash`).WithArgs(int64(70)).
 		WillReturnRows(sqlmock.NewRows([]string{"provider", "provider_subject", "password_hash"}).
 			AddRow("discord", "stable-subject", nil))

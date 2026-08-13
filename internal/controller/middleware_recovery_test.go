@@ -33,7 +33,8 @@ func TestPreviousGenerationCredentialCannotReachCommandEndpoints(t *testing.T) {
 			"compatibility_fingerprint", "compatibility_reported_at", "metrics_observed_at",
 			"cpu_window_avg", "cpu_window_peak", "mem_window_avg", "mem_window_peak",
 			"disk_window_avg", "disk_window_peak", "disk_total_bytes", "disk_available_bytes",
-			"disk_quota_bytes", "allocated_disk_bytes", "online_users", "task_queue_depth", "telemetry_source",
+			"disk_quota_bytes", "expected_disk_quota_bytes", "quota_policy_version", "quota_sync_state",
+			"quota_sync_at", "quota_sync_error_code", "allocated_disk_bytes", "online_users", "task_queue_depth", "telemetry_source",
 			"allow_register", "is_backup_target", "registration_policy_state", "registration_policy_version",
 			"registration_policy_expires_at", "registration_policy_observed_at", "registration_policy_error_code", "created_at",
 		}).AddRow(
@@ -42,8 +43,8 @@ func TestPreviousGenerationCredentialCannotReachCommandEndpoints(t *testing.T) {
 			"online", "active", "managed", int64(2), "managed", int64(2),
 			"open", nil, now, nil, "compatible", nil, strings.Repeat("a", 64),
 			now, now, 10.0, 20.0, 10.0, 20.0, 30.0, 30.0,
-			int64(200<<30), int64(100<<30), int64(180<<30), int64(20<<30),
-			3, 0, "adapter", true, false, "open", int64(1), now.Add(time.Minute), now, nil, now,
+			int64(200<<30), int64(100<<30), int64(180<<30), int64(0), int64(0), "synced", nil, nil,
+			int64(20<<30), 3, 0, "adapter", true, false, "open", int64(1), now.Add(time.Minute), now, nil, now,
 		))
 	secretKey := bytes.Repeat([]byte{9}, 32)
 	psk := "previous-generation-agent-secret"

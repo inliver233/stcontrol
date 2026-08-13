@@ -66,26 +66,28 @@ type UserStatus struct {
 
 // HeartbeatRequest 子控定期上报。
 type HeartbeatRequest struct {
-	NodeID             int64                    `json:"node_id"`
-	AgentVersion       string                   `json:"agent_version"`
-	TavernVersion      string                   `json:"tavern_version"`
-	CPUPct             float64                  `json:"cpu_pct"`
-	MemPct             float64                  `json:"mem_pct"`
-	DiskPct            float64                  `json:"disk_pct"`
-	MetricsValid       bool                     `json:"metrics_valid"`
-	DiskTotalBytes     int64                    `json:"disk_total_bytes"`
-	DiskAvailableBytes int64                    `json:"disk_available_bytes"`
-	DiskQuotaBytes     int64                    `json:"disk_quota_bytes"`
-	AllocatedDiskBytes int64                    `json:"allocated_disk_bytes"`
-	OnlineUsers        int                      `json:"online_users"`
-	TaskQueueDepth     int                      `json:"task_queue_depth"`
-	TelemetrySource    string                   `json:"telemetry_source"`
-	Compatibility      NodeCompatibilityReport  `json:"compatibility"`
-	TransferURL        string                   `json:"transfer_url,omitempty"`
-	RegistrationPolicy RegistrationPolicyReport `json:"registration_policy"`
-	ActivityObservedAt int64                    `json:"activity_observed_at"`
-	Users              []UserStatus             `json:"users,omitempty"`
-	ControlMode        NodeControlModeReport    `json:"control_mode"`
+	NodeID              int64                    `json:"node_id"`
+	AgentVersion        string                   `json:"agent_version"`
+	TavernVersion       string                   `json:"tavern_version"`
+	CPUPct              float64                  `json:"cpu_pct"`
+	MemPct              float64                  `json:"mem_pct"`
+	DiskPct             float64                  `json:"disk_pct"`
+	MetricsValid        bool                     `json:"metrics_valid"`
+	DiskTotalBytes      int64                    `json:"disk_total_bytes"`
+	DiskAvailableBytes  int64                    `json:"disk_available_bytes"`
+	DiskQuotaBytes      int64                    `json:"disk_quota_bytes"`
+	AllocatedDiskBytes  int64                    `json:"allocated_disk_bytes"`
+	OnlineUsers         int                      `json:"online_users"`
+	TaskQueueDepth      int                      `json:"task_queue_depth"`
+	TelemetrySource     string                   `json:"telemetry_source"`
+	Compatibility       NodeCompatibilityReport  `json:"compatibility"`
+	TransferURL         string                   `json:"transfer_url,omitempty"`
+	RegistrationPolicy  RegistrationPolicyReport `json:"registration_policy"`
+	ActivityObservedAt  int64                    `json:"activity_observed_at"`
+	Users               []UserStatus             `json:"users,omitempty"`
+	ControlMode         NodeControlModeReport    `json:"control_mode"`
+	AppliedQuotaVersion int64                    `json:"applied_quota_version,omitempty"`
+	EffectiveQuotaBytes int64                    `json:"effective_quota_bytes,omitempty"`
 }
 
 const (
@@ -153,6 +155,8 @@ type HeartbeatResponse struct {
 	CredentialRotation             *AgentCredentialRotationOffer `json:"credential_rotation,omitempty"`
 	ActivityLeaseConfirmedAt       int64                         `json:"activity_lease_confirmed_at"`
 	ActivityLeaseConfirmations     []ActivityLeaseConfirmation   `json:"activity_lease_confirmations"`
+	ExpectedDiskQuotaBytes         int64                         `json:"expected_disk_quota_bytes,omitempty"`
+	QuotaPolicyVersion             int64                         `json:"quota_policy_version,omitempty"`
 }
 
 // ActivityLeaseConfirmation is an exact, bounded local-write grant. The
@@ -402,6 +406,7 @@ type SetPasswordRequest struct {
 	PasswordHash string `json:"password_hash"`
 	PasswordSalt string `json:"password_salt"`
 	Version      int64  `json:"version"`
+	Remove       bool   `json:"remove"`
 }
 
 // FreezeUserDataRequest is the complete, closed command contract for a
@@ -574,6 +579,32 @@ type DeleteReplicaReceipt struct {
 	ReplicaKind  string `json:"replica_kind"`
 	TargetNodeID int64  `json:"target_node_id"`
 	Outcome      string `json:"outcome"`
+}
+
+// ---------- 总控灾备自动备份 ----------
+
+// PrepareControllerBackupRequest arms a pure-storage target to accept and
+// durably store one immutable controller disaster backup archive. It binds a
+// single-use transfer capability to the controller backup operation ID so the
+// later direct stream is authenticated and idempotently replayable.
+type PrepareControllerBackupRequest struct {
+	OperationID          string    `json:"operation_id"`
+	BackupKind           string    `json:"backup_kind"`
+	ControllerGeneration int64     `json:"controller_generation"`
+	CapabilityHash       string    `json:"capability_hash"`
+	ExpiresAt            time.Time `json:"expires_at"`
+	ExpectedSHA256       string    `json:"expected_sha256,omitempty"`
+}
+
+// ControllerBackupReceipt is returned by the target Agent after it verified
+// the archived controller state (sha256 + size) and durably published it under
+// controller-backups/<operation_id>/.
+type ControllerBackupReceipt struct {
+	OK            bool   `json:"ok"`
+	OperationID   string `json:"operation_id"`
+	ArchiveSHA256 string `json:"archive_sha256"`
+	TotalBytes    int64  `json:"total_bytes"`
+	PublishedPath string `json:"published_path"`
 }
 
 // ManifestEntry 单个文件的校验条目。

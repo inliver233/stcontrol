@@ -38,6 +38,7 @@ const adminApi = {
   overview: () => adminReq<any>('/api/admin/overview'),
   controllerRebuild: () => adminReq<any>('/api/admin/controller/rebuild'),
   nodes: () => adminReq<{ nodes: any[] }>('/api/admin/nodes'),
+  createNode: (body: any) => adminReq<any>('/api/admin/nodes', { method: 'POST', body: JSON.stringify(body) }),
   updateNode: (id: number, body: any) => adminReq<any>(`/api/admin/nodes/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   transitionNode: (id: number, state: string, reason_code: string, acknowledge_risk = false) =>
     adminReq<any>(`/api/admin/nodes/${id}/lifecycle`, {
@@ -97,6 +98,14 @@ const adminApi = {
   createAdmin: (username: string, password: string) => adminReq<any>('/api/admin/admins', { method: 'POST', body: JSON.stringify({ username, password }) }),
   setAdminStatus: (id: number, status: string) => adminReq<any>(`/api/admin/admins/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
   resetAdminPassword: (id: number, password: string) => adminReq<any>(`/api/admin/admins/${id}/password`, { method: 'PUT', body: JSON.stringify({ password }) }),
+  audit: (before = 0, actorType = '', action = '', outcome = '') => {
+    const params = new URLSearchParams({ limit: '50' })
+    if (before > 0) params.set('before', String(before))
+    if (actorType) params.set('actor_type', actorType)
+    if (action) params.set('action', action)
+    if (outcome) params.set('outcome', outcome)
+    return adminReq<{ events: any[]; has_more: boolean; next_cursor: number }>(`/api/admin/audit?${params}`)
+  },
 }
 
 interface AdminNodeLink {
@@ -122,6 +131,7 @@ export default function AdminPage() {
     { path: '/admin/backups', label: '备份任务' },
     { path: '/admin/alerts', label: '保护告警' },
     { path: '/admin/admins', label: '管理员' },
+    { path: '/admin/audit', label: '审计日志' },
   ]
   const current = location.pathname
 
@@ -157,6 +167,7 @@ export default function AdminPage() {
           <Route path="/backups" element={<BackupsAdmin />} />
           <Route path="/alerts" element={<ProtectionAlertsAdmin />} />
           <Route path="/admins" element={<AdminsAdmin />} />
+          <Route path="/audit" element={<AuditAdmin />} />
         </Routes>
       </div>
     </div>
@@ -217,6 +228,51 @@ function Overview() {
   )
 }
 
+// 综合状态优先级：已退役 → 维护/排空 → 离线 → 不兼容 → 已满 → 繁忙 → 可用
+function compositeStatus(node: any): { key: string; label: string; color: string } {
+  const operational = node.operational_state
+  if (operational === 'decommissioned' || operational === 'retired') return { key: 'retired', label: '已退役', color: 'gray' }
+  if (operational === 'maintenance') return { key: 'maintenance', label: '维护', color: 'gray' }
+  if (operational === 'draining') return { key: 'draining', label: '排空中', color: 'blue' }
+  if (operational === 'failed' || operational === 'isolated') return { key: 'failed', label: '故障', color: 'red' }
+  if (node.connectivity_state === 'offline') return { key: 'offline', label: '离线', color: 'red' }
+  if (node.compatibility_state === 'incompatible') return { key: 'incompatible', label: '不兼容', color: 'red' }
+  if (node.capacity_state === 'full') return { key: 'full', label: '已满', color: 'red' }
+  if (node.capacity_state === 'busy') return { key: 'busy', label: '繁忙', color: 'yellow' }
+  return { key: 'available', label: '可用', color: 'green' }
+}
+
+// 两层状态显示：综合状态主徽章 + 四个维度小字；离线时容量/兼容性置灰并标注“最后上报/最后检测”。
+export function StatusBadge({ node, healthLabel, reasonLabel }: {
+  node: any
+  healthLabel: (value: string) => string
+  reasonLabel: (value: string) => string
+}) {
+  const status = compositeStatus(node)
+  const offline = node.connectivity_state === 'offline'
+  const dimension = (value: string, onlineColor: string, label: string, staleNote?: string) => (
+    <span className={offline ? 'badge gray' : `badge ${value === 'active' || value === 'open' || value === 'compatible' || value === 'online' ? onlineColor : value === 'busy' || value === 'maintenance' || value === 'draining' || value === 'degraded' ? 'yellow' : value === 'full' || value === 'incompatible' || value === 'offline' || value === 'failed' || value === 'retired' || value === 'decommissioned' ? 'red' : 'gray'}`}>
+      {label}：{healthLabel(value)}{staleNote || ''}
+    </span>
+  )
+  return (
+    <div>
+      <div style={{ marginBottom: 2 }}>
+        <span className={`badge ${status.color}`}>{status.label}</span>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 8px', fontSize: 11, color: 'var(--text-dim)' }}>
+        {dimension(node.connectivity_state, 'green', '连通性')}
+        {dimension(node.operational_state, 'green', '运营')}
+        {dimension(node.capacity_state, 'green', '容量', offline ? '（最后上报）' : '')}
+        {dimension(node.compatibility_state, 'green', '兼容', offline ? '（最后检测）' : '')}
+      </div>
+      {(node.capacity_reason_code?.String || node.compatibility_reason_code?.String) && (
+        <div style={{ fontSize: 11 }}>{reasonLabel(node.capacity_reason_code?.String || node.compatibility_reason_code?.String)}</div>
+      )}
+    </div>
+  )
+}
+
 // ---------- 节点管理 ----------
 function NodesAdmin() {
   const [nodes, setNodes] = useState<any[]>([])
@@ -236,12 +292,79 @@ function NodesAdmin() {
   const scanOperations = useRef<Record<number, string>>({})
   const linkOperation = useRef('')
   const handoffOperations = useRef<Record<number, string>>({})
+  const [showWizard, setShowWizard] = useState(false)
+  const [wizard, setWizard] = useState({ name: '', role: 'compute', region: '', base_url: '', expected_disk_quota_bytes: '' })
+  const [creatingNode, setCreatingNode] = useState(false)
+  const [quotaNode, setQuotaNode] = useState<any>(null)
+  const [quotaValue, setQuotaValue] = useState('')
+  const [quotaSaving, setQuotaSaving] = useState(false)
+
+  const openQuotaEditor = (node: any) => {
+    setQuotaNode(node)
+    setQuotaValue(node.expected_disk_quota_bytes > 0 ? String(node.expected_disk_quota_bytes) : '')
+    setError('')
+    setMessage('')
+  }
+
+  const saveQuota = async () => {
+    if (!quotaNode) return
+    const raw = quotaValue.trim()
+    let bytes = 0
+    if (raw !== '') {
+      const gb = Number(raw)
+      if (!Number.isFinite(gb) || gb < 0) { setError('配额必须是 0（继承 agent.yaml）或正整数 GB'); return }
+      bytes = Math.round(gb * 1073741824)
+    }
+    setQuotaSaving(true)
+    setError('')
+    try {
+      await adminApi.updateNode(quotaNode.id, { ...quotaNode, expected_disk_quota_bytes: bytes })
+      setMessage('节点 ' + quotaNode.name + ' 的配额策略已更新，Agent 将在下次心跳后应用')
+      setQuotaNode(null)
+      await load()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '配额更新失败')
+    } finally {
+      setQuotaSaving(false)
+    }
+  }
+
+  const createNode = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setCreatingNode(true)
+    setError('')
+    setMessage('')
+    try {
+      let expectedBytes = 0
+      const raw = wizard.expected_disk_quota_bytes.trim()
+      if (raw !== '') {
+        const gb = Number(raw)
+        if (!Number.isFinite(gb) || gb < 0) { setError('配额必须是 0（继承 agent.yaml）或正整数 GB'); return }
+        expectedBytes = Math.round(gb * 1073741824)
+      }
+      const created = await adminApi.createNode({
+        name: wizard.name.trim(),
+        role: wizard.role,
+        region: wizard.region.trim() ? { String: wizard.region.trim(), Valid: true } : null,
+        base_url: wizard.base_url.trim(),
+        expected_disk_quota_bytes: expectedBytes,
+      })
+      setShowWizard(false)
+      setWizard({ name: '', role: 'compute', region: '', base_url: '', expected_disk_quota_bytes: '' })
+      setMessage('节点已创建（ID ' + created.id + '）。请点击该行的“注册令牌”生成安装命令。')
+      await load()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '创建节点失败')
+    } finally {
+      setCreatingNode(false)
+    }
+  }
 
   const load = () => Promise.all([adminApi.nodes(), adminApi.nodeLinks()])
     .then(async ([nodeData, linkData]) => {
-      setNodes(nodeData.nodes)
+      setNodes(nodeData.nodes ?? [])
       setNodeLinks(linkData.links || [])
-      const tracked = nodeData.nodes.filter((node: any) =>
+      const tracked = (nodeData.nodes ?? []).filter((node: any) =>
         ['draining', 'retiring', 'decommissioned'].includes(node.operational_state))
       const results = await Promise.allSettled(tracked.map((node: any) => adminApi.retirement(node.id)))
       const progress: Record<number, any> = {}
@@ -250,7 +373,7 @@ function NodesAdmin() {
         if (result.status === 'fulfilled') progress[node.id] = result.value
       })
       setRetirements(progress)
-      const compatibilityTracked = nodeData.nodes.filter((node: any) => node.compatibility_state !== 'compatible')
+      const compatibilityTracked = (nodeData.nodes ?? []).filter((node: any) => node.compatibility_state !== 'compatible')
       const compatibilityResults = await Promise.allSettled(
         compatibilityTracked.map((node: any) => adminApi.compatibilityIncident(node.id)),
       )
@@ -526,9 +649,76 @@ function NodesAdmin() {
           <button className="btn-sm" style={{ marginTop: 8 }} onClick={() => setScanResult(null)}>关闭</button>
         </div>
       )}
+      <div style={{ marginBottom: 12, display: 'flex', gap: 10, alignItems: 'center' }}>
+        <button className="btn primary" onClick={() => setShowWizard(true)}>+ 添加节点</button>
+        <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>节点角色在注册后不可直接修改；如需变更请先排空数据、退役节点后按新角色重新添加。</span>
+      </div>
+
+      {showWizard && (
+        <form onSubmit={createNode} className="card" style={{ margin: '0 0 20px', maxWidth: 640 }}>
+          <h3>添加节点</h3>
+          <div className="field">
+            <label>节点名称</label>
+            <input value={wizard.name} onChange={e => setWizard({ ...wizard, name: e.target.value })} maxLength={128} required autoFocus />
+          </div>
+          <div className="field">
+            <label>节点角色（注册后不可修改）</label>
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+              <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                <input type="radio" name="node-role" checked={wizard.role === 'compute'} onChange={() => setWizard({ ...wizard, role: 'compute' })} />
+                <span>
+                  <strong>计算节点</strong><br />
+                  <small style={{ color: 'var(--text-dim)' }}>运行 SillyTavern 并承载用户登录、写入、注册、迁移与恢复；可配置作为热备目标。</small>
+                </span>
+              </label>
+              <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                <input type="radio" name="node-role" checked={wizard.role === 'storage'} onChange={() => setWizard({ ...wizard, role: 'storage' })} />
+                <span>
+                  <strong>纯存储节点</strong><br />
+                  <small style={{ color: 'var(--text-dim)' }}>仅保存归档备份，不运行酒馆、不承载用户；需在 Agent 配置独立 backup_dir。</small>
+                </span>
+              </label>
+            </div>
+          </div>
+          <div className="field">
+            <label>地区</label>
+            <input value={wizard.region} onChange={e => setWizard({ ...wizard, region: e.target.value })} maxLength={64} placeholder="例如 east-asia" />
+          </div>
+          <div className="field">
+            <label>{wizard.role === 'compute' ? '酒馆地址（Base URL）' : '数据传输地址（可选）'}</label>
+            <input value={wizard.base_url} onChange={e => setWizard({ ...wizard, base_url: e.target.value })} maxLength={512} placeholder={wizard.role === 'compute' ? 'https://tavern.example.com' : 'https://storage.example.com'} />
+          </div>
+          <div className="field">
+            <label>磁盘配额（GB，0 = 继承 agent.yaml 的 disk_quota_bytes）</label>
+            <input inputMode="numeric" value={wizard.expected_disk_quota_bytes} onChange={e => setWizard({ ...wizard, expected_disk_quota_bytes: e.target.value })} placeholder="0" />
+          </div>
+          <button className="btn" type="submit" disabled={creatingNode}>{creatingNode ? '创建中…' : '创建节点'}</button>{' '}
+          <button className="btn-sm" type="button" disabled={creatingNode} onClick={() => setShowWizard(false)}>取消</button>
+        </form>
+      )}
+
+      {quotaNode && (
+        <form onSubmit={(event: React.FormEvent) => { event.preventDefault(); saveQuota() }} className="card" style={{ margin: '0 0 20px', maxWidth: 480 }}>
+          <h3>节点配额策略 · {quotaNode.name}</h3>
+          <p style={{ color: 'var(--text-dim)', fontSize: 13 }}>
+            期望配额下发后，Agent 在下次心跳收到策略并本地应用，随后上报实际生效配额；控制台会显示“待同步/已生效”状态。
+          </p>
+          <div className="field">
+            <label>期望磁盘配额（GB；0 = 继承 agent.yaml）</label>
+            <input inputMode="numeric" value={quotaValue} onChange={e => setQuotaValue(e.target.value)} placeholder="0" />
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 10 }}>
+            当前上报实际生效：{bytes(quotaNode.disk_quota_bytes)}
+            {quotaNode.quota_sync_state === 'synced' ? ' · 已生效' : quotaNode.quota_sync_state === 'pending' ? ' · 待同步' : ' · ' + (quotaNode.quota_sync_state || '未知')}
+          </div>
+          <button className="btn" type="submit" disabled={quotaSaving}>{quotaSaving ? '保存中…' : '保存并下发'}</button>{' '}
+          <button className="btn-sm" type="button" disabled={quotaSaving} onClick={() => setQuotaNode(null)}>取消</button>
+        </form>
+      )}
+
       <table className="table">
         <thead>
-          <tr><th>ID</th><th>名称</th><th>角色</th><th>健康维度</th><th>窗口负载</th><th>磁盘/配额</th><th>用户/队列</th><th>版本</th><th>操作</th></tr>
+          <tr><th>ID</th><th>名称</th><th>角色</th><th>综合状态</th><th>窗口负载</th><th>磁盘/配额</th><th>用户/队列</th><th>版本</th><th>操作</th></tr>
         </thead>
         <tbody>
           {nodes.map(n => {
@@ -540,13 +730,7 @@ function NodesAdmin() {
               <td>{n.name}<div className="mono" style={{ fontSize: 11 }}>{n.base_url || '未配置地址'}</div></td>
               <td>{n.role === 'compute' ? '计算' : '存储'}</td>
               <td style={{ fontSize: 12 }}>
-                <span className={`badge ${n.connectivity_state === 'online' ? 'green' : n.connectivity_state === 'offline' ? 'red' : 'gray'}`}>{healthLabel(n.connectivity_state)}</span>{' '}
-                <span className={`badge ${n.operational_state === 'active' ? 'green' : 'gray'}`}>{healthLabel(n.operational_state)}</span>{' '}
-                <span className={`badge ${n.capacity_state === 'open' ? 'green' : n.capacity_state === 'busy' ? 'yellow' : n.capacity_state === 'full' ? 'red' : 'gray'}`}>{healthLabel(n.capacity_state)}</span>{' '}
-                <span className={`badge ${n.compatibility_state === 'compatible' ? 'green' : n.compatibility_state === 'incompatible' ? 'red' : 'gray'}`}>{healthLabel(n.compatibility_state)}</span>
-                {(n.capacity_reason_code?.String || n.compatibility_reason_code?.String) && (
-                  <div>{reasonLabel(n.capacity_reason_code?.String || n.compatibility_reason_code?.String)}</div>
-                )}
+                <StatusBadge node={n} healthLabel={healthLabel} reasonLabel={reasonLabel} />
                 {retirement && <div style={{ marginTop: 4 }}>
                   退役：{healthLabel(retirement.state)}，{retirement.completed_items}/{retirement.total_items} 完成
                   {retirement.waiting_items > 0 && `，${retirement.waiting_items} 等待离线`}
@@ -564,16 +748,29 @@ function NodesAdmin() {
                 内存 {metric(n.mem_window_avg)}%/{metric(n.mem_window_peak)}% ·
                 硬盘 {metric(n.disk_window_avg)}%/{metric(n.disk_window_peak)}%
               </td>
-              <td style={{ fontSize: 12 }}>可用 {bytes(n.disk_available_bytes)} · 已分配 {bytes(n.allocated_disk_bytes)} / {bytes(n.disk_quota_bytes)}</td>
+              <td style={{ fontSize: 12 }}>
+                可用 {bytes(n.disk_available_bytes)} · 已分配 {bytes(n.allocated_disk_bytes)} / 生效 {bytes(n.disk_quota_bytes)}
+                {n.expected_disk_quota_bytes > 0 && (
+                  <div style={{ marginTop: 2 }}>期望 {bytes(n.expected_disk_quota_bytes)} ·
+                    {n.quota_sync_state === 'synced' ? <span className="badge green">已生效</span>
+                      : n.quota_sync_state === 'pending' ? <span className="badge yellow">待同步</span>
+                        : n.quota_sync_state === 'applying' ? <span className="badge yellow">下发中</span>
+                          : <span className="badge red">失败</span>}
+                  </div>
+                )}
+              </td>
               <td style={{ fontSize: 12 }}>{n.online_users} / {n.task_queue_depth}</td>
               <td style={{ fontSize: 12 }}>{n.tavern_version?.String ?? n.tavern_version ?? '-'}</td>
               <td style={{ whiteSpace: 'nowrap' }}>
                 <button className="btn-sm" onClick={() => toggle(n, 'allow_register')}>
                   {n.allow_register ? '关注册' : '开注册'}
                 </button>{' '}
-                <button className="btn-sm" onClick={() => toggle(n, 'is_backup_target')}>
-                  {n.is_backup_target ? '取消备份' : '设为备份'}
+                <button className="btn-sm" onClick={() => toggle(n, 'is_backup_target')} title={n.role === 'storage' ? '切换是否接收新的归档备份' : '切换是否允许作为计算热备目标'}>
+                  {n.role === 'storage'
+                    ? (n.is_backup_target ? '暂停接收归档' : '接收归档备份')
+                    : (n.is_backup_target ? '停止接收热备' : '允许作为热备目标')}
                 </button>{' '}
+                <button className="btn-sm" onClick={() => openQuotaEditor(n)} title="配置期望磁盘配额并下发到 Agent">配额策略</button>{' '}
                 <button className="btn-sm primary" onClick={() => genToken(n.id)}>注册令牌</button>{' '}
                 <button className="btn-sm" disabled={scanningNode === n.id} onClick={() => scan(n.id)}>
                   {scanningNode === n.id ? '扫描中…' : '扫描用户'}
@@ -1071,7 +1268,7 @@ function ProtectionAlertsAdmin() {
   const [alerts, setAlerts] = useState<any[]>([])
   const [error, setError] = useState('')
   const load = () => adminApi.protectionAlerts()
-    .then(data => { setAlerts(data.alerts); setError('') })
+    .then(data => { setAlerts(data.alerts ?? []); setError('') })
     .catch(err => setError(err.message))
   useEffect(() => { load(); const timer = setInterval(load, 30000); return () => clearInterval(timer) }, [])
 
@@ -1102,6 +1299,110 @@ function ProtectionAlertsAdmin() {
   )
 }
 
+
+function AuditAdmin() {
+  const [events, setEvents] = useState<any[]>([])
+  const [cursor, setCursor] = useState(0)
+  const [cursorHistory, setCursorHistory] = useState<number[]>([])
+  const [nextCursor, setNextCursor] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [actorType, setActorType] = useState('')
+  const [action, setAction] = useState('')
+  const [outcome, setOutcome] = useState('')
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
+
+  const load = (pageCursor = cursor, pageActor = actorType, pageAction = action, pageOutcome = outcome) => {
+    setLoading(true)
+    return adminApi.audit(pageCursor, pageActor, pageAction, pageOutcome)
+      .then(data => {
+        setEvents(data.events ?? [])
+        setNextCursor(data.next_cursor ?? 0)
+        setHasMore(!!data.has_more)
+        setError('')
+      })
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false))
+  }
+  useEffect(() => { load() }, [])
+
+  const applyFilters = (event: React.FormEvent) => {
+    event.preventDefault()
+    setCursor(0)
+    setCursorHistory([])
+    load(0, actorType, action, outcome)
+  }
+  const previousPage = () => {
+    const previous = cursorHistory[cursorHistory.length - 1] || 0
+    setCursor(previous)
+    setCursorHistory(cursorHistory.slice(0, -1))
+    load(previous, actorType, action, outcome)
+  }
+  const nextPage = () => {
+    setCursorHistory([...cursorHistory, cursor])
+    setCursor(nextCursor)
+    load(nextCursor, actorType, action, outcome)
+  }
+  const toggleDetail = (id: number) => {
+    setExpanded(previous => {
+      const next = new Set(previous)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  const actorLabel = (value: string) => ({ user: '用户', admin: '管理员', agent: '子控', controller: '总控', system: '系统' } as Record<string, string>)[value] || value
+  const outcomeClass = (value: string) => value === 'succeeded' ? 'green' : value === 'failed' ? 'red' : value === 'cancelled' ? 'gray' : 'yellow'
+
+  return (
+    <>
+      <h2>审计日志</h2>
+      <p style={{ color: 'var(--text-dim)', marginBottom: 16 }}>
+        记录管理员/用户/子控的关键操作与结果；不包含密码、令牌或聊天内容。
+      </p>
+      {error && <div className="error-msg">{error}</div>}
+      <form onSubmit={applyFilters} className="card" style={{ margin: '0 0 16px', display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
+        <div className="field" style={{ margin: 0 }}><label>主体类型</label><select value={actorType} onChange={event => setActorType(event.target.value)}><option value="">全部</option><option value="user">用户</option><option value="admin">管理员</option><option value="agent">子控</option><option value="controller">总控</option><option value="system">系统</option></select></div>
+        <div className="field" style={{ margin: 0 }}><label>操作</label><input value={action} onChange={event => setAction(event.target.value)} placeholder="例如 node-settings" maxLength={128} /></div>
+        <div className="field" style={{ margin: 0 }}><label>结果</label><select value={outcome} onChange={event => setOutcome(event.target.value)}><option value="">全部</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="cancelled">已取消</option></select></div>
+        <button className="btn-sm primary" type="submit" disabled={loading}>{loading ? '查询中…' : '筛选'}</button>
+      </form>
+      <table className="table">
+        <thead><tr><th>时间</th><th>主体</th><th>操作</th><th>对象</th><th>结果</th><th>详情</th></tr></thead>
+        <tbody>
+          {events.map(event => (
+            <tr key={event.id}>
+              <td style={{ fontSize: 12 }}>{new Date(event.occurred_at).toLocaleString()}</td>
+              <td style={{ fontSize: 12 }}>{actorLabel(event.actor_type)}<div className="mono" style={{ fontSize: 11 }}>{event.actor_id || '-'}</div></td>
+              <td style={{ fontSize: 12 }}>{event.action}</td>
+              <td style={{ fontSize: 12 }}>{event.target_type}<div className="mono" style={{ fontSize: 11 }}>{event.target_id || '-'}</div></td>
+              <td><span className={`badge ${outcomeClass(event.outcome)}`}>{event.outcome === 'succeeded' ? '成功' : event.outcome === 'failed' ? '失败' : event.outcome === 'cancelled' ? '已取消' : event.outcome}</span></td>
+              <td style={{ fontSize: 12 }}>
+                {event.detail && event.detail !== '{}' ? (
+                  <button className="btn-sm" onClick={() => toggleDetail(event.id)}>{expanded.has(event.id) ? '收起' : '查看'}</button>
+                ) : '-'}
+              </td>
+            </tr>
+          ))}
+          {!loading && events.length === 0 && <tr><td colSpan={6}>没有符合条件的审计记录</td></tr>}
+        </tbody>
+      </table>
+      {events.some(event => expanded.has(event.id)) && (
+        <div className="card" style={{ marginTop: 12 }}>
+          {events.filter(event => expanded.has(event.id)).map(event => (
+            <pre key={event.id} className="mono" style={{ fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(event.detail, null, 2)}</pre>
+          ))}
+        </div>
+      )}
+      <div style={{ marginTop: 12 }}>
+        <button className="btn-sm" onClick={previousPage} disabled={loading || cursorHistory.length === 0}>上一页</button>{' '}
+        <button className="btn-sm" onClick={nextPage} disabled={loading || !hasMore}>下一页</button>
+      </div>
+    </>
+  )
+}
+
 function AdminsAdmin() {
   const [admins, setAdmins] = useState<any[]>([])
   const [username, setUsername] = useState('')
@@ -1109,7 +1410,7 @@ function AdminsAdmin() {
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
 
-  const load = () => adminApi.admins().then(data => setAdmins(data.admins)).catch(err => setError(err.message))
+  const load = () => adminApi.admins().then(data => setAdmins(data.admins ?? [])).catch(err => setError(err.message))
   useEffect(() => { load() }, [])
 
   const create = async (event: React.FormEvent) => {

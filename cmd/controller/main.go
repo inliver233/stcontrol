@@ -116,6 +116,7 @@ func main() {
 	}
 
 	srv := controller.New(cfg, st, secretKey)
+	srv.ConfigPath = *cfgPath
 	log.Printf("总控启动, 监听 %s, 对外 HTTPS 端点已配置", cfg.Listen)
 	if err := srv.Run(runCtx); err != nil && runCtx.Err() == nil {
 		log.Fatalf("服务退出: %v", err)

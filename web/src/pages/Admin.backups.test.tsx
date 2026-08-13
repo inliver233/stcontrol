@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
-import { BackupJobRow, backupWorkflowStateLabel } from './Admin'
+import { BackupJobRow, backupWorkflowStateLabel, StatusBadge } from './Admin'
 
 describe('backup workflow presentation', () => {
   it('labels every durable snapshot phase deterministically', () => {
@@ -71,3 +71,51 @@ describe('backup workflow presentation', () => {
     expect(html).toContain('中止中…')
   })
 })
+
+describe('node composite status presentation', () => {
+  const labels: Record<string, string> = {
+    online: '在线', offline: '离线', unknown: '未知', active: '运营', maintenance: '维护',
+    draining: '排空', decommissioned: '已下线', failed: '故障', retired: '退役',
+    open: '开放', busy: '繁忙', full: '满载', compatible: '兼容', incompatible: '不兼容',
+  }
+  const hl = (v: string) => labels[v] || v
+  const rl = (v: string) => v
+
+  const cases: Array<[any, string]> = [
+    [{ operational_state: 'retired', connectivity_state: 'offline' }, '已退役'],
+    [{ operational_state: 'decommissioned' }, '已退役'],
+    [{ operational_state: 'maintenance', connectivity_state: 'online' }, '维护'],
+    [{ operational_state: 'draining' }, '排空中'],
+    [{ operational_state: 'failed' }, '故障'],
+    [{ operational_state: 'active', connectivity_state: 'offline', capacity_state: 'open', compatibility_state: 'compatible' }, '离线'],
+    [{ operational_state: 'active', connectivity_state: 'online', compatibility_state: 'incompatible', capacity_state: 'open' }, '不兼容'],
+    [{ operational_state: 'active', connectivity_state: 'online', compatibility_state: 'compatible', capacity_state: 'full' }, '已满'],
+    [{ operational_state: 'active', connectivity_state: 'online', compatibility_state: 'compatible', capacity_state: 'busy' }, '繁忙'],
+    [{ operational_state: 'active', connectivity_state: 'online', compatibility_state: 'compatible', capacity_state: 'open' }, '可用'],
+  ]
+
+  it.each(cases)('compositeStatus priority %# -> %s', (node, expected) => {
+    const html = renderToStaticMarkup(<StatusBadge node={node} healthLabel={hl} reasonLabel={rl} />)
+    expect(html).toContain(expected)
+  })
+
+  it('shows stale capacity/compatibility notes while offline', () => {
+    const html = renderToStaticMarkup(<StatusBadge node={{
+      operational_state: 'active', connectivity_state: 'offline', capacity_state: 'open', compatibility_state: 'compatible',
+    }} healthLabel={hl} reasonLabel={rl} />)
+    expect(html).toContain('最后上报')
+    expect(html).toContain('最后检测')
+  })
+
+  it('keeps dimensions visible in a healthy online node', () => {
+    const html = renderToStaticMarkup(<StatusBadge node={{
+      operational_state: 'active', connectivity_state: 'online', capacity_state: 'open', compatibility_state: 'compatible',
+    }} healthLabel={hl} reasonLabel={rl} />)
+    expect(html).toContain('连通性：在线')
+    expect(html).toContain('运营：运营')
+    expect(html).toContain('容量：开放')
+    expect(html).toContain('兼容：兼容')
+    expect(html).not.toContain('最后上报')
+  })
+})
+

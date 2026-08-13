@@ -43,6 +43,7 @@ type agentCommandSummary struct {
 	RelayPublicKey     string                              `json:"relay_public_key,omitempty"`
 	ReplicaIntegrity   *protocol.ReplicaIntegrityReceipt   `json:"replica_integrity,omitempty"`
 	ReplicaCleanup     *protocol.DeleteReplicaReceipt      `json:"replica_cleanup,omitempty"`
+	ControllerBackup   *protocol.ControllerBackupReceipt   `json:"controller_backup,omitempty"`
 }
 
 type agentCommandError struct {

@@ -26,6 +26,18 @@ type ControllerConfig struct {
 	OAuth        OAuthConfig    `yaml:"oauth"`
 	Admin        AdminConfig    `yaml:"admin"`
 	Relay        RelayConfig    `yaml:"relay"`
+	ControllerBackup ControllerDisasterBackupPolicy `yaml:"controller_backup"`
+}
+
+// ControllerDisasterBackupPolicy controls automatic backup of the Controller's
+// own control-plane state (postgres dump + control snapshot + keys/config) to a
+// pure-storage node.
+type ControllerDisasterBackupPolicy struct {
+	Enabled        bool  `yaml:"enabled"`
+	IntervalSec    int   `yaml:"interval_sec"` // default 86400 (24h)
+	RetryMax       int   `yaml:"retry_max"`    // default 3
+	KeepLatestOnly bool  `yaml:"keep_latest_only"`
+	PgDump         bool  `yaml:"pg_dump"`      // include postgres dump; default true (graceful if pg_dump missing)
 }
 
 // NodePolicy 节点策略。
@@ -169,6 +181,9 @@ func DefaultController() *ControllerConfig {
 		Relay: RelayConfig{
 			DataDir: "./controller-relay-data", MaxBytes: 110 << 30,
 			RetentionMin: 720, MaxConcurrent: 4,
+		},
+		ControllerBackup: ControllerDisasterBackupPolicy{
+			Enabled: true, IntervalSec: 24 * 3600, RetryMax: 3, KeepLatestOnly: true, PgDump: true,
 		},
 	}
 }

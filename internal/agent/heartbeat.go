@@ -96,30 +96,35 @@ func (a *Agent) sendHeartbeat(ctx context.Context) {
 		}
 	}
 	diskQuota := a.Cfg.DiskQuotaBytes
+	if a.runtimeDiskQuota() > 0 {
+		diskQuota = a.runtimeDiskQuota()
+	}
 	if metricsValid && (diskQuota <= 0 || diskQuota > metrics.DiskTotalBytes) {
 		diskQuota = metrics.DiskTotalBytes
 	}
 	reqBody := protocol.HeartbeatRequest{
-		NodeID:             a.Cfg.NodeID,
-		AgentVersion:       Version,
-		TavernVersion:      info.TavernVersion,
-		CPUPct:             metrics.CPUPct,
-		MemPct:             metrics.MemPct,
-		DiskPct:            metrics.DiskPct,
-		MetricsValid:       metricsValid,
-		DiskTotalBytes:     metrics.DiskTotalBytes,
-		DiskAvailableBytes: metrics.DiskAvailableBytes,
-		DiskQuotaBytes:     diskQuota,
-		AllocatedDiskBytes: allocatedBytes,
-		OnlineUsers:        onlineUsers,
-		TaskQueueDepth:     len(a.commandSlots),
-		TelemetrySource:    telemetrySource,
-		Compatibility:      compatibility,
-		TransferURL:        a.Cfg.TransferPublicURL,
-		RegistrationPolicy: registrationPolicy,
-		ActivityObservedAt: activityObservedAt,
-		Users:              users,
-		ControlMode:        a.controlModeReport(),
+		NodeID:              a.Cfg.NodeID,
+		AgentVersion:        Version,
+		TavernVersion:       info.TavernVersion,
+		CPUPct:              metrics.CPUPct,
+		MemPct:              metrics.MemPct,
+		DiskPct:             metrics.DiskPct,
+		MetricsValid:        metricsValid,
+		DiskTotalBytes:      metrics.DiskTotalBytes,
+		DiskAvailableBytes:  metrics.DiskAvailableBytes,
+		DiskQuotaBytes:      diskQuota,
+		AllocatedDiskBytes:  allocatedBytes,
+		OnlineUsers:         onlineUsers,
+		TaskQueueDepth:      len(a.commandSlots),
+		TelemetrySource:     telemetrySource,
+		Compatibility:       compatibility,
+		TransferURL:         a.Cfg.TransferPublicURL,
+		RegistrationPolicy:  registrationPolicy,
+		ActivityObservedAt:  activityObservedAt,
+		Users:               users,
+		ControlMode:         a.controlModeReport(),
+		AppliedQuotaVersion: a.appliedQuotaVersion(),
+		EffectiveQuotaBytes: diskQuota,
 	}
 	var response protocol.HeartbeatResponse
 	if err := a.callController(ctx, http.MethodPost, "/api/agent/heartbeat", reqBody, &response); err != nil {
@@ -153,6 +158,45 @@ func (a *Agent) sendHeartbeat(ctx context.Context) {
 	if err := a.syncTavernActivityLeases(ctx); err != nil {
 		log.Printf("应用总控活动租约确认失败: %v", err)
 	}
+	if err := a.applyControllerQuotaPolicy(ctx, response); err != nil {
+		log.Printf("应用总控节点配额策略失败: %v", err)
+	}
+}
+
+// runtimeDiskQuota returns the controller-distributed quota override, or 0 when
+// the agent should keep its local agent.yaml disk_quota_bytes value.
+func (a *Agent) runtimeDiskQuota() int64 {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.state.RuntimeDiskQuotaBytes
+}
+
+func (a *Agent) appliedQuotaVersion() int64 {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.state.AppliedQuotaVersion
+}
+
+// applyControllerQuotaPolicy validates and applies the expected quota policy
+// echoed by the Controller.  Only a higher policy version can move the applied
+// value; the effective quota is reported back on the next heartbeat so the
+// admin console converges to "已生效" once the node actually enforces it.
+func (a *Agent) applyControllerQuotaPolicy(ctx context.Context, response protocol.HeartbeatResponse) error {
+	if response.QuotaPolicyVersion <= 0 || response.ExpectedDiskQuotaBytes < 0 {
+		return nil
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if response.QuotaPolicyVersion <= a.state.AppliedQuotaVersion {
+		return nil
+	}
+	quota := response.ExpectedDiskQuotaBytes
+	if quota < 0 {
+		return fmt.Errorf("controller expected quota %d is invalid", quota)
+	}
+	a.state.RuntimeDiskQuotaBytes = quota
+	a.state.AppliedQuotaVersion = response.QuotaPolicyVersion
+	return a.saveRuntimeStateLocked()
 }
 
 func (a *Agent) controllerHealthAvailable(ctx context.Context) bool {

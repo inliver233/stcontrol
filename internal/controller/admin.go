@@ -67,6 +67,14 @@ func (s *Server) handleAdminCreateNode(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusInternalServerError, "创建节点失败")
 		return
 	}
+	if n.ExpectedDiskQuotaBytes > 0 {
+		if err := s.Store.UpdateNodeExpectedQuota(
+			r.Context(), n.ID, n.ExpectedDiskQuotaBytes, time.Now().UTC(),
+		); err != nil {
+			protocol.WriteError(w, http.StatusInternalServerError, "节点配额策略保存失败")
+			return
+		}
+	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "id": n.ID})
 }
 
@@ -88,8 +96,20 @@ func (s *Server) handleAdminUpdateNode(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusBadRequest, "节点配置无效")
 		return
 	}
+	if n.ExpectedDiskQuotaBytes < 0 {
+		protocol.WriteError(w, http.StatusBadRequest, "节点配额不能为负数")
+		return
+	}
 	if err := s.Store.UpdateNodeSettings(r.Context(), &n); err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "更新失败")
+		return
+	}
+	// R20/R21 quota distribution: persist the expected policy with a version
+	// bump so the Agent receives it on the next heartbeat and applies it.
+	if err := s.Store.UpdateNodeExpectedQuota(
+		r.Context(), nid, n.ExpectedDiskQuotaBytes, time.Now().UTC(),
+	); err != nil {
+		protocol.WriteError(w, http.StatusInternalServerError, "节点配额策略更新失败")
 		return
 	}
 	detail, _ := json.Marshal(map[string]any{

@@ -62,6 +62,11 @@ type Node struct {
 	DiskTotalBytes               sql.NullInt64   `json:"disk_total_bytes"`
 	DiskAvailableBytes           sql.NullInt64   `json:"disk_available_bytes"`
 	DiskQuotaBytes               sql.NullInt64   `json:"disk_quota_bytes"`
+	ExpectedDiskQuotaBytes       int64           `json:"expected_disk_quota_bytes"`
+	QuotaPolicyVersion           int64           `json:"quota_policy_version"`
+	QuotaSyncState               string          `json:"quota_sync_state"`
+	QuotaSyncAt                  sql.NullTime    `json:"quota_sync_at"`
+	QuotaSyncErrorCode           sql.NullString  `json:"quota_sync_error_code"`
 	AllocatedDiskBytes           sql.NullInt64   `json:"allocated_disk_bytes"`
 	OnlineUsers                  int             `json:"online_users"`
 	TaskQueueDepth               int             `json:"task_queue_depth"`
@@ -112,6 +117,17 @@ type PendingPasswordSync struct {
 	PasswordHash string
 	PasswordSalt string
 	Version      int64
+}
+
+// PendingPasswordRemoval is a durable node-level intent to revoke the
+// password identity's node-local (tavern) password after the identity is
+// unbound. The password-sync worker pushes a remove-password command for each
+// reachable node and only marks it completed once that node confirms.
+type PendingPasswordRemoval struct {
+	GlobalUserID int64
+	LegacyUserID int64
+	NodeID       int64
+	LocalHandle  string
 }
 
 // Ticket 一次性票据。

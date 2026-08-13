@@ -377,7 +377,8 @@ func (s *Store) UpdateUserPassword(
 	var globalUserID int64
 	err = tx.QueryRowContext(ctx, `
 	  UPDATE auth_identities
-	  SET password_hash=$2, password_version=password_version+1, updated_at=$3
+	  SET password_hash=$2, password_version=password_version+1,
+	    previous_password_hash=password_hash, password_changed_at=$3, updated_at=$3
 	  WHERE user_id=(SELECT id FROM global_users WHERE legacy_user_id=$1)
 	    AND provider='password' AND status='active'
 	  RETURNING user_id`, userID, passwordHash, now).Scan(&globalUserID)
