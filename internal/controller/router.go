@@ -118,6 +118,7 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Delete("/users/me/identities/{provider}", s.handleUnbindIdentity)
 		r.Get("/users/me/import-claims", s.handleListMyAccountImportClaims)
 		r.Post("/users/me/import-claims", s.handleClaimImportedAccount)
+		r.Post("/users/me/node-latency", s.handleReportNodeLatency)
 	})
 
 	// 冲突恢复区只接受 conflict-frozen 用户，不继承普通用户权限。

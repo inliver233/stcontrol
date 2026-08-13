@@ -35,7 +35,8 @@ func TestPreviousGenerationCredentialCannotReachCommandEndpoints(t *testing.T) {
 			"disk_window_avg", "disk_window_peak", "disk_total_bytes", "disk_available_bytes",
 			"disk_quota_bytes", "expected_disk_quota_bytes", "quota_policy_version", "quota_sync_state",
 			"quota_sync_at", "quota_sync_error_code", "allocated_disk_bytes", "online_users", "task_queue_depth", "telemetry_source",
-			"allow_register", "is_backup_target", "registration_policy_state", "registration_policy_version",
+			"client_latency_ms", "client_latency_observed_at",
+			"allow_register", "recommendation_weight", "is_backup_target", "registration_policy_state", "registration_policy_version",
 			"registration_policy_expires_at", "registration_policy_observed_at", "registration_policy_error_code", "created_at",
 		}).AddRow(
 			int64(12), "node", "compute", "https://node.example", "", "hk",
@@ -44,7 +45,7 @@ func TestPreviousGenerationCredentialCannotReachCommandEndpoints(t *testing.T) {
 			"open", nil, now, nil, "compatible", nil, strings.Repeat("a", 64),
 			now, now, 10.0, 20.0, 10.0, 20.0, 30.0, 30.0,
 			int64(200<<30), int64(100<<30), int64(180<<30), int64(0), int64(0), "synced", nil, nil,
-			int64(20<<30), 3, 0, "adapter", true, false, "open", int64(1), now.Add(time.Minute), now, nil, now,
+			int64(20<<30), 3, 0, "adapter", nil, nil, true, 0, false, "open", int64(1), now.Add(time.Minute), now, nil, now,
 		))
 	secretKey := bytes.Repeat([]byte{9}, 32)
 	psk := "previous-generation-agent-secret"

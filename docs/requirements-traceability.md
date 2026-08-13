@@ -138,6 +138,13 @@
 
 - **R09/R19 离线备份调度不再被单条同步工作流阻塞**：`TriggerUserBackup` 在 snapshot 并发槽饱和时立即返回（工作流保持 scheduled 由 20s durable reconciler 认领续跑），离线备份调度循环可继续扫描所有用户，慢归档不再串行阻塞后续备份；管理员手动触发与断言完成的集成测试仍同步执行（有槽时）。
 
+
+## 2026-08-14 flash 分支阶段记录（P3 收尾：Round 20/51/52、R18）
+
+- **Round 51/52 无备份保护前端提示**：Account.tsx 现加载 `api.protection()`，按保护状态显示“数据保护：已保护/临时保护/未保护/冲突”提示条；未保护时额外提示“当前还没有可用的备份副本…系统会在检测到合格备份目标后自动为你建立首次同步保护”。
+- **Round 20 管理员可调推荐权重**：迁移 0043 给 nodes 增加 `recommendation_weight`（0-100，默认 0）；UpdateNodeSettings 持久化；注册页 `availableNodeRank` 以“可注册+容量开放 > 容量繁忙 > 不可注册”为主序，权重在同类内优先（每单位权重=10 档），前端“配额策略”面板新增推荐权重输入。
+- **R18 客户端延迟持久化**：迁移 0044 给 nodes 增加 `client_latency_ms/client_latency_observed_at`；新增 `RecordNodeClientLatency`（EWMA 平滑、0..3600000ms 校验）与 `POST /api/users/me/node-latency`（登录用户、严格 JSON）；Nodes/Register/SelectNode 实测延迟后 fire-and-forget 上报；`availableNodeRank` 在权重同级内以延迟档位（<100/<300/<800ms）作次级排序。测试：store EWMA/校验、controller 有效样本持久化与 6 类非法样本 400。
+
 ## 完成判定规则
 
 每一行只有同时满足以下条件才可改为 `完成`：

@@ -141,7 +141,8 @@ const nodeSelectColumns = `
   disk_window_avg,disk_window_peak,disk_total_bytes,disk_available_bytes,
   disk_quota_bytes,expected_disk_quota_bytes,quota_policy_version,quota_sync_state,
   quota_sync_at,quota_sync_error_code,allocated_disk_bytes,online_users,task_queue_depth,telemetry_source,
-  allow_register,is_backup_target,registration_policy_state,
+  client_latency_ms,client_latency_observed_at,
+  allow_register,recommendation_weight,is_backup_target,registration_policy_state,
   registration_policy_version,registration_policy_expires_at,
   registration_policy_observed_at,registration_policy_error_code,created_at`
 
@@ -161,7 +162,8 @@ func scanNode(scanner nodeScanner, n *Node) error {
 		&n.DiskWindowAvg, &n.DiskWindowPeak, &n.DiskTotalBytes, &n.DiskAvailableBytes,
 		&n.DiskQuotaBytes, &n.ExpectedDiskQuotaBytes, &n.QuotaPolicyVersion, &n.QuotaSyncState,
 		&n.QuotaSyncAt, &n.QuotaSyncErrorCode, &n.AllocatedDiskBytes, &n.OnlineUsers, &n.TaskQueueDepth, &n.TelemetrySource,
-		&n.AllowRegister, &n.IsBackupTarget, &n.RegistrationPolicyState,
+		&n.ClientLatencyMS, &n.ClientLatencyObservedAt,
+		&n.AllowRegister, &n.RecommendationWeight, &n.IsBackupTarget, &n.RegistrationPolicyState,
 		&n.RegistrationPolicyVersion, &n.RegistrationPolicyExpiresAt,
 		&n.RegistrationPolicyObservedAt, &n.RegistrationPolicyErrorCode, &n.CreatedAt,
 	)
@@ -382,9 +384,9 @@ func (s *Store) UpdateNodeStatus(ctx context.Context, id int64, status string) e
 func (s *Store) UpdateNodeSettings(ctx context.Context, n *Node) error {
 	_, err := s.DB.ExecContext(ctx, `
 	  UPDATE nodes SET name=$2,base_url=$3,region=$4,allow_register=$5,
-	    is_backup_target=$6 WHERE id=$1`,
+	    is_backup_target=$6,recommendation_weight=$7 WHERE id=$1`,
 		n.ID, n.Name, n.BaseURL, n.Region, n.AllowRegister,
-		n.IsBackupTarget)
+		n.IsBackupTarget, n.RecommendationWeight)
 	return err
 }
 
@@ -423,6 +425,26 @@ func (s *Store) UpdateNodeExpectedQuota(
 	return tx.Commit()
 }
 
+
+// RecordNodeClientLatency persists a browser-measured latency sample using a
+// simple EWMA so a few fast/slow probes do not dominate.  The controller does
+// not retain per-user history; the aggregated value is used only for node
+// selection ranking (R18).
+func (s *Store) RecordNodeClientLatency(ctx context.Context, nodeID, latencyMS int64, now time.Time) error {
+	if nodeID <= 0 || latencyMS < 0 || latencyMS > 3_600_000 {
+		return fmt.Errorf("invalid client latency sample")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE nodes SET
+		  client_latency_ms=CASE WHEN client_latency_ms IS NULL THEN $2
+		    ELSE (client_latency_ms*3+$2)/4 END,
+		  client_latency_observed_at=$3
+		WHERE id=$1`, nodeID, latencyMS, now)
+	return err
+}
 // MarkStaleNodesOffline 把超过 timeout 未心跳的节点标记为 offline。
 func (s *Store) MarkStaleNodesOffline(ctx context.Context, timeout time.Duration) error {
 	if timeout <= 0 {

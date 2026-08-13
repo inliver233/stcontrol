@@ -252,6 +252,8 @@ export const api = {
   availableNodes: () => request<{ nodes: Node[] }>('/api/nodes/available'),
   myNodes: () => request<{ nodes: MyNode[] }>('/api/users/me/nodes'),
   protection: () => request<ProtectionState>('/api/users/me/protection'),
+  reportNodeLatency: (node_id: number, latency_ms: number) =>
+    request<{ ok: boolean }>('/api/users/me/node-latency', { method: 'POST', body: JSON.stringify({ node_id, latency_ms }) }),
   confirmTakeover: (target_node_id: number, operation_id: string, expected_recovery_at: string) =>
     request<{ ok: boolean; target_node_id: number; latest_recovery_at: string; replayed: boolean }>('/api/users/me/takeover', {
       method: 'POST',

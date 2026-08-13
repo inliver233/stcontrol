@@ -160,7 +160,8 @@ func TestGetNodeByIDReadsIndependentHealthDimensions(t *testing.T) {
 			"disk_window_avg", "disk_window_peak", "disk_total_bytes", "disk_available_bytes",
 			"disk_quota_bytes", "expected_disk_quota_bytes", "quota_policy_version", "quota_sync_state",
 			"quota_sync_at", "quota_sync_error_code", "allocated_disk_bytes", "online_users", "task_queue_depth", "telemetry_source",
-			"allow_register", "is_backup_target", "registration_policy_state", "registration_policy_version",
+			"client_latency_ms", "client_latency_observed_at",
+			"allow_register", "recommendation_weight", "is_backup_target", "registration_policy_state", "registration_policy_version",
 			"registration_policy_expires_at", "registration_policy_observed_at", "registration_policy_error_code", "created_at",
 		}).AddRow(
 			int64(12), "node", "compute", "https://node.example", "", "hk",
@@ -169,8 +170,8 @@ func TestGetNodeByIDReadsIndependentHealthDimensions(t *testing.T) {
 			"busy", "cpu_busy", now, nil, "compatible", nil,
 			strings.Repeat("a", 64), now, now, 51.0, 62.0, 20.0, 25.0, 30.0, 35.0,
 			int64(200<<30), int64(100<<30), int64(180<<30), int64(0), int64(0), "synced", nil, nil,
-			int64(20<<30), 3, 2, "directory_fallback",
-			true, false, "open", int64(4), now.Add(time.Minute), now, nil, now,
+			int64(20<<30), 3, 2, "directory_fallback", nil, nil,
+			true, 0, false, "open", int64(4), now.Add(time.Minute), now, nil, now,
 		))
 	node, err := st.GetNodeByID(context.Background(), 12)
 	if err != nil || node == nil || node.ConnectivityState != "online" ||
@@ -190,8 +191,8 @@ func TestUpdateNodeSettingsPreservesAgentOwnedTransferURL(t *testing.T) {
 		ID: 12, Name: "node", BaseURL: "https://node.example", Role: "compute",
 		OperationalState: "maintenance", AllowRegister: false, IsBackupTarget: true,
 	}
-	mock.ExpectExec(`UPDATE nodes SET name=.*is_backup_target=\$6 WHERE`).WithArgs(
-		int64(12), "node", "https://node.example", node.Region, false, true,
+	mock.ExpectExec(`UPDATE nodes SET name=.*recommendation_weight=\$7 WHERE`).WithArgs(
+		int64(12), "node", "https://node.example", node.Region, false, true, 0,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := st.UpdateNodeSettings(context.Background(), node); err != nil {
 		t.Fatal(err)
@@ -486,5 +487,31 @@ func TestUpdateNodeExpectedQuotaBumpsVersionOnceAndIsIdempotent(t *testing.T) {
 		t.Fatal("negative quota was accepted")
 	}
 	closeDB()
+}
+func TestRecordNodeClientLatencySmoothsAndValidates(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 14, 1, 0, 0, 0, time.UTC)
+	mock.ExpectExec(`(?s)UPDATE nodes SET.*client_latency_ms=CASE.*client_latency_observed_at=\$3.*WHERE id=\$1`).
+		WithArgs(int64(12), int64(150), now).WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := st.RecordNodeClientLatency(context.Background(), 12, 150, now); err != nil {
+		t.Fatal(err)
+	}
+	assertMockExpectations(t, mock)
+	closeDB()
+
+	// Invalid samples are rejected before touching the database.
+	st2, _, closeDB2 := newMockStore(t)
+	defer closeDB2()
+	if err := st2.RecordNodeClientLatency(context.Background(), 0, 150, now); err == nil {
+		t.Fatal("zero node id accepted")
+	}
+	if err := st2.RecordNodeClientLatency(context.Background(), 12, -1, now); err == nil {
+		t.Fatal("negative latency accepted")
+	}
+	if err := st2.RecordNodeClientLatency(context.Background(), 12, 4_000_000, now); err == nil {
+		t.Fatal("oversized latency accepted")
+	}
 }
 

@@ -53,15 +53,17 @@ func (s *Server) nodeStatusLabel(n *store.Node) string {
 }
 
 type availableNode struct {
-	ID                 int64  `json:"id"`
-	Name               string `json:"name"`
-	Region             string `json:"region"`
-	BaseURL            string `json:"base_url"`
-	StatusLabel        string `json:"status_label"`
-	Registrable        bool   `json:"registrable"`
-	Recommended        bool   `json:"recommended"`
-	InvitationRequired bool   `json:"invitation_required"`
-	capacityState      string
+	ID                   int64  `json:"id"`
+	Name                 string `json:"name"`
+	Region               string `json:"region"`
+	BaseURL              string `json:"base_url"`
+	StatusLabel          string `json:"status_label"`
+	Registrable          bool   `json:"registrable"`
+	Recommended          bool   `json:"recommended"`
+	InvitationRequired   bool   `json:"invitation_required"`
+	capacityState        string
+	recommendationWeight int
+	clientLatencyMS      int64
 }
 
 // handleAvailableNodes 注册页：列出产品状态，前端再测延迟。
@@ -74,14 +76,16 @@ func (s *Server) handleAvailableNodes(w http.ResponseWriter, r *http.Request) {
 	out := make([]availableNode, 0, len(nodes))
 	for _, n := range nodes {
 		out = append(out, availableNode{
-			ID:                 n.ID,
-			Name:               n.Name,
-			Region:             n.Region.String,
-			BaseURL:            n.BaseURL,
-			StatusLabel:        s.nodeStatusLabel(n),
-			Registrable:        s.nodeRegistrable(n),
-			InvitationRequired: n.RegistrationPolicyState == "invitation_required",
-			capacityState:      n.CapacityState,
+			ID:                   n.ID,
+			Name:                 n.Name,
+			Region:               n.Region.String,
+			BaseURL:              n.BaseURL,
+			StatusLabel:          s.nodeStatusLabel(n),
+			Registrable:          s.nodeRegistrable(n),
+			InvitationRequired:   n.RegistrationPolicyState == "invitation_required",
+			capacityState:        n.CapacityState,
+			recommendationWeight: n.RecommendationWeight,
+			clientLatencyMS:      n.ClientLatencyMS.Int64,
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -96,14 +100,36 @@ func (s *Server) handleAvailableNodes(w http.ResponseWriter, r *http.Request) {
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{"nodes": out})
 }
 
+// availableNodeRank orders registrable nodes by capacity, then lets the
+// administrator's recommendation weight (Round 20) break ties: higher weight
+// sorts earlier among equally eligible nodes.  Non-registrable nodes always
+// sort last regardless of weight.
 func availableNodeRank(node availableNode) int {
-	if node.Registrable && node.capacityState == "open" {
+	if !node.Registrable {
+		return 1_000_000
+	}
+	rank := 0
+	if node.capacityState != "open" {
+		rank = 10_000
+	}
+	// The administrator's weight (Round 20) dominates; persisted latency (R18)
+	// is a secondary tiebreaker only within the same weight tier.
+	return rank - node.recommendationWeight*10 + latencyTier(node.clientLatencyMS)
+}
+
+func latencyTier(ms int64) int {
+	switch {
+	case ms <= 0:
 		return 0
-	}
-	if node.Registrable {
+	case ms < 100:
 		return 1
+	case ms < 300:
+		return 2
+	case ms < 800:
+		return 3
+	default:
+		return 4
 	}
-	return 2
 }
 
 func nodeReadyForManagedOperation(node *store.Node) bool {

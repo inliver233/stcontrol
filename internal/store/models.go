@@ -68,10 +68,13 @@ type Node struct {
 	QuotaSyncAt                  sql.NullTime    `json:"quota_sync_at"`
 	QuotaSyncErrorCode           sql.NullString  `json:"quota_sync_error_code"`
 	AllocatedDiskBytes           sql.NullInt64   `json:"allocated_disk_bytes"`
+	ClientLatencyMS              sql.NullInt64   `json:"client_latency_ms"`
+	ClientLatencyObservedAt      sql.NullTime     `json:"client_latency_observed_at"`
 	OnlineUsers                  int             `json:"online_users"`
 	TaskQueueDepth               int             `json:"task_queue_depth"`
 	TelemetrySource              string          `json:"telemetry_source"`
 	AllowRegister                bool            `json:"allow_register"`
+	RecommendationWeight         int             `json:"recommendation_weight"`
 	IsBackupTarget               bool            `json:"is_backup_target"`
 	RegistrationPolicyState      string          `json:"registration_policy_state"`
 	RegistrationPolicyVersion    int64           `json:"registration_policy_version"`

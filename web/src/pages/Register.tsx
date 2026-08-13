@@ -33,7 +33,13 @@ export default function RegisterPage() {
         setLoadingNodes(false)
         // 并发测延迟
         const withLatency = await Promise.all(
-          list.map(async n => ({ ...n, latency_ms: await measureLatency(n.base_url) })),
+          list.map(async n => {
+            const latency_ms = await measureLatency(n.base_url)
+            if (latency_ms >= 0) {
+              api.reportNodeLatency(n.id, latency_ms).catch(() => undefined)
+            }
+            return { ...n, latency_ms }
+          }),
         )
         if (!cancelled) setNodes(withLatency)
       } catch {

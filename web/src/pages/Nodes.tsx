@@ -46,7 +46,14 @@ export default function NodesPage() {
 					}
 				}
         const withLatency = await Promise.all(
-          list.map(async n => ({ ...n, latency_ms: await measureLatency(n.base_url) })),
+          list.map(async n => {
+            const latency_ms = await measureLatency(n.base_url)
+            if (latency_ms >= 0) {
+              // R18: persist the sample so future selections see stable latency.
+              api.reportNodeLatency(n.node_id, latency_ms).catch(() => undefined)
+            }
+            return { ...n, latency_ms }
+          }),
         )
         if (cancelled) return
         setNodes(withLatency)
@@ -150,7 +157,13 @@ export default function NodesPage() {
 	const refreshAfterRestore = async (targetNodeID: number) => {
 		const [{ nodes: list }, protectionState] = await Promise.all([api.myNodes(), api.protection()])
 		const withLatency = await Promise.all(
-			list.map(async node => ({ ...node, latency_ms: await measureLatency(node.base_url) })),
+			list.map(async node => {
+				const latency_ms = await measureLatency(node.base_url)
+				if (latency_ms >= 0) {
+					api.reportNodeLatency(node.node_id, latency_ms).catch(() => undefined)
+				}
+				return { ...node, latency_ms }
+			}),
 		)
 		if (!mounted.current) return
 		setNodes(withLatency)

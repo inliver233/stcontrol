@@ -707,6 +707,10 @@ function NodesAdmin() {
             <label>期望磁盘配额（GB；0 = 继承 agent.yaml）</label>
             <input inputMode="numeric" value={quotaValue} onChange={e => setQuotaValue(e.target.value)} placeholder="0" />
           </div>
+          <div className="field">
+            <label>推荐权重（0-100；用于新注册节点推荐排序，越高越靠前）</label>
+            <input inputMode="numeric" value={quotaNode?.recommendation_weight ?? 0} onChange={e => setQuotaNode({ ...quotaNode, recommendation_weight: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })} />
+          </div>
           <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 10 }}>
             当前上报实际生效：{bytes(quotaNode.disk_quota_bytes)}
             {quotaNode.quota_sync_state === 'synced' ? ' · 已生效' : quotaNode.quota_sync_state === 'pending' ? ' · 待同步' : ' · ' + (quotaNode.quota_sync_state || '未知')}

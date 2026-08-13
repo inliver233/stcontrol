@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, AccountImportClaim, AuthIdentity } from '../api'
+import { api, AccountImportClaim, AuthIdentity, ProtectionState } from '../api'
 
 const providerLabel: Record<string, string> = {
   password: '账号密码', discord: 'Discord', linuxdo: 'LinuxDo',
@@ -18,13 +18,17 @@ export default function AccountPage() {
   const [claims, setClaims] = useState<AccountImportClaim[]>([])
   const [claimPasswords, setClaimPasswords] = useState<Record<number, string>>({})
   const [claimingNode, setClaimingNode] = useState<number | null>(null)
+  const [protection, setProtection] = useState<ProtectionState | null>(null)
 
   const load = async () => {
     try {
-      const [result, imported] = await Promise.all([api.identities(), api.importClaims()])
+      const [result, imported, protectionState] = await Promise.all([
+        api.identities(), api.importClaims(), api.protection().catch(() => null),
+      ])
       setIdentities(result.identities ?? [])
       setCanUnbind(result.can_unbind)
       setClaims(imported.claims ?? [])
+      setProtection(protectionState)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '加载登录方式失败')
     } finally {
@@ -105,6 +109,16 @@ export default function AccountPage() {
     <div className="page">
       <div className="card wide">
         <div className="brand"><h1>账号安全</h1><p>最多绑定密码、Discord、LinuxDo 三种登录方式，且必须至少保留一种</p></div>
+        {!loading && protection && (
+          <div className={protection.state === 'protected' ? 'success-msg' : protection.state === 'conflict' || protection.state === 'unavailable' ? 'error-msg' : 'warning-msg'} style={{ marginBottom: 12 }}>
+            <strong>数据保护：{protection.label}</strong><br />{protection.risk}
+          </div>
+        )}
+        {!loading && protection?.state === 'unprotected' && (
+          <div className="warning-msg" style={{ marginBottom: 12 }}>
+            当前还没有可用的备份副本。你仍可正常使用；系统会在检测到合格备份目标后自动为你建立首次同步保护。
+          </div>
+        )}
         {error && <div className="error-msg">{error}</div>}
         {message && <div className="success-msg">{message}</div>}
         {loading ? <div className="loading">加载中…</div> : (
