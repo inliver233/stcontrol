@@ -606,6 +606,79 @@ func TestSnapshotArchiveVerificationAndPublish(t *testing.T) {
 	}
 }
 
+func TestSnapshotArchiveRejectsExpansionBombAndOversizedDeclaredTotal(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	snapshotDir := filepath.Join(root, "source")
+	if err := os.MkdirAll(snapshotDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Sparse 1.25 GiB file: on-disk blocks are near-zero, but tar streams the
+	// full logical size of highly compressible zeros, so the declared total
+	// exceeds the 1 GiB gate and the ratio far exceeds the 200x expansion
+	// limit. The verify path must refuse before writing anything.
+	bigSize := int64((11 << 30) / 8)
+	bigPath := filepath.Join(snapshotDir, "big.bin")
+	bigFile, err := os.Create(bigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bigFile.Truncate(bigSize); err != nil {
+		_ = bigFile.Close()
+		t.Fatal(err)
+	}
+	if _, err := bigFile.Write([]byte{7}); err != nil {
+		_ = bigFile.Close()
+		t.Fatal(err)
+	}
+	if err := bigFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fileDigest := sha256.Sum256(make([]byte, bigSize))
+	manifest := protocol.SnapshotManifest{
+		FormatVersion: 1, WorkflowID: testWorkflowID, SnapshotID: testSnapshotID,
+		GlobalUserID: 70, Handle: "alice", SourceNodeID: 8, TargetNodeID: 9,
+		ActivityEpoch: 4, CreatedAt: time.Now().UTC(),
+		Files: []protocol.ManifestEntry{{Path: "big.bin", Size: bigSize, SHA256: hex.EncodeToString(fileDigest[:])}},
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	archivePath := filepath.Join(root, "bomb.tar.zst")
+	if err := createSnapshotArchive(context.Background(), archivePath, snapshotDir, manifestJSON, manifest.Files); err != nil {
+		t.Fatal(err)
+	}
+	archiveDigest, err := hashFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archiveInfo, statErr := os.Stat(archivePath); statErr != nil || archiveInfo.Size() <= 0 ||
+		bigSize/archiveInfo.Size() <= 200 {
+		t.Fatalf("test fixture did not produce a >200x expansion ratio")
+	}
+	taskRoot := filepath.Join(root, "tasks", testSnapshotID)
+	if err := os.MkdirAll(taskRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	finalPath := filepath.Join(root, "replicas", "alice")
+	if err := os.MkdirAll(finalPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err = extractVerifyAndPublish(
+		context.Background(), archivePath, taskRoot, finalPath,
+		pendingTransfer{
+			WorkflowID: testWorkflowID, SnapshotID: testSnapshotID, GlobalUserID: 70, TargetNodeID: 9,
+			Handle: "alice", DestinationKind: "archive", SourceNodeID: 8, ActivityEpoch: 4,
+		}, archiveDigest[:], func() error { return nil },
+	)
+	if err == nil {
+		t.Fatal("expansion bomb was accepted")
+	}
+	// Nothing may be staged: the staging tree must remain empty.
+	staged := filepath.Join(taskRoot, "staging")
+	if entries, statErr := os.ReadDir(staged); statErr == nil && len(entries) != 0 {
+		t.Fatalf("bomb wrote %d staged entries", len(entries))
+	}
+}
+
 func TestAgentDataPlaneHandlerPublishesCapabilityOnceEndToEnd(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("atomic snapshot publication is Linux-only")
