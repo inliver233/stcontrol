@@ -106,6 +106,14 @@ const adminApi = {
     if (outcome) params.set('outcome', outcome)
     return adminReq<{ events: any[]; has_more: boolean; next_cursor: number }>(`/api/admin/audit?${params}`)
   },
+  aiStatus: () => adminReq<any>('/api/admin/ai/status'),
+  aiAdvisories: (limit = 20) => adminReq<{ advisories: any[] }>(`/api/admin/ai/advisories?limit=${limit}`),
+  aiRequests: (cursor = 0, taskType = '', limit = 20) => {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (cursor > 0) params.set('cursor', String(cursor))
+    if (taskType) params.set('task_type', taskType)
+    return adminReq<{ requests: any[]; next_cursor: number }>(`/api/admin/ai/requests?${params}`)
+  },
 }
 
 interface AdminNodeLink {
@@ -132,6 +140,7 @@ export default function AdminPage() {
     { path: '/admin/alerts', label: '保护告警' },
     { path: '/admin/admins', label: '管理员' },
     { path: '/admin/audit', label: '审计日志' },
+    { path: '/admin/ai', label: 'AI 监管' },
   ]
   const current = location.pathname
 
@@ -168,6 +177,7 @@ export default function AdminPage() {
           <Route path="/alerts" element={<ProtectionAlertsAdmin />} />
           <Route path="/admins" element={<AdminsAdmin />} />
           <Route path="/audit" element={<AuditAdmin />} />
+          <Route path="/ai" element={<AISupervisionAdmin />} />
         </Routes>
       </div>
     </div>
@@ -1483,6 +1493,107 @@ function AdminsAdmin() {
           {admins.length === 0 && <tr><td colSpan={5}>暂无管理员</td></tr>}
         </tbody>
       </table>
+    </>
+  )
+}
+
+// ---------- AI 监管 ----------
+function AISupervisionAdmin() {
+  const [status, setStatus] = useState<any>(null)
+  const [advisories, setAdvisories] = useState<any[]>([])
+  const [requests, setRequests] = useState<any[]>([])
+  const [cursor, setCursor] = useState(0)
+  const [nextCursor, setNextCursor] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const load = () => {
+    setLoading(true)
+    setError('')
+    return Promise.all([
+      adminApi.aiStatus().catch((err: Error) => { setError(err.message); return null })
+      .then(setStatus),
+      adminApi.aiAdvisories(20).then(data => setAdvisories(data.advisories ?? [])).catch((err: Error) => setError(err.message)),
+      adminApi.aiRequests(cursor).then(data => { setRequests(data.requests ?? []); setNextCursor(data.next_cursor ?? 0) }).catch((err: Error) => setError(err.message)),
+    ]).finally(() => setLoading(false))
+  }
+  useEffect(() => { load() }, [])
+
+  const taskLabel = (value: string) => ({
+    conflict_review: '冲突判断', disaster_review: '灾难判断', recovery_plan: '恢复编排',
+    schedule_recommendation: '调度推荐', anomaly_attribution: '告警归因',
+    monitoring_inspection: '监控巡检', import_review: '导入分类',
+  } as Record<string, string>)[value] || value
+  const actionLabel = (value: string) => ({
+    NO_ACTION: '无需动作', EXPLAIN_ALERT: '告警说明', REQUEST_MORE_OBSERVATION: '请求更多观测',
+    RECOMMEND_NODE_ORDER: '节点排序', RECOMMEND_BACKUP_TARGET_ORDER: '备份目标排序',
+    RECOMMEND_RESTORE_TARGET_ORDER: '恢复目标排序', RECOMMEND_RECOVERY_STEP_ORDER: '恢复步骤排序',
+    RECOMMEND_IMPORT_PROOF_METHOD: '导入证明建议', RECOMMEND_HOLD_AND_OBSERVE: '继续观察',
+    RECOMMEND_OPERATOR_REVIEW: '运维复核', RECOMMEND_USER_CONFIRMATION: '用户确认',
+    RECOMMEND_CONFLICT_USE_SOURCE: '采用来源', RECOMMEND_CONFLICT_PRESERVE_BOTH: '双份保留',
+    RECOMMEND_CONFLICT_MERGE_PREVIEW: '合并预览',
+  } as Record<string, string>)[value] || value
+
+  const nextPage = () => { if (nextCursor > 0) { setCursor(nextCursor); setTimeout(load, 0) } }
+  const previousPage = () => { setCursor(0); setTimeout(load, 0) }
+
+  return (
+    <>
+      <h2>AI 监管</h2>
+      <p style={{ color: 'var(--text-dim)', marginBottom: 16 }}>
+        只读 AI 顾问的建议与调用记录。AI 不执行任何操作；所有建议均经过本地校验，
+        仅作展示与审计（影子模式）。
+      </p>
+      {error && <div className="error-msg">{error}</div>}
+      <div className="card" style={{ margin: '0 0 16px', padding: 12 }}>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span>状态：<span className={`badge ${status?.enabled ? "green" : "gray"}`}>{status?.enabled ? '已启用' : '未启用（默认）'}</span></span>
+          {status?.enabled && (<span>模式：<span className="badge yellow">{status?.mode || '-'}</span></span>)}
+          {status?.enabled && (<span>供应商：<span className="mono" style={{ fontSize: 12 }}>{status?.provider || '-'}</span></span>)}
+          {status?.enabled && (<span>模型：<span className="mono" style={{ fontSize: 12 }}>{status?.model || '-'}</span></span>)}
+          {status?.task_counts && Object.entries(status.task_counts).length > 0 && (
+            <span>累计调用：{Object.entries(status.task_counts).map(([task, count]) => `${taskLabel(task)}: ${count}`).join('，')}</span>
+          )}
+        </div>
+      </div>
+      <h3 style={{ margin: '16px 0 8px' }}>最近建议</h3>
+      <table className="table">
+        <thead><tr><th>时间</th><th>任务</th><th>动作</th><th>置信度</th><th>摘要</th></tr></thead>
+        <tbody>
+          {advisories.map(adv => (
+            <tr key={adv.advisory_id}>
+              <td style={{ fontSize: 12 }}>{new Date(adv.created_at).toLocaleString()}</td>
+              <td style={{ fontSize: 12 }}>{taskLabel(adv.task_type)}</td>
+              <td style={{ fontSize: 12 }}>{actionLabel(adv.action)}</td>
+              <td style={{ fontSize: 12 }}>{adv.abstain ? '弃权' : Math.round(adv.confidence * 100) + '%'}</td>
+              <td style={{ fontSize: 12 }}>{adv.reason_summary}</td>
+            </tr>
+          ))}
+          {!loading && advisories.length === 0 && <tr><td colSpan={5}>暂无 AI 建议（启用后由后台巡检生成）</td></tr>}
+        </tbody>
+      </table>
+      <h3 style={{ margin: '16px 0 8px' }}>调用记录</h3>
+      <table className="table">
+        <thead><tr><th>时间</th><th>任务</th><th>模型</th><th>状态</th><th>错误码</th></tr></thead>
+        <tbody>
+          {requests.map(req => (
+            <tr key={req.id}>
+              <td style={{ fontSize: 12 }}>{new Date(req.requested_at).toLocaleString()}</td>
+              <td style={{ fontSize: 12 }}>{taskLabel(req.task_type)}</td>
+              <td style={{ fontSize: 12 }} className="mono">{req.model_id}</td>
+              <td style={{ fontSize: 12 }}>
+                <span className={`badge ${req.state === "succeeded" ? "green" : req.state === "failed" ? "red" : "yellow"}`}>{req.state}</span>
+              </td>
+              <td style={{ fontSize: 12 }} className="mono">{req.error_code || '-'}</td>
+            </tr>
+          ))}
+          {!loading && requests.length === 0 && <tr><td colSpan={5}>暂无调用记录</td></tr>}
+        </tbody>
+      </table>
+      <div style={{ marginTop: 12 }}>
+        <button className="btn-sm" onClick={previousPage} disabled={loading || cursor === 0}>上一页</button>{' '}
+        <button className="btn-sm" onClick={nextPage} disabled={loading || nextCursor === 0}>下一页</button>
+      </div>
     </>
   )
 }
