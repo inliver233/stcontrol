@@ -167,6 +167,19 @@
 - **R14 Bug 2 解绑不推送到节点**：`UnbindUserIdentity`（provider=password）在同一事务内为每个在线/离线节点插入持久 removal intent（`node_account_password_removals`，迁移 0042）；`reconcilePendingPasswords` 经 `deliverPasswordRemovals` 向可达节点下发 `set_password{Remove:true}`（协议 `SetPasswordRequest.Remove`），节点确认后才清除 intent，离线节点退避重试直到回归。Agent 侧 `internal/agent/commands.go` 的 set_password 校验放行 Remove-only 载荷（无 hash 材料），`internal/agent/tavern.go` 原样转发；Online adapter `src/endpoints/stcontrol.js` 的 `/api/stcontrol/internal/users/password` 在 `remove:true` 时删除本地 password/salt/version verifier。测试：`internal/agent/commands_test.go` 新增 Remove 转发与无 Remove 缺材料拒绝；adapter 套件新增 removal 路径结构断言。
 - 验证：`go build ./...`、`go vet ./...`、`go test -short ./...` 全绿；Online `node --test tests/stcontrol-adapter.node.test.mjs` 16/16。提交 `5b33abe`（stcontrol flash）、`b3e5e86`（Sillytarven-online online）。真实节点适配器的端到端解绑链路（真实 adapter 在线接收 Remove）仍待迁移 Linux 后的浏览器/双进程矩阵补测，R14 继续保持 `部分`。
 
+## 2026-08-14 flash 分支阶段记录（AI 监管层 Phase 0–6B）
+
+> 需求变更点：见 `docs/ai-supervision-decisions.md`（用户逐项确认的 7 个变更点：自动降级但保留无 AI 能力；全部接入第三方 API（OpenAI/Responses/Anthropic/Gemini/OpenAI 兼容，URL+Key+Model 用户自定义）；冲突正文特殊情况下系统自判可发受限片段；低风险自动采纳、灾难/身份/接管/冲突发布始终人工；审计黑盒只存脱敏 observation/digest；低频巡检+事件被动触发+去重；模型升级完全用户自定义）。
+- **Phase 0 基座**（`internal/ai/`）：`provider.go`（OpenAI Chat Completions / Responses、Anthropic Messages、Gemini generateContent、OpenAI 兼容五类原生格式适配，超时+256KiB 上限+响应解析）、`redaction.go`（HMAC 伪名 ref、5% 指标分桶、secret pattern 扫描与文本清洗）、`observation.go`（脱敏 observation + evidence/candidate catalog + digest）、`schemas.go`（Schema 1.0、7 任务、14 动作白名单）、`prompts.go`（§6.1 系统提示词 + §6.3 七个任务提示词，版本化）、`validator.go`（§5.4 十步校验链：UTF-8/schema/task/observation/action/refs/evidence/候选/secret/abstain）、`supervisor.go`（后台队列、每 provider+model+task 熔断（5 次失败开 10 分钟，half-open 单探针）、shadow/advisory/auto_low_risk 模式、EnqueueTask）。迁移 0046 建 `ai_advisory_requests/advisories/outcomes` 三张审计表（黑盒）。Controller 侧 `ai_supervisor.go` 适配 store、`buildAIObservation` 从真实节点/告警构造巡检 observation，`ai_admin.go` 提供 `/api/admin/ai/status|advisories|requests` 只读端点；config 新增 `ai_supervisor` 段（默认 `enabled:false`，AI off 零行为差异）。Store 层 `ai_advisories.go` 全套持久化（dedup_key 幂等）。
+- **Phase 1 监控巡检**：后台 worker 按 `inspect_every_sec`（默认 10 分钟）构造集群聚合 observation → AI 选最值得关注问题 → validator → 落库；Admin.tsx 新增“AI 监管”页（状态/最近建议/调用记录分页，任务与动作中文标签）。AI 关闭时既有 overview/alerts 完全不变。
+- **Phase 2 告警归因**：`enqueueAnomalyAttribution` 对未解决告警（按 UserUUID 伪名、summary 清洗）每 5 分钟去重入队；`CountOpenAlertsBySeverity` 提供严重度聚合。
+- **Phase 3 节点/备份排序**：`enqueueScheduleRecommendation` 只把确定性层已 eligible（`nodeEligibleForNewLoad`/`nodeEligibleAsBackupTarget` 与既有硬门一致）的候选放入 candidate_catalog；少于 2 个候选不调用。
+- **Phase 4 恢复编排**：`enqueueRecoveryPlan` 读取 restore workflow 状态/attempt/error code（从共享 workflows 表）构造恢复编排 observation。
+- **Phase 5 导入歧义说明**：`enqueueImportReview` 只对 `claim_required/oauth_unmatched/identity_conflict/recovery_required` 未决候选生成说明请求；不返回 handle（批次伪名）。
+- **Phase 6A 灾难判断**：`enqueueDisasterReview` 读取 `node_control_mode_events`（reported/desired/reason/age），`deterministic_hard_floor_satisfied` 仅在节点真实进入 independent/draining 时为 true；提示词规则禁止绕过双信号/最短时长/draining。
+- **Phase 6B 冲突元数据建议**：`enqueueConflictReview` 只发送冲突聚合（来源数/文件数/字节/证据是否 ready/年龄），不含路径/正文/digest；`RECOMMEND_CONFLICT_*` 动作恒要求人工确认。冲突正文级预览（§7.7 第二级）默认不启用——仅在服务端标记 preview_eligible 且通过 secret scan 的小型 UTF-8 片段由用户逐案授权，原件永不覆盖；该内容级路径留待 Linux 迁移后的浏览器矩阵。
+- **验证**：`go build/vet/test -short ./...` 全绿；真实 PostgreSQL 隔离 schema 上 47 个迁移全部应用，`TestPostgresAIAdvisoryRoundTrip`（幂等 dedup/状态机/黑盒三表闭环）与 `TestPostgresAIObservationAggregates`（五个聚合查询空表安全）通过；web tsc + vitest 16/16。提交：`86f9873`（Phase 0）、`c5304de`（Phase 1 UI）、`09a960a`（Phase 2–6B workers）。真实第三方 provider 影子回放、30 天 shadow 期与非劣阈值评估留待部署后按 §8 发布流程执行；AI 监管层继续保持 `部分`。
+
 ## 完成判定规则
 
 每一行只有同时满足以下条件才可改为 `完成`：
