@@ -82,7 +82,21 @@ func (s *Server) executeReplicaCleanupTask(ctx context.Context, task store.Repli
 		}, task.OperationID, replicaCleanupCommandTimeout,
 	)
 	if err != nil {
-		s.retryReplicaCleanupTask(ctx, task, safeReplicaCleanupFailureCode(agentCommandErrorCode(err)))
+		code := safeReplicaCleanupFailureCode(agentCommandErrorCode(err))
+		if code == "replica_identity_unavailable" {
+			// Terminal: the target tree cannot be identity-verified (legacy
+			// pre-identity-file replica).  Fail the task so the user's snapshot
+			// and restore paths are not blocked forever, and surface the code.
+			if failErr := s.Store.FailReplicaCleanupTask(
+				ctx, task, code, time.Now().UTC(),
+			); failErr != nil {
+				// Keep the durable lease for expiry; a replay would fail the
+				// same way and converge.
+				return
+			}
+			return
+		}
+		s.retryReplicaCleanupTask(ctx, task, code)
 		return
 	}
 	if !matchingReplicaCleanupReceipt(result.ReplicaCleanup, task) {
@@ -124,7 +138,7 @@ func (s *Server) retryReplicaCleanupTask(ctx context.Context, task store.Replica
 
 func safeReplicaCleanupFailureCode(code string) string {
 	switch code {
-	case "invalid_command_payload", "replica_cleanup_failed":
+	case "invalid_command_payload", "replica_cleanup_failed", "replica_identity_unavailable":
 		return code
 	default:
 		return "agent_command_unavailable"

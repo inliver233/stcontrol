@@ -46,6 +46,13 @@ type CompleteConflictEvidenceParams struct {
 	Now                 time.Time
 }
 
+// ConflictEvidenceFailedRearmWindow bounds how long a permanently-failed
+// evidence capture stays dormant before the reconciler tries it again.  This
+// gives a recovery path for transient infrastructure loss (e.g. a node that
+// was down for longer than the retry budget) so a conflict-frozen user is not
+// stuck forever.
+const ConflictEvidenceFailedRearmWindow = 6 * time.Hour
+
 func (s *Store) ListConflictEvidenceTasks(ctx context.Context, limit int, now time.Time) ([]ConflictEvidenceTask, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -68,8 +75,9 @@ func (s *Store) ListConflictEvidenceTasks(ctx context.Context, limit int, now ti
 		WHERE source.source_kind IN ('active','hot_standby','archive')
 		  AND (source.evidence_state='pending'
 		    OR (source.evidence_state='retry_wait' AND source.evidence_next_attempt_at<=$2)
-		    OR (source.evidence_state='capturing' AND source.evidence_lease_until<=$2))
-		ORDER BY conflict.detected_at,source.node_id LIMIT $1`, limit, now)
+		    OR (source.evidence_state='capturing' AND source.evidence_lease_until<=$2)
+		    OR (source.evidence_state='failed' AND source.evidence_updated_at<=$3))
+		ORDER BY conflict.detected_at,source.node_id LIMIT $1`, limit, now, now.Add(-ConflictEvidenceFailedRearmWindow))
 	if err != nil {
 		return nil, fmt.Errorf("list conflict evidence tasks: %w", err)
 	}
@@ -118,8 +126,9 @@ func (s *Store) ClaimConflictEvidenceTask(
 		  AND conflict.state IN ('detected','inspecting')
 		  AND (source.evidence_state='pending'
 		    OR (source.evidence_state='retry_wait' AND source.evidence_next_attempt_at<=$3)
-		    OR (source.evidence_state='capturing' AND source.evidence_lease_until<=$3))
-		RETURNING source.conflict_id::text,source.evidence_attempt`, evidenceID, workerID, now, now.Add(leaseTTL)).
+		    OR (source.evidence_state='capturing' AND source.evidence_lease_until<=$3)
+		    OR (source.evidence_state='failed' AND source.evidence_updated_at<=$4))
+		RETURNING source.conflict_id::text,source.evidence_attempt`, evidenceID, workerID, now, now.Add(leaseTTL), now.Add(-ConflictEvidenceFailedRearmWindow)).
 		Scan(&conflictID, &attempt)
 	if err == sql.ErrNoRows {
 		if err := tx.Commit(); err != nil {

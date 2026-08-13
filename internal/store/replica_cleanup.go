@@ -468,3 +468,65 @@ func (s *Store) RetryReplicaCleanupTask(
 	}
 	return tx.Commit()
 }
+// FailReplicaCleanupTask permanently fails a cleanup task whose identity
+// cannot be verified (e.g. a legacy hot_standby tree published before the
+// identity-file feature).  The replica copy is returned to its prior state so
+// the user's snapshot/restore paths are NOT blocked forever by an unverifiable
+// stale tree; the failure code surfaces in the admin console and alerts.
+func (s *Store) FailReplicaCleanupTask(
+	ctx context.Context,
+	task ReplicaCleanupTask,
+	errorCode string,
+	now time.Time,
+) error {
+	if task.ID == "" || task.OperationID == "" || task.LeaseOwner == "" || errorCode == "" || now.IsZero() {
+		return ErrInvalidReplicaCleanup
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE replica_cleanup_tasks SET state='failed',error_code=$6,
+		  lease_owner=NULL,lease_until=NULL,updated_at=$4,finished_at=$4
+		WHERE id=$1 AND operation_id=$2 AND controller_generation=$3 AND lease_owner=$7
+		  AND state='running'`, task.ID, task.OperationID, task.ControllerGeneration,
+		now, now, errorCode, task.LeaseOwner)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: fail", ErrReplicaCleanupFence)
+	}
+	// Return the replica copy to its pre-deletion state so the user's
+	// snapshot/restore paths are not blocked by this unverifiable tree.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE replica_copies SET state=CASE WHEN replica_kind='archive' THEN 'stale' ELSE 'ready' END,
+		  updated_at=$2
+		WHERE id=$1 AND state='deleting' AND NOT is_authoritative`, task.ReplicaID, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE user_replicas SET state=CASE WHEN kind='archive' THEN 'stale' ELSE 'ready' END,
+		  updated_at=$2
+		WHERE user_id=$1 AND node_id=$2 AND kind=$3 AND state='deleting'`,
+		task.LegacyUserID, task.NodeID, task.ReplicaKind, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO audit_events (
+		  occurred_at,actor_type,action,target_type,target_id,operation_id,
+		  controller_generation,outcome,detail
+		) VALUES ($1,'controller','delete-snapshot-replica','global_user',$2::text,$3,$4,'failed',
+		  jsonb_build_object('cleanup_id',$5::text,'node_id',$6::bigint,'snapshot_id',$7::text,
+		    'replica_kind',$8::text,'reason_code',$9::text,'error_code',$10::text))`,
+		now, task.GlobalUserID, task.OperationID, task.ControllerGeneration,
+		task.ID, task.NodeID, task.SnapshotID, task.ReplicaKind, task.ReasonCode, errorCode); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

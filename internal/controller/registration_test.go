@@ -136,7 +136,7 @@ func TestRegistrationWorkflowFailsClosedWhenPolicyVersionChanges(t *testing.T) {
 	}
 }
 
-func TestRegistrationUncertainResultKeepsRetryingAfterNominalAttemptLimit(t *testing.T) {
+func TestRegistrationUncertainResultFailsAtNominalAttemptLimit(t *testing.T) {
 	t.Parallel()
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
@@ -144,12 +144,17 @@ func TestRegistrationUncertainResultKeepsRetryingAfterNominalAttemptLimit(t *tes
 	}
 	defer db.Close()
 	server := &Server{Store: &store.Store{DB: db}, workflowWorkerID: "controller-worker"}
-	execution := &store.RegistrationWorkflowExecution{WorkflowID: "workflow", Attempt: registrationMaxAttempts + 2}
+	execution := &store.RegistrationWorkflowExecution{WorkflowID: "workflow", Attempt: registrationMaxAttempts - 1}
+	// R15: command_uncertain is now terminal when exhausted - the handle must
+	// be released instead of retrying forever.
 	mock.ExpectBegin()
-	mock.ExpectQuery(`UPDATE workflows SET state='retry_wait'`).WithArgs(
-		"workflow", "controller-worker", "command_uncertain", sqlmock.AnyArg(), sqlmock.AnyArg(),
-	).WillReturnRows(sqlmock.NewRows([]string{"attempt"}).AddRow(execution.Attempt + 1))
-	mock.ExpectExec(`UPDATE workflow_steps SET state='retry_wait'`).WithArgs(
+	mock.ExpectExec(`UPDATE workflows SET state='failed'`).WithArgs(
+		"workflow", "controller-worker", "command_uncertain", sqlmock.AnyArg(),
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE registration_workflows SET reservation_state='released'`).WithArgs(
+		"workflow", sqlmock.AnyArg(),
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE workflow_steps SET state='failed'`).WithArgs(
 		"workflow", "command_uncertain", sqlmock.AnyArg(),
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

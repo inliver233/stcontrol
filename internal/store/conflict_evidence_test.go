@@ -17,7 +17,7 @@ func TestListAndClaimConflictEvidenceTask(t *testing.T) {
 	now := time.Date(2026, 8, 8, 15, 0, 0, 0, time.UTC)
 	manifest := bytes.Repeat([]byte{1}, 32)
 	mock.ExpectQuery(`(?s)FROM replica_conflict_sources source.*conflict.state IN.*source.evidence_state='pending'`).
-		WithArgs(20, now).
+		WithArgs(20, now, now.Add(-ConflictEvidenceFailedRearmWindow)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"conflict", "evidence", "user", "handle", "node", "role", "kind", "snapshot", "manifest", "attempt",
 		}).AddRow("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
@@ -29,7 +29,7 @@ func TestListAndClaimConflictEvidenceTask(t *testing.T) {
 	}
 	mock.ExpectBegin()
 	mock.ExpectQuery(`(?s)UPDATE replica_conflict_sources source.*evidence_lease_owner.*RETURNING source.conflict_id`).
-		WithArgs(tasks[0].EvidenceID, "worker", now, now.Add(time.Hour)).
+		WithArgs(tasks[0].EvidenceID, "worker", now, now.Add(time.Hour), now.Add(-ConflictEvidenceFailedRearmWindow)).
 		WillReturnRows(sqlmock.NewRows([]string{"conflict_id", "attempt"}).
 			AddRow(tasks[0].ConflictID, 1))
 	mock.ExpectExec(`UPDATE replica_conflicts SET state='inspecting'`).
@@ -130,6 +130,25 @@ func TestLoadConflictEvidencePagesAndInputValidation(t *testing.T) {
 	}
 	if _, _, err := store.ClaimConflictEvidenceTask(context.Background(), "", "", time.Time{}, 0); !errors.Is(err, ErrConflictEvidenceState) {
 		t.Fatalf("invalid claim error=%v", err)
+	}
+	assertMockExpectations(t, mock)
+}
+func TestListConflictEvidenceTasksRearmsFailedSources(t *testing.T) {
+	t.Parallel()
+	store, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 8, 15, 0, 0, 0, time.UTC)
+	manifest := bytes.Repeat([]byte{1}, 32)
+	mock.ExpectQuery(`(?s)FROM replica_conflict_sources source.*source.evidence_state='failed'.*evidence_updated_at<=\$3`).
+		WithArgs(20, now, now.Add(-ConflictEvidenceFailedRearmWindow)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"conflict", "evidence", "user", "handle", "node", "role", "kind", "snapshot", "manifest", "attempt",
+		}).AddRow("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+			int64(70), "alice", int64(9), "storage", "archive",
+			"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", manifest, 6))
+	tasks, err := store.ListConflictEvidenceTasks(context.Background(), 0, now)
+	if err != nil || len(tasks) != 1 || tasks[0].Attempt != 6 {
+		t.Fatalf("tasks=%+v err=%v", tasks, err)
 	}
 	assertMockExpectations(t, mock)
 }

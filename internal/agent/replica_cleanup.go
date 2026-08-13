@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,11 @@ import (
 
 	"stcontrol/internal/protocol"
 )
+
+// errReplicaIdentityUnavailable marks a cleanup target whose identity file is
+// missing or invalid.  The Controller treats this as terminal (fail, don't
+// retry) so an unverifiable legacy replica cannot block the user forever.
+var errReplicaIdentityUnavailable = errors.New("replica identity unavailable")
 
 func (a *Agent) deleteSnapshotReplica(
 	ctx context.Context,
@@ -305,7 +311,11 @@ func replicaTreeMatchesCleanup(root string, req protocol.DeleteReplicaRequest, n
 	}
 	metadata, err := readReplicaIdentityMetadata(root)
 	if err != nil {
-		return false, err
+		// A legacy tree published before the identity-file feature cannot be
+		// verified and must NEVER be deleted blindly.  Surface a distinct
+		// sentinel so the Controller fails the cleanup task terminally instead
+		// of retrying forever (which would block this user's snapshots).
+		return false, fmt.Errorf("%w: %v", errReplicaIdentityUnavailable, err)
 	}
 	return metadata.FormatVersion == 1 && metadata.SnapshotID == req.SnapshotID &&
 		metadata.GlobalUserID == req.GlobalUserID && metadata.Handle == req.Handle &&

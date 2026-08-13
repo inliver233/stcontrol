@@ -409,6 +409,55 @@ func (s *Store) ScheduleRegistrationRetry(
 	return attempt, nil
 }
 
+
+// RegistrationReservationTTL bounds how long a pending registration may hold a
+// username.  After this window the reservation is released (and the workflow
+// failed as reservation_expired) so a stuck or abandoned request cannot occupy
+// a handle forever (R15).
+const RegistrationReservationTTL = 24 * time.Hour
+
+// ReleaseExpiredRegistrationReservations fails workflows whose handle
+// reservation has been pending for longer than RegistrationReservationTTL and
+// releases the handle.  Returns the number of reservations released.
+func (s *Store) ReleaseExpiredRegistrationReservations(ctx context.Context, now time.Time) (int64, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE workflows workflow SET state='failed',error_code='reservation_expired',
+		  error_summary=NULL,lease_owner=NULL,lease_until=NULL,finished_at=$2,updated_at=$2
+		FROM registration_workflows registration
+		WHERE registration.workflow_id=workflow.id
+		  AND registration.reservation_state='pending'
+		  AND workflow.workflow_type='registration'
+		  AND workflow.state NOT IN ('succeeded','failed','cancelled')
+		  AND workflow.created_at<=$1`, now.Add(-RegistrationReservationTTL), now)
+	if err != nil {
+		return 0, err
+	}
+	released, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if released > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE registration_workflows SET reservation_state='released',updated_at=$2
+			WHERE reservation_state='pending' AND workflow_id IN (
+			  SELECT id FROM workflows WHERE workflow_type='registration' AND state='failed'
+			    AND error_code='reservation_expired')`, now); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return released, nil
+}
 func (s *Store) FailRegistrationWorkflow(
 	ctx context.Context,
 	workflowID, workerID, errorCode string,

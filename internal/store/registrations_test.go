@@ -308,3 +308,36 @@ func TestCompleteRegistrationWorkflowPublishesAllUserFactsAtomically(t *testing.
 	}
 	assertMockExpectations(t, mock)
 }
+func TestReleaseExpiredRegistrationReservationsFailsStuckWorkflows(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)UPDATE workflows workflow SET state='failed',error_code='reservation_expired'.*FROM registration_workflows registration.*workflow.created_at<=\$1`).
+		WithArgs(now.Add(-RegistrationReservationTTL), now).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(`(?s)UPDATE registration_workflows SET reservation_state='released'.*error_code='reservation_expired'`).
+		WithArgs(now).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectCommit()
+	released, err := st.ReleaseExpiredRegistrationReservations(context.Background(), now)
+	if err != nil || released != 2 {
+		t.Fatalf("released=%d err=%v", released, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestReleaseExpiredRegistrationReservationsNoopWhenFresh(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)UPDATE workflows workflow SET state='failed',error_code='reservation_expired'.*workflow.created_at<=\$1`).
+		WithArgs(now.Add(-RegistrationReservationTTL), now).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+	released, err := st.ReleaseExpiredRegistrationReservations(context.Background(), now)
+	if err != nil || released != 0 {
+		t.Fatalf("released=%d err=%v", released, err)
+	}
+	assertMockExpectations(t, mock)
+}

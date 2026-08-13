@@ -228,6 +228,23 @@ func TestControllerRebuildAllowsOldCredentialForHeartbeatOnly(t *testing.T) {
 	})
 }
 
+
+func TestControlPlaneReadinessIgnoresOfflineNodes(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	// An offline compute node with an old generation must NOT block readiness:
+	// when it reconnects, the previous-generation credential can only reach the
+	// recovery heartbeat and must rotate before leasing commands.
+	mock.ExpectQuery(`SELECT EXISTS .*controller_epochs`).WillReturnRows(
+		sqlmock.NewRows([]string{"ready"}).AddRow(true),
+	)
+	ready, err := st.IsControlPlaneReady(context.Background())
+	if err != nil || !ready {
+		t.Fatalf("ready=%v err=%v", ready, err)
+	}
+	assertMockExpectations(t, mock)
+}
 func TestControlPlaneReadinessRequiresActiveGenerationAndManagedNodes(t *testing.T) {
 	t.Parallel()
 	st, mock, closeDB := newMockStore(t)

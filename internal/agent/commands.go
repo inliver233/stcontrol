@@ -439,7 +439,13 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		}
 		receipt, err := a.deleteSnapshotReplica(ctx, payload)
 		if err != nil {
-			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "replica_cleanup_failed"})
+			code := "replica_cleanup_failed"
+			if errors.Is(err, errReplicaIdentityUnavailable) {
+				// Terminal: an unverifiable legacy tree must not be deleted, and
+				// retrying forever would block the user's snapshots/restores.
+				code = "replica_identity_unavailable"
+			}
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: code})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, ReplicaCleanup: &receipt})
 	case "capture_conflict_evidence":

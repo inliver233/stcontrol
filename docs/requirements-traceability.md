@@ -127,6 +127,14 @@
   5. 测试：store 层 schedule/claim/complete/fail/retention/idempotency sqlmock 测试、controller reconciler 测试、agent 接收路径测试全过。
 - **移除硬编码密钥**（run-live-controller.bat、.gitignore）：live 启动脚本不再内嵌 CONTROLLER_SECRET_KEY 与引导密码，改为要求环境变量或 git-ignored .live-secrets.cmd；.gitignore 增加 .live-secrets.cmd、livecheck.log、*.log。
 
+
+## 2026-08-14 flash 分支阶段记录（P3 部分缺口收敛）
+
+- **R12 离线节点不再永久阻塞控制面**：`IsControlPlaneReady` 只要求在线（connectivity_state='online'）计算节点完成 managed 对账；离线节点持有旧世代凭据重连时只能经 recovery heartbeat 轮换（middleware 围栏保证），不能领取命令，因此不会产生双写。新增 TestControlPlaneReadinessIgnoresOfflineNodes。
+- **R15 注册不确定结果有界 + handle 预留 TTL**：`retryRegistrationTransition` 现对所有错误类（node_unavailable/command_enqueue_failed/command_timeout/command_uncertain/publish_failed）在达到 registrationMaxAttempts 时终态失败并释放 handle；新增 `ReleaseExpiredRegistrationReservations`（迁移内 24h TTL，超过即把 workflow 置 failed/reservation_expired 并释放预留），注册 reconciler 每轮先释放过期预留。注册测试更新为断言有界行为。
+- **R19 冲突证据失败恢复路径**：`ListConflictEvidenceTasks`/`ClaimConflictEvidenceTask` 现把 evidence_state='failed' 且超过 `ConflictEvidenceFailedRearmWindow`（6h）的来源重新纳入认领，避免节点长时间离线/临时故障导致证据永久失败、用户被永久冻结。新增 TestListConflictEvidenceTasksRearmsFailedSources。
+- **R09 存量 hot_standby 无身份文件不再卡死**：Agent 对缺失/非法 `.stcontrol-replica.json` 的来源返回 sentinel `errReplicaIdentityUnavailable`，命令错误码为 `replica_identity_unavailable`；Controller 收到后调用新的 `FailReplicaCleanupTask` 终态失败（副本 copy/user_replicas 回到 stale/ready，不再阻塞该用户快照/恢复），代码进审计与管理员可见错误码，绝不盲删无法验证的目录。新增 TestFailReplicaCleanupReleasesFenceAndRestoresCopyState。
+
 ## 完成判定规则
 
 每一行只有同时满足以下条件才可改为 `完成`：

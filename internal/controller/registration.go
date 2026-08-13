@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -429,11 +430,20 @@ func (s *Server) retryRegistrationTransition(
 ) error {
 	transitionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	terminalWhenExhausted := errorCode == "node_unavailable" || errorCode == "command_enqueue_failed"
-	if terminalWhenExhausted && execution.Attempt+1 >= registrationMaxAttempts {
+	// Every retry class is bounded: uncertain/transient outcomes must not retry
+	// forever (R15).  Terminal failure also releases the handle reservation so
+	// a username cannot be occupied indefinitely by a stuck workflow.
+	if execution.Attempt+1 >= registrationMaxAttempts {
 		terminalCode := "retry_exhausted"
-		if errorCode == "node_unavailable" {
+		switch errorCode {
+		case "node_unavailable":
 			terminalCode = "node_unavailable"
+		case "command_timeout":
+			terminalCode = "command_timeout"
+		case "command_uncertain":
+			terminalCode = "command_uncertain"
+		case "publish_failed":
+			terminalCode = "publish_failed"
 		}
 		return s.Store.FailRegistrationWorkflow(
 			transitionCtx, execution.WorkflowID, s.workflowWorkerID, terminalCode, time.Now().UTC(),
@@ -459,7 +469,13 @@ func (s *Server) registrationWorkflowReconciler(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
-		ids, err := s.Store.ListRunnableRegistrationWorkflowIDs(ctx, 20, time.Now().UTC())
+		now := time.Now().UTC()
+		// R15: release handle reservations stuck past the TTL so a username is
+		// never occupied forever by an abandoned registration.
+		if _, err := s.Store.ReleaseExpiredRegistrationReservations(ctx, now); err != nil {
+			log.Printf("释放过期注册预留失败: %v", err)
+		}
+		ids, err := s.Store.ListRunnableRegistrationWorkflowIDs(ctx, 20, now)
 		if err == nil {
 			for _, id := range ids {
 				s.queueRegistrationWorkflow(ctx, id)

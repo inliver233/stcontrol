@@ -358,6 +358,7 @@ func (s *Store) IsControlPlaneReady(ctx context.Context) (bool, error) {
 		    SELECT 1 FROM nodes
 		    WHERE role='compute'
 		      AND operational_state NOT IN ('decommissioned','retired')
+		      AND connectivity_state='online'
 		      AND EXISTS (
 		        SELECT 1 FROM agent_credentials credential
 		        WHERE credential.node_id=nodes.id AND credential.revoked_at IS NULL

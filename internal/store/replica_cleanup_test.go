@@ -166,6 +166,31 @@ func TestRetryReplicaCleanupKeepsDeletingFenceUntilExactReplay(t *testing.T) {
 	}
 	assertMockExpectations(t, mock)
 }
+func TestFailReplicaCleanupReleasesFenceAndRestoresCopyState(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 10, 1, 40, 0, 0, time.UTC)
+	task := cleanupStoreTestTask()
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE replica_cleanup_tasks SET state='failed',error_code=\$6`).WithArgs(
+		task.ID, task.OperationID, task.ControllerGeneration, now, now, "replica_identity_unavailable", task.LeaseOwner,
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE replica_copies SET state=CASE WHEN replica_kind='archive' THEN 'stale' ELSE 'ready' END`).
+		WithArgs(task.ReplicaID, now).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE user_replicas SET state=CASE WHEN kind='archive' THEN 'stale' ELSE 'ready' END`).
+		WithArgs(task.LegacyUserID, task.NodeID, task.ReplicaKind, now).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO audit_events`).WithArgs(
+		now, int64(70), task.OperationID, int64(7), task.ID, int64(9), task.SnapshotID, task.ReplicaKind, task.ReasonCode, "replica_identity_unavailable",
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	if err := st.FailReplicaCleanupTask(
+		context.Background(), task, "replica_identity_unavailable", now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertMockExpectations(t, mock)
+}
 
 const (
 	testCleanupID         = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
