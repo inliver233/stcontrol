@@ -152,6 +152,26 @@ func NewSupervisor(store Store, provider Provider, redactor *Redactor, mode Mode
 	}
 }
 
+// EnqueueTask persists one queued advisory request for any task type (used
+// by phase workers: alert attribution, schedule, recovery, import, disaster,
+// conflict). The caller supplies the redacted observation JSON and a dedupKey
+// so the same fact is only asked once.
+func (s *Supervisor) EnqueueTask(ctx context.Context, taskType string, observationJSON []byte, dedupKey string) error {
+	digest := sha256.Sum256(observationJSON)
+	_, err := s.store.InsertAIAdvisoryRequest(ctx, AIAdvisoryRequestLike{
+		TaskType:          taskType,
+		SchemaVersion:     SchemaVersion,
+		PromptVersion:     PromptVersion,
+		ModelID:           s.model,
+		ObservationDigest: digest[:],
+		ObservationJSON:   observationJSON,
+		DedupKey:          dedupKey,
+		DeadlineAt:        time.Now().UTC().Add(2 * time.Minute),
+		State:             "queued",
+	})
+	return err
+}
+
 // Run processes the advisory queue until ctx is cancelled. inspectEvery
 // controls the periodic monitoring-inspection enqueue; buildObservation must
 // return (observationJSON, evidenceCatalog, candidateCatalog, dedupKey,

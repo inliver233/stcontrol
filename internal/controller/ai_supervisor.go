@@ -237,7 +237,9 @@ func (s *Server) startAISupervisor(ctx context.Context) {
 		inspectEvery = 10 * time.Minute
 	}
 	supervisor := ai.NewSupervisor(&aiStoreAdapter{st: s.Store}, provider, ai.NewRedactor(s.secretKey), mode, policy.Model, timeout)
+	s.aiSupervisor = supervisor
 	go supervisor.Run(ctx, inspectEvery, s.buildAIObservation)
+	s.startAIPhaseWorkers(ctx)
 }
 
 // envOr reads an environment variable with a fallback.

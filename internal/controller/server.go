@@ -48,6 +48,15 @@ type Server struct {
 	rateLimiter  *rateLimiter
 	loginLimiter *rateLimiter
 	loginLockout *loginLockout
+
+	// AI 监管层 (Phase 0+): nil when disabled.
+	aiSupervisor aiSupervisor
+}
+
+// aiSupervisor is the minimal enqueue surface the phase workers need.
+// *ai.Supervisor implements it; tests use a stub.
+type aiSupervisor interface {
+	EnqueueTask(ctx context.Context, taskType string, observationJSON []byte, dedupKey string) error
 }
 
 type session struct {
