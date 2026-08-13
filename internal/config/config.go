@@ -12,33 +12,33 @@ import (
 
 // ControllerConfig 总控配置。
 type ControllerConfig struct {
-	PublicURL    string         `yaml:"public_url"` // 总控对外地址
-	Listen       string         `yaml:"listen"`     // 监听地址 :8080
-	TLSCertFile  string         `yaml:"tls_cert_file"`
-	TLSKeyFile   string         `yaml:"tls_key_file"`
-	DatabaseURL  string         `yaml:"database_url"`
-	SecretKeyEnv string         `yaml:"secret_key_env"` // 控制面凭证加密主密钥的环境变量名
-	StaticDir    string         `yaml:"static_dir"`     // React 构建产物目录
-	Node         NodePolicy     `yaml:"node"`
-	Ticket       TicketPolicy   `yaml:"ticket"`
-	Activity     ActivityPolicy `yaml:"activity"`
-	Backup       BackupPolicy   `yaml:"backup"`
-	OAuth        OAuthConfig    `yaml:"oauth"`
-	Admin        AdminConfig    `yaml:"admin"`
-	Relay        RelayConfig    `yaml:"relay"`
+	PublicURL        string                         `yaml:"public_url"` // 总控对外地址
+	Listen           string                         `yaml:"listen"`     // 监听地址 :8080
+	TLSCertFile      string                         `yaml:"tls_cert_file"`
+	TLSKeyFile       string                         `yaml:"tls_key_file"`
+	DatabaseURL      string                         `yaml:"database_url"`
+	SecretKeyEnv     string                         `yaml:"secret_key_env"` // 控制面凭证加密主密钥的环境变量名
+	StaticDir        string                         `yaml:"static_dir"`     // React 构建产物目录
+	Node             NodePolicy                     `yaml:"node"`
+	Ticket           TicketPolicy                   `yaml:"ticket"`
+	Activity         ActivityPolicy                 `yaml:"activity"`
+	Backup           BackupPolicy                   `yaml:"backup"`
+	OAuth            OAuthConfig                    `yaml:"oauth"`
+	Admin            AdminConfig                    `yaml:"admin"`
+	Relay            RelayConfig                    `yaml:"relay"`
 	ControllerBackup ControllerDisasterBackupPolicy `yaml:"controller_backup"`
-	ImportScan ImportScanPolicy `yaml:"import_scan"`
+	ImportScan       ImportScanPolicy               `yaml:"import_scan"`
 }
 
 // ControllerDisasterBackupPolicy controls automatic backup of the Controller's
 // own control-plane state (postgres dump + control snapshot + keys/config) to a
 // pure-storage node.
 type ControllerDisasterBackupPolicy struct {
-	Enabled        bool   `yaml:"enabled"`
-	IntervalSec    int    `yaml:"interval_sec"` // default 86400 (24h)
-	RetryMax       int    `yaml:"retry_max"`    // default 3
-	KeepLatestOnly bool   `yaml:"keep_latest_only"`
-	PgDump         bool   `yaml:"pg_dump"`      // include postgres dump; default true (graceful if pg_dump missing)
+	Enabled        bool `yaml:"enabled"`
+	IntervalSec    int  `yaml:"interval_sec"` // default 86400 (24h)
+	RetryMax       int  `yaml:"retry_max"`    // default 3
+	KeepLatestOnly bool `yaml:"keep_latest_only"`
+	PgDump         bool `yaml:"pg_dump"` // include postgres dump; default true (graceful if pg_dump missing)
 	// RecoveryPassphraseEnv names an environment variable holding the out-of-band
 	// passphrase used to seal the master key into the backup (Round 61).  Empty
 	// means the backup omits master-key recovery material (key stays out of the
@@ -51,9 +51,9 @@ type ControllerDisasterBackupPolicy struct {
 // have never been scanned or whose inventory revision changed.  Disabled by
 // default so operators keep full control over when scanning runs.
 type ImportScanPolicy struct {
-	Enabled      bool `yaml:"enabled"`
-	IntervalSec  int  `yaml:"interval_sec"`  // default 6h
-	MaxNodesPerRun int `yaml:"max_nodes_per_run"` // default 2
+	Enabled        bool `yaml:"enabled"`
+	IntervalSec    int  `yaml:"interval_sec"`      // default 6h
+	MaxNodesPerRun int  `yaml:"max_nodes_per_run"` // default 2
 }
 
 // NodePolicy 节点策略。
