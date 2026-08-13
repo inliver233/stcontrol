@@ -135,6 +135,9 @@
 - **R19 冲突证据失败恢复路径**：`ListConflictEvidenceTasks`/`ClaimConflictEvidenceTask` 现把 evidence_state='failed' 且超过 `ConflictEvidenceFailedRearmWindow`（6h）的来源重新纳入认领，避免节点长时间离线/临时故障导致证据永久失败、用户被永久冻结。新增 TestListConflictEvidenceTasksRearmsFailedSources。
 - **R09 存量 hot_standby 无身份文件不再卡死**：Agent 对缺失/非法 `.stcontrol-replica.json` 的来源返回 sentinel `errReplicaIdentityUnavailable`，命令错误码为 `replica_identity_unavailable`；Controller 收到后调用新的 `FailReplicaCleanupTask` 终态失败（副本 copy/user_replicas 回到 stale/ready，不再阻塞该用户快照/恢复），代码进审计与管理员可见错误码，绝不盲删无法验证的目录。新增 TestFailReplicaCleanupReleasesFenceAndRestoresCopyState。
 
+
+- **R09/R19 离线备份调度不再被单条同步工作流阻塞**：`TriggerUserBackup` 在 snapshot 并发槽饱和时立即返回（工作流保持 scheduled 由 20s durable reconciler 认领续跑），离线备份调度循环可继续扫描所有用户，慢归档不再串行阻塞后续备份；管理员手动触发与断言完成的集成测试仍同步执行（有槽时）。
+
 ## 完成判定规则
 
 每一行只有同时满足以下条件才可改为 `完成`：

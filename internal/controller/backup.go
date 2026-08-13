@@ -146,7 +146,17 @@ func (s *Server) TriggerUserBackup(ctx context.Context, userID, srcNodeID int64,
 		return err
 	}
 
-	return s.executeSnapshotWorkflow(ctx, workflow.WorkflowID)
+	// Manual/admin triggers and callers that assert completion run the
+	// workflow inline under a bounded slot; the durable reconciler also picks
+	// up scheduled workflows so a crash mid-transfer is recovered.
+	select {
+	case s.snapshotSlots <- struct{}{}:
+		defer func() { <-s.snapshotSlots }()
+		return s.executeSnapshotWorkflow(ctx, workflow.WorkflowID)
+	default:
+		// Slots saturated: leave the workflow scheduled for the reconciler.
+		return nil
+	}
 }
 
 func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string) (resultErr error) {
