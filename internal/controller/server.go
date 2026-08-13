@@ -177,6 +177,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.nodeRetirementReconciler(ctx)
 	go s.userDataFaultReconciler(ctx)
 	go s.controllerBackupReconciler(ctx)
+	go s.importScanReconciler(ctx)
 
 	controlServer := newControlHTTPServer(s.Cfg, s.Handler())
 	servers := []*http.Server{controlServer}

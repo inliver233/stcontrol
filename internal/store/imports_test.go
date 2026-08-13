@@ -212,6 +212,31 @@ func TestIngestAccountImportRejectsOperationDigestReuse(t *testing.T) {
 	assertMockExpectations(t, mock)
 }
 
+
+func TestListUnscannedComputeNodesOnlyReturnsStaleEligible(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	olderThan := time.Date(2026, 8, 14, 3, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)SELECT node\.id FROM nodes node.*role='compute'.*ORDER BY node\.id LIMIT \$1`).
+		WithArgs(2, olderThan).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(9)).AddRow(int64(11)))
+	ids, err := st.ListUnscannedComputeNodes(context.Background(), olderThan, 2)
+	if err != nil || len(ids) != 2 || ids[0] != 9 || ids[1] != 11 {
+		t.Fatalf("ids=%v err=%v", ids, err)
+	}
+	assertMockExpectations(t, mock)
+
+	// Zero results is an empty, non-nil slice.
+	mock.ExpectQuery(`(?s)SELECT node.id FROM nodes node.*ORDER BY node.id LIMIT \$1`).
+		WithArgs(10, olderThan).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	ids, err = st.ListUnscannedComputeNodes(context.Background(), olderThan, 0)
+	if err != nil || ids == nil || len(ids) != 0 {
+		t.Fatalf("ids=%v err=%v", ids, err)
+	}
+	assertMockExpectations(t, mock)
+}
 func TestLatestAccountImportBatchReturnsSafeEmptyCandidateList(t *testing.T) {
 	t.Parallel()
 	st, mock, closeDB := newMockStore(t)

@@ -155,6 +155,7 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Post("/users/{uuid}/identity-recovery", s.handleAdminRecoverUserIdentity)
 		r.Post("/users/{uuid}/data-faults", s.handleAdminReportUserDataFault)
 		r.Get("/users/{uuid}/data-fault", s.handleAdminUserDataFaultStatus)
+		r.Post("/users/{uuid}/storage-repair-target", s.handleAdminSetStorageRepairTarget)
 		r.Post("/users/{id}/backup", s.handleAdminTriggerBackup)
 		r.Post("/users/{id}/disable", s.handleAdminDisableUser)
 		r.Get("/backups", s.handleAdminListBackups)

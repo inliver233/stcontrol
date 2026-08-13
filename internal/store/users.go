@@ -323,6 +323,28 @@ func (s *Store) GetUserByID(ctx context.Context, id int64) (*User, error) {
 	return u, err
 }
 
+
+// GetUserByUUID 按全局 UUID 查找（管理员按 uuid 定位用户）。
+func (s *Store) GetUserByUUID(ctx context.Context, uuid string) (*User, error) {
+	if uuid == "" {
+		return nil, nil
+	}
+	u := &User{}
+	err := s.DB.QueryRowContext(ctx, `
+	  SELECT u.id, COALESCE(gu.id,0), u.uuid, u.username, u.display_name, u.password_enc, identity.password_hash,
+	    u.auth_provider, u.oauth_id, u.avatar_url, u.email, u.home_node_id, u.status, u.created_at
+	  FROM users u
+	  JOIN global_users gu ON gu.legacy_user_id=u.id
+	  LEFT JOIN auth_identities identity
+	    ON identity.user_id=gu.id AND identity.provider='password' AND identity.status='active'
+	  WHERE gu.uuid=$1`, uuid).
+		Scan(&u.ID, &u.GlobalID, &u.UUID, &u.Username, &u.DisplayName, &u.PasswordEnc, &u.PasswordHash,
+			&u.AuthProvider, &u.OAuthID, &u.AvatarURL, &u.Email, &u.HomeNodeID, &u.Status, &u.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return u, err
+}
 // DeleteUser 删除用户（注册回滚用）。
 func (s *Store) DeleteUser(ctx context.Context, id int64) error {
 	tx, err := s.DB.BeginTx(ctx, nil)

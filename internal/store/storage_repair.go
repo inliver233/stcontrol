@@ -67,6 +67,50 @@ func (s *Store) ListActiveStorageRepairUserIDs(ctx context.Context) (map[int64]s
 	return users, rows.Err()
 }
 
+
+// SetStorageRepairPreferredTarget lets an administrator steer the storage
+// repair target for a user (Round 26).  The reconciler prefers the chosen node
+// when it remains eligible and falls back to deterministic auto-selection
+// otherwise.  targetNodeID==0 clears the override.
+func (s *Store) SetStorageRepairPreferredTarget(
+	ctx context.Context,
+	globalUserID, targetNodeID int64,
+	now time.Time,
+) error {
+	if globalUserID <= 0 || targetNodeID < 0 {
+		return ErrInvalidStorageRepairExecution
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if targetNodeID > 0 {
+		// The override must reference an existing storage node; otherwise the
+		// intent would silently never converge.
+		var exists bool
+		if err := s.DB.QueryRowContext(ctx, `
+			SELECT EXISTS (SELECT 1 FROM nodes WHERE id=$1 AND role='storage')`,
+			targetNodeID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return ErrInvalidStorageRepairExecution
+		}
+	}
+	result, err := s.DB.ExecContext(ctx, `
+		UPDATE storage_repair_tasks SET preferred_target_node_id=$2,updated_at=$3
+		WHERE user_id=$1 AND state IN ('pending','retry_wait')`,
+		globalUserID, nullInt64(targetNodeID), now)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // ScheduleStorageRepairTasks projects eligible unprotected users into one
 // durable active intent per user. It deliberately does not pick a target: the
 // target and its byte reservation are chosen together in the serializable
@@ -215,9 +259,10 @@ func (s *Store) ClaimAndCreateStorageRepair(
 
 	var out StorageRepairExecution
 	var taskAttempt int
+	var preferredTarget sql.NullInt64
 	err = tx.QueryRowContext(ctx, `
 		SELECT task.id::text,task.legacy_user_id,task.user_id,task.source_node_id,
-		  task.estimated_bytes,task.attempt
+		  task.estimated_bytes,task.attempt,task.preferred_target_node_id
 		FROM storage_repair_tasks task
 		JOIN global_users global_user ON global_user.id=task.user_id
 		  AND global_user.legacy_user_id=task.legacy_user_id AND global_user.status='active'
@@ -271,7 +316,7 @@ func (s *Store) ClaimAndCreateStorageRepair(
 		FOR UPDATE OF task,global_user,legacy,home,home_replica SKIP LOCKED LIMIT 1`,
 		p.Now, p.MaxAttempts).Scan(
 		&out.TaskID, &out.LegacyUserID, &out.GlobalUserID, &out.SourceNodeID,
-		&out.EstimatedBytes, &taskAttempt,
+		&out.EstimatedBytes, &taskAttempt, &preferredTarget,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -334,14 +379,16 @@ func (s *Store) ClaimAndCreateStorageRepair(
 		    WHERE cleanup.user_id=$4 AND cleanup.node_id=node.id
 		      AND cleanup.state IN ('pending','running','retry_wait')
 		  )
-		ORDER BY CASE node.capacity_state WHEN 'open' THEN 0 ELSE 1 END,
+		ORDER BY CASE WHEN $5 IS NOT NULL AND node.id=$5 THEN 0 ELSE 1 END,
+		  CASE node.capacity_state WHEN 'open' THEN 0 ELSE 1 END,
 		  LEAST(node.disk_available_bytes,node.disk_quota_bytes-node.allocated_disk_bytes)-
 		    COALESCE((SELECT sum(reservation.reserved_bytes)
 		      FROM storage_repair_tasks reservation
 		      WHERE reservation.target_node_id=node.id AND reservation.state='workflow_running'),0) DESC,
 		  node.id
 		FOR UPDATE OF node SKIP LOCKED LIMIT 1`,
-		out.SourceNodeID, out.EstimatedBytes, p.Now.Add(-2*time.Minute), out.GlobalUserID).
+		out.SourceNodeID, out.EstimatedBytes, p.Now.Add(-2*time.Minute), out.GlobalUserID,
+		nullInt64(preferredTarget.Int64)).
 		Scan(&out.TargetNodeID)
 	if err == sql.ErrNoRows {
 		return nil, nil

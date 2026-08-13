@@ -88,15 +88,15 @@ func TestClaimAndCreateStorageRepairAtomicallyReservesAndCreatesWorkflow(t *test
 	mock.ExpectBegin()
 	mock.ExpectQuery(`(?s)FROM storage_repair_tasks task.*JOIN user_replicas archive_legacy.*copy.verified_at IS NOT NULL.*workflow.workflow_type IN \('snapshot','restore','conflict_resolution'\).*FOR UPDATE OF task,global_user,legacy,home,home_replica SKIP LOCKED`).
 		WithArgs(p.Now, p.MaxAttempts).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "legacy_user_id", "user_id", "source_node_id", "estimated_bytes", "attempt"}).
-			AddRow(taskID, int64(7), int64(70), int64(8), estimated, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "legacy_user_id", "user_id", "source_node_id", "estimated_bytes", "attempt", "preferred_target_node_id"}).
+			AddRow(taskID, int64(7), int64(70), int64(8), estimated, 1, nil))
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(4)))
 	mock.ExpectQuery(`(?s)FROM user_activity_leases WHERE user_id=\$1 FOR UPDATE`).
 		WithArgs(int64(70)).
 		WillReturnRows(sqlmock.NewRows([]string{"activity_epoch", "writer_node_id", "lease_expires_at", "in_flight_reads", "in_flight_writes", "state"}))
 	mock.ExpectQuery(`(?s)FROM nodes node.*node.role='storage'.*disk_available_bytes-COALESCE.*disk_quota_bytes-node.allocated_disk_bytes-COALESCE.*FOR UPDATE OF node SKIP LOCKED`).
-		WithArgs(int64(8), estimated, p.Now.Add(-2*time.Minute), int64(70)).
+		WithArgs(int64(8), estimated, p.Now.Add(-2*time.Minute), int64(70), nil).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(9)))
 	mock.ExpectQuery(`(?s)INSERT INTO backup_jobs.*'storage_repair'.*RETURNING id`).
 		WithArgs(int64(7), int64(8), int64(9), p.Now).
@@ -144,13 +144,13 @@ func TestClaimAndCreateStorageRepairDoesNotCreateJobWithoutReservedCapacity(t *t
 	p := storageRepairExecutionParams(time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC))
 	mock.ExpectBegin()
 	mock.ExpectQuery(`FROM storage_repair_tasks task`).WithArgs(p.Now, p.MaxAttempts).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "legacy_user_id", "user_id", "source_node_id", "estimated_bytes", "attempt"}).
-			AddRow("77777777-7777-4777-8777-777777777777", int64(7), int64(70), int64(8), int64(1<<30), 0))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "legacy_user_id", "user_id", "source_node_id", "estimated_bytes", "attempt", "preferred_target_node_id"}).
+			AddRow("77777777-7777-4777-8777-777777777777", int64(7), int64(70), int64(8), int64(1<<30), 0, nil))
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(4)))
 	mock.ExpectQuery(`FROM user_activity_leases`).WithArgs(int64(70)).
 		WillReturnRows(sqlmock.NewRows([]string{"activity_epoch", "writer_node_id", "lease_expires_at", "in_flight_reads", "in_flight_writes", "state"}))
-	mock.ExpectQuery(`FROM nodes node`).WithArgs(int64(8), int64(1<<30), p.Now.Add(-2*time.Minute), int64(70)).
+	mock.ExpectQuery(`FROM nodes node`).WithArgs(int64(8), int64(1<<30), p.Now.Add(-2*time.Minute), int64(70), nil).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectRollback()
 	execution, err := st.ClaimAndCreateStorageRepair(context.Background(), p)
@@ -167,8 +167,8 @@ func TestClaimAndCreateStorageRepairRejectsAWriterThatCameBack(t *testing.T) {
 	p := storageRepairExecutionParams(time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC))
 	mock.ExpectBegin()
 	mock.ExpectQuery(`FROM storage_repair_tasks task`).WithArgs(p.Now, p.MaxAttempts).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "legacy_user_id", "user_id", "source_node_id", "estimated_bytes", "attempt"}).
-			AddRow("77777777-7777-4777-8777-777777777777", int64(7), int64(70), int64(8), int64(1<<30), 0))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "legacy_user_id", "user_id", "source_node_id", "estimated_bytes", "attempt", "preferred_target_node_id"}).
+			AddRow("77777777-7777-4777-8777-777777777777", int64(7), int64(70), int64(8), int64(1<<30), 0, nil))
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(4)))
 	mock.ExpectQuery(`FROM user_activity_leases`).WithArgs(int64(70)).
@@ -216,6 +216,56 @@ func TestClaimAndCreateStorageRepairRejectsInvalidIdentityBeforeTransaction(t *t
 	}
 	if _, err := st.ReconcileStorageRepairTasks(context.Background(), p.Now, 0); !errors.Is(err, ErrInvalidStorageRepairExecution) {
 		t.Fatalf("invalid max attempts error=%v", err)
+	}
+}
+func TestSetStorageRepairPreferredTargetValidatesAndPersists(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 14, 2, 0, 0, 0, time.UTC)
+
+	// Non-storage node is rejected before any mutation.
+	mock.ExpectQuery(`SELECT EXISTS \(SELECT 1 FROM nodes WHERE id=\$1 AND role='storage'\)`).
+		WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	if err := st.SetStorageRepairPreferredTarget(context.Background(), 70, 9, now); err != ErrInvalidStorageRepairExecution {
+		t.Fatalf("err=%v", err)
+	}
+	assertMockExpectations(t, mock)
+
+	// Valid storage target persists the override.
+	mock.ExpectQuery(`SELECT EXISTS \(SELECT 1 FROM nodes WHERE id=\$1 AND role='storage'\)`).
+		WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectExec(`UPDATE storage_repair_tasks SET preferred_target_node_id=\$2,updated_at=\$3`).
+		WithArgs(int64(70), int64(9), now).WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := st.SetStorageRepairPreferredTarget(context.Background(), 70, 9, now); err != nil {
+		t.Fatal(err)
+	}
+	assertMockExpectations(t, mock)
+
+	// Clearing (0) writes NULL.
+	mock.ExpectExec(`UPDATE storage_repair_tasks SET preferred_target_node_id=\$2,updated_at=\$3`).
+		WithArgs(int64(70), nil, now).WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := st.SetStorageRepairPreferredTarget(context.Background(), 70, 0, now); err != nil {
+		t.Fatal(err)
+	}
+	assertMockExpectations(t, mock)
+
+	// No pending task surfaces ErrNoRows.
+	mock.ExpectQuery(`SELECT EXISTS \(SELECT 1 FROM nodes WHERE id=\$1 AND role='storage'\)`).
+		WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectExec(`UPDATE storage_repair_tasks SET preferred_target_node_id=\$2,updated_at=\$3`).
+		WithArgs(int64(70), int64(9), now).WillReturnResult(sqlmock.NewResult(0, 0))
+	if err := st.SetStorageRepairPreferredTarget(context.Background(), 70, 9, now); err != sql.ErrNoRows {
+		t.Fatalf("err=%v", err)
+	}
+	assertMockExpectations(t, mock)
+
+	// Invalid inputs are rejected before touching the database.
+	if err := st.SetStorageRepairPreferredTarget(context.Background(), 0, 9, now); err != ErrInvalidStorageRepairExecution {
+		t.Fatalf("err=%v", err)
+	}
+	if err := st.SetStorageRepairPreferredTarget(context.Background(), 70, -1, now); err != ErrInvalidStorageRepairExecution {
+		t.Fatalf("err=%v", err)
 	}
 }
 

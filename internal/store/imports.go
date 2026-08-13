@@ -625,6 +625,41 @@ func (s *Store) GetAccountImportBatchPage(
 	return &result, nil
 }
 
+
+// ListUnscannedComputeNodes returns compute nodes that have never been
+// scanned or whose latest successful scan is older than the given window,
+// ordered by staleness.  Used by the optional unattended import scanner
+// (R16); operators can keep scanning fully manual by leaving it disabled.
+func (s *Store) ListUnscannedComputeNodes(ctx context.Context, olderThan time.Time, limit int) ([]int64, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT node.id FROM nodes node
+		WHERE node.role='compute'
+		  AND node.connectivity_state='online' AND node.operational_state='active'
+		  AND node.compatibility_state='compatible' AND node.control_mode='managed'
+		  AND node.desired_control_mode='managed'
+		  AND NOT EXISTS (
+		    SELECT 1 FROM account_import_batches batch
+		    WHERE batch.node_id=node.id AND batch.state='review' AND batch.scanned_at>$2
+		  )
+		ORDER BY node.id LIMIT $1`, limit, olderThan)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *Store) GetLatestAccountImportBatch(ctx context.Context, nodeID int64) (*AccountImportResult, error) {
 	return s.GetLatestAccountImportBatchPage(ctx, nodeID, 0, MaxAccountImportPageSize)
 }

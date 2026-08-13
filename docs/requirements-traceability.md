@@ -145,6 +145,12 @@
 - **Round 20 管理员可调推荐权重**：迁移 0043 给 nodes 增加 `recommendation_weight`（0-100，默认 0）；UpdateNodeSettings 持久化；注册页 `availableNodeRank` 以“可注册+容量开放 > 容量繁忙 > 不可注册”为主序，权重在同类内优先（每单位权重=10 档），前端“配额策略”面板新增推荐权重输入。
 - **R18 客户端延迟持久化**：迁移 0044 给 nodes 增加 `client_latency_ms/client_latency_observed_at`；新增 `RecordNodeClientLatency`（EWMA 平滑、0..3600000ms 校验）与 `POST /api/users/me/node-latency`（登录用户、严格 JSON）；Nodes/Register/SelectNode 实测延迟后 fire-and-forget 上报；`availableNodeRank` 在权重同级内以延迟档位（<100/<300/<800ms）作次级排序。测试：store EWMA/校验、controller 有效样本持久化与 6 类非法样本 400。
 
+
+## 2026-08-14 flash 分支阶段记录（P3 收尾：Round 26、R16）
+
+- **Round 26 管理员可改存储修复目标**：迁移 0045 给 storage_repair_tasks 增加 `preferred_target_node_id`；新增 `SetStorageRepairPreferredTarget`（校验目标是纯存储节点、0 清除、无待办任务返回 ErrNoRows）；`ClaimAndCreateStorageRepair` 目标选择 ORDER BY 优先管理员指定节点（仍强制健康/容量/兼容门禁，不合格自动回落确定性选择）；新增 `POST /api/admin/users/{uuid}/storage-repair-target` 管理端点与 `GetUserByUUID` store 方法。测试覆盖校验/持久化/清除/无任务/非法输入。
+- **R16 老账号自动扫描（可选）**：新增 `import_scan` 配置（默认关闭、6h 间隔、每轮最多 2 节点）；`ListUnscannedComputeNodes` 列出从未扫描或最近一次 review 批次早于窗口的在线计算节点；`importScanReconciler` 后台协程用与管理员按钮完全相同的幂等扫描路径（scanAccountInventory + operationID 派生）执行无人值守扫描，失败下轮重试。默认关闭保持管理员完全控制。测试覆盖候选筛选与空结果。
+
 ## 完成判定规则
 
 每一行只有同时满足以下条件才可改为 `完成`：

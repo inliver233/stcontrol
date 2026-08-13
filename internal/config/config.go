@@ -27,6 +27,7 @@ type ControllerConfig struct {
 	Admin        AdminConfig    `yaml:"admin"`
 	Relay        RelayConfig    `yaml:"relay"`
 	ControllerBackup ControllerDisasterBackupPolicy `yaml:"controller_backup"`
+	ImportScan ImportScanPolicy `yaml:"import_scan"`
 }
 
 // ControllerDisasterBackupPolicy controls automatic backup of the Controller's
@@ -38,6 +39,16 @@ type ControllerDisasterBackupPolicy struct {
 	RetryMax       int   `yaml:"retry_max"`    // default 3
 	KeepLatestOnly bool  `yaml:"keep_latest_only"`
 	PgDump         bool  `yaml:"pg_dump"`      // include postgres dump; default true (graceful if pg_dump missing)
+}
+
+// ImportScanPolicy controls the unattended legacy-account import scanner
+// (R16).  When enabled, the controller periodically scans compute nodes that
+// have never been scanned or whose inventory revision changed.  Disabled by
+// default so operators keep full control over when scanning runs.
+type ImportScanPolicy struct {
+	Enabled      bool `yaml:"enabled"`
+	IntervalSec  int  `yaml:"interval_sec"`  // default 6h
+	MaxNodesPerRun int `yaml:"max_nodes_per_run"` // default 2
 }
 
 // NodePolicy 节点策略。
@@ -184,6 +195,9 @@ func DefaultController() *ControllerConfig {
 		},
 		ControllerBackup: ControllerDisasterBackupPolicy{
 			Enabled: true, IntervalSec: 24 * 3600, RetryMax: 3, KeepLatestOnly: true, PgDump: true,
+		},
+		ImportScan: ImportScanPolicy{
+			Enabled: false, IntervalSec: 6 * 3600, MaxNodesPerRun: 2,
 		},
 	}
 }
