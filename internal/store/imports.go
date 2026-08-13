@@ -164,6 +164,77 @@ func (s *Store) ListAccountImportClaimTargets(ctx context.Context, globalUserID 
 	return targets, rows.Err()
 }
 
+
+// ResolveOAuthUnmatchedCandidates links account-import candidates that were
+// classified oauth_unmatched (OAuth-only accounts needing OAuth login proof)
+// once the user authenticates with the matching provider.  Idempotent: each
+// candidate resolves at most once; conflicting node accounts or non-active
+// users are skipped so a bad scan can never merge the wrong account.
+func (s *Store) ResolveOAuthUnmatchedCandidates(
+	ctx context.Context,
+	provider, fingerprint string,
+	globalUserID int64,
+	now time.Time,
+) (int64, error) {
+	if provider == "" || fingerprint == "" || globalUserID <= 0 || now.IsZero() {
+		return 0, ErrAccountClaimRejected
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var active bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM global_users WHERE id=$1 AND status='active')`,
+		globalUserID).Scan(&active); err != nil {
+		return 0, err
+	}
+	if !active {
+		if err := tx.Commit(); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE account_import_candidates candidate
+		SET resolution_state='auto_linked',matched_user_id=$4,reason_code='oauth_login_proof',updated_at=$5
+		FROM account_import_batches batch
+		WHERE candidate.batch_id=batch.id
+		  AND candidate.resolution_state='oauth_unmatched'
+		  AND candidate.identity_fingerprints->>$1=$2
+		  AND NOT EXISTS (
+		    SELECT 1 FROM node_accounts account
+		    WHERE account.node_id=candidate.node_id
+		      AND (account.user_id=$4 OR account.local_user_id=candidate.local_user_id)
+		  )
+		RETURNING candidate.id`,
+		provider, fingerprint, globalUserID, globalUserID, now)
+	if err != nil {
+		return 0, err
+	}
+	resolved, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if resolved > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE account_import_batches SET auto_linked_count=auto_linked_count+$2,
+			  unresolved_count=GREATEST(0,unresolved_count-$2),
+			  state=CASE WHEN unresolved_count<=$2 THEN 'resolved' ELSE state END,updated_at=$3
+			WHERE id IN (
+			  SELECT batch_id FROM account_import_candidates
+			  WHERE resolution_state='auto_linked' AND reason_code='oauth_login_proof' AND updated_at=$3
+			)`, now, resolved, now); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return resolved, nil
+}
+
 func (s *Store) CompleteAccountImportClaim(ctx context.Context, p CompleteAccountImportClaimParams) error {
 	if p.OperationID == "" || p.GlobalUserID <= 0 || p.NodeID <= 0 || p.LocalHandle == "" || p.LocalUserID == "" {
 		return ErrAccountClaimRejected
@@ -544,6 +615,15 @@ func classifyAndLinkImportCandidate(
 		WHERE lower(legacy.username)=lower($1) AND global_user.status<>'deleted'
 		ORDER BY global_user.id LIMIT 1`, candidate.LocalHandle).Scan(&handleMatch)
 	if err == nil {
+		// A same-name collision needs control proof, but the proof must match
+		// the account's actual credentials: password accounts prove with the
+		// node password (claim_required), OAuth-only accounts prove by logging
+		// in with that provider (oauth_unmatched -> resolved on OAuth login).
+		// Sending an OAuth-only account to the password-claim guard would leave
+		// it permanently stuck.
+		if candidate.AccountKind == "oauth" && len(candidate.Identities) > 0 {
+			return "oauth_unmatched", 0, "same_handle_oauth_proof_required", nil
+		}
 		return "claim_required", 0, "same_handle_requires_control_proof", nil
 	}
 	if err != sql.ErrNoRows {

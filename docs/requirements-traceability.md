@@ -156,6 +156,11 @@
 
 - **Round 61 主密钥恢复材料**：新增 `internal/crypto/master_key_recovery.go`——用恢复口令（scrypt N=2^15 派生 AES-256-GCM）把控制面主密钥密封为可 JSON 序列化的信封（随机 salt、带格式版本与 KDF 参数白名单校验、GCM 认证防篡改）。总控灾备备份在配置 `controller_backup.recovery_passphrase_env`（环境变量名）后，把 `master_key_recovery.json` 写入归档并把信封摘要记入 manifest（归档内绝不存明文密钥；未配置则完全不含密钥材料）。`cmd/controller --recover-master-key <archive>` 用 `CONTROLLER_RECOVERY_PASSPHRASE` 解出 base64 主密钥，供丢失密钥后重建/恢复演练。测试覆盖密封/解封回环、JSON 往返、错误口令/篡改/弱口令/非法 KDF 参数拒绝。
 
+
+## 2026-08-14 flash 分支阶段记录（R16 分类一致性）
+
+- **R16 oauth/unknown 同名候选不再卡死 claim_required**：`classifyAndLinkImportCandidate` 现对同名冲突区分证明方式——password/mixed 账号走 `claim_required`（节点密码证明），OAuth-only（account_kind=oauth）账号走 `oauth_unmatched`（避免被密码守卫永久卡住）。新增 `ResolveOAuthUnmatchedCandidates`：用户在 OAuth 回调登录成功后，Controller 按每个在线计算节点的节点作用域 HMAC 指纹重算并幂等解析匹配的 `oauth_unmatched` 候选（存在冲突 node_accounts 或非 active 用户则跳过）；`resolvedOAuthUnmatchedAfterLogin` 在 handleOAuthCallback 登录成功后调用。测试覆盖 OAuth-only 同名分类、非 active 用户跳过、匹配解析与批统计更新。
+
 ## 完成判定规则
 
 每一行只有同时满足以下条件才可改为 `完成`：

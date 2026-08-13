@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	controlcrypto "stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
@@ -185,6 +186,11 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R16: an OAuth-only legacy candidate classified oauth_unmatched is proven
+	// by this successful OAuth login. Fingerprints are node-scoped HMACs, so
+	// recompute them for every active node and resolve matches idempotently.
+	s.resolvedOAuthUnmatchedAfterLogin(r.Context(), provider, oauthID, user.GlobalID)
+
 	if err := s.createUserSession(w, r, user); err != nil {
 		protocol.WriteError(w, http.StatusServiceUnavailable, "创建会话失败")
 		return
@@ -194,6 +200,36 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		redirectURL = "/conflict"
 	}
 	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+
+// resolvedOAuthUnmatchedAfterLogin recomputes the node-scoped OAuth subject
+// fingerprint for every active node and resolves oauth_unmatched import
+// candidates whose identity matches (R16).  Best-effort: failures only delay
+// resolution until the next login.
+func (s *Server) resolvedOAuthUnmatchedAfterLogin(ctx context.Context, provider, subject string, globalUserID int64) {
+	if provider == "" || subject == "" || globalUserID <= 0 {
+		return
+	}
+	nodes, err := s.Store.ListNodes(ctx)
+	if err != nil {
+		return
+	}
+	for _, node := range nodes {
+		if node == nil || node.Role != "compute" {
+			continue
+		}
+		psk, err := s.agentPSK(ctx, node)
+		if err != nil || psk == "" {
+			continue
+		}
+		fingerprint := controlcrypto.AgentInventoryFingerprint(
+			psk, "oauth-subject", provider, subject,
+		)
+		_, _ = s.Store.ResolveOAuthUnmatchedCandidates(
+			ctx, provider, fingerprint, globalUserID, time.Now().UTC(),
+		)
+	}
 }
 
 type completeOAuthRequest struct {
