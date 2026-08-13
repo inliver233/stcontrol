@@ -180,6 +180,11 @@
 - **Phase 6B 冲突元数据建议**：`enqueueConflictReview` 只发送冲突聚合（来源数/文件数/字节/证据是否 ready/年龄），不含路径/正文/digest；`RECOMMEND_CONFLICT_*` 动作恒要求人工确认。冲突正文级预览（§7.7 第二级）默认不启用——仅在服务端标记 preview_eligible 且通过 secret scan 的小型 UTF-8 片段由用户逐案授权，原件永不覆盖；该内容级路径留待 Linux 迁移后的浏览器矩阵。
 - **验证**：`go build/vet/test -short ./...` 全绿；真实 PostgreSQL 隔离 schema 上 47 个迁移全部应用，`TestPostgresAIAdvisoryRoundTrip`（幂等 dedup/状态机/黑盒三表闭环）与 `TestPostgresAIObservationAggregates`（五个聚合查询空表安全）通过；web tsc + vitest 16/16。提交：`86f9873`（Phase 0）、`c5304de`（Phase 1 UI）、`09a960a`（Phase 2–6B workers）。真实第三方 provider 影子回放、30 天 shadow 期与非劣阈值评估留待部署后按 §8 发布流程执行；AI 监管层继续保持 `部分`。
 
+## 2026-08-14 flash 分支阶段记录（真实 PostgreSQL 复验）
+
+- **R19 冲突证据认领 SQL 占位符修复**：`ClaimConflictEvidenceTask` 的 failed 重新武装子句误用 `$4`（与 evidence_lease_until 冲突），真实 PostgreSQL 报 `got 5 parameters but the statement requires 4`；改为 `$5` 后真实库 conflict evidence→resolution 全链集成测试通过。该缺陷只在真实数据库暴露（sqlmock 不校验占位符数量）。提交 `3eb6ba8`。
+- 复验：真实 PostgreSQL 上 store 全部 `TestPostgres*` 与 controller 全部 `TestController*` 集成套件全绿；`go build/vet/test -short ./...`、web tsc + vitest 16/16、Online adapter 16/16 全绿。
+
 ## 完成判定规则
 
 每一行只有同时满足以下条件才可改为 `完成`：
