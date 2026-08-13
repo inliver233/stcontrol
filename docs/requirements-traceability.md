@@ -161,6 +161,12 @@
 
 - **R16 oauth/unknown 同名候选不再卡死 claim_required**：`classifyAndLinkImportCandidate` 现对同名冲突区分证明方式——password/mixed 账号走 `claim_required`（节点密码证明），OAuth-only（account_kind=oauth）账号走 `oauth_unmatched`（避免被密码守卫永久卡住）。新增 `ResolveOAuthUnmatchedCandidates`：用户在 OAuth 回调登录成功后，Controller 按每个在线计算节点的节点作用域 HMAC 指纹重算并幂等解析匹配的 `oauth_unmatched` 候选（存在冲突 node_accounts 或非 active 用户则跳过）；`resolvedOAuthUnmatchedAfterLogin` 在 handleOAuthCallback 登录成功后调用。测试覆盖 OAuth-only 同名分类、非 active 用户跳过、匹配解析与批统计更新。
 
+## 2026-08-14 flash 分支阶段记录（R14 密码收敛闭环）
+
+- **R14 Bug 1 旧密码在同步未完成前仍有效**：改密/管理员恢复重置现在把旧 verifier 保留为 `previous_password_hash`（迁移 0042 的 auth_identities.previous_password_hash + password_changed_at），控制面登录在“任一节点账号仍 pending/error 且变更在 48h 窗口内”时接受当前或上一版 bcrypt hash（`internal/store/password_convergence.go` 的 `PasswordFallbackHash`、`internal/controller/user.go` 的 `Server.passwordMatches`）；每节点收敛或窗口过期后 `ClearPasswordFallbackIfConverged` 动态且物理丢弃旧 verifier。测试：`internal/store/password_convergence_test.go`、`internal/controller/password_fallback_test.go`；DSN 门禁集成测试 `password_sync_postgres_integration_test.go` 断言节点 pending 时旧密码可登录、收敛后旧密码 403。
+- **R14 Bug 2 解绑不推送到节点**：`UnbindUserIdentity`（provider=password）在同一事务内为每个在线/离线节点插入持久 removal intent（`node_account_password_removals`，迁移 0042）；`reconcilePendingPasswords` 经 `deliverPasswordRemovals` 向可达节点下发 `set_password{Remove:true}`（协议 `SetPasswordRequest.Remove`），节点确认后才清除 intent，离线节点退避重试直到回归。Agent 侧 `internal/agent/commands.go` 的 set_password 校验放行 Remove-only 载荷（无 hash 材料），`internal/agent/tavern.go` 原样转发；Online adapter `src/endpoints/stcontrol.js` 的 `/api/stcontrol/internal/users/password` 在 `remove:true` 时删除本地 password/salt/version verifier。测试：`internal/agent/commands_test.go` 新增 Remove 转发与无 Remove 缺材料拒绝；adapter 套件新增 removal 路径结构断言。
+- 验证：`go build ./...`、`go vet ./...`、`go test -short ./...` 全绿；Online `node --test tests/stcontrol-adapter.node.test.mjs` 16/16。提交 `5b33abe`（stcontrol flash）、`b3e5e86`（Sillytarven-online online）。真实节点适配器的端到端解绑链路（真实 adapter 在线接收 Remove）仍待迁移 Linux 后的浏览器/双进程矩阵补测，R14 继续保持 `部分`。
+
 ## 完成判定规则
 
 每一行只有同时满足以下条件才可改为 `完成`：
