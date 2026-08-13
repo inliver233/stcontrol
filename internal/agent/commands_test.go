@@ -152,6 +152,51 @@ func TestPrepareRestoreReceiveRequiresComputeRole(t *testing.T) {
 	}
 }
 
+func TestPrepareSnapshotReceiveRequiresDestinationRole(t *testing.T) {
+	t.Parallel()
+	makePayload := func(kind string) []byte {
+		payload, err := json.Marshal(protocol.PrepareSnapshotReceiveRequest{
+			WorkflowID: testWorkflowID, SnapshotID: testSnapshotID, GlobalUserID: 70,
+			Handle: "alice", DestinationKind: kind, SourceNodeID: 8, ActivityEpoch: 4,
+			CapabilityHash: strings.Repeat("a", 64), ExpiresAt: time.Now().UTC().Add(10 * time.Minute),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return payload
+	}
+	compute, err := New(&config.AgentConfig{
+		Role: "compute", NodeID: 9, AgentPSK: "compute-destination-secret",
+		DataDir: t.TempDir(), TavernDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage, err := New(&config.AgentConfig{
+		Role: "storage", NodeID: 10, AgentPSK: "storage-destination-secret",
+		DataDir: t.TempDir(), BackupDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		kind      string
+		agent     *Agent
+		wantValid bool
+	}{
+		{kind: "archive", agent: storage, wantValid: true},
+		{kind: "archive", agent: compute, wantValid: false},
+		{kind: "hot_standby", agent: compute, wantValid: true},
+		{kind: "hot_standby", agent: storage, wantValid: false},
+	} {
+		command := encryptedTestCommand(t, test.agent.Cfg.AgentPSK, "prepare_snapshot_receive", makePayload(test.kind))
+		succeeded, _ := test.agent.executeCommand(context.Background(), command)
+		if succeeded != test.wantValid {
+			t.Fatalf("kind=%s role=%s succeeded=%t want=%t", test.kind, test.agent.Cfg.Role, succeeded, test.wantValid)
+		}
+	}
+}
+
 func TestDecryptCommandAuthenticatesCiphertextAndDigest(t *testing.T) {
 	t.Parallel()
 	a := &Agent{Cfg: &config.AgentConfig{AgentPSK: "agent-secret"}}

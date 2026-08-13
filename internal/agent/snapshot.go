@@ -31,6 +31,7 @@ import (
 const (
 	snapshotManifestPath           = ".stcontrol/manifest.json"
 	archiveMetadataPath            = ".stcontrol-archive.json"
+	replicaIdentityPath            = ".stcontrol-replica.json"
 	maxSnapshotFiles               = 100_000
 	maxSnapshotBytes               = int64(100 << 30)
 	maxSnapshotFileBytes           = int64(10 << 30)
@@ -51,6 +52,15 @@ type archiveReplicaMetadata struct {
 	PublishedAt   time.Time                        `json:"published_at"`
 	Manifest      protocol.SnapshotManifest        `json:"manifest"`
 	Receipt       protocol.SnapshotTransferReceipt `json:"receipt"`
+}
+
+type replicaIdentityMetadata struct {
+	FormatVersion int    `json:"format_version"`
+	SnapshotID    string `json:"snapshot_id"`
+	GlobalUserID  int64  `json:"global_user_id"`
+	Handle        string `json:"handle"`
+	TargetNodeID  int64  `json:"target_node_id"`
+	ReplicaKind   string `json:"replica_kind"`
 }
 
 type snapshotGateRequest struct {
@@ -445,6 +455,9 @@ func verifyArchiveReplicaTree(
 		}
 		rel = filepath.ToSlash(rel)
 		if rel == archiveMetadataPath {
+			if _, err := controllerReplicaMetadataEntry(rel, info); err != nil {
+				return err
+			}
 			return nil
 		}
 		if info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) {
@@ -667,6 +680,16 @@ func (a *Agent) copySnapshotTree(ctx context.Context, req protocol.StartSnapshot
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if rel == replicaIdentityPath {
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if _, err := controllerReplicaMetadataEntry(rel, info); err != nil {
+				return err
+			}
+			return nil
+		}
 		if !safeArchivePath(rel) {
 			return fmt.Errorf("unsafe snapshot path")
 		}
@@ -1113,12 +1136,27 @@ func (a *Agent) ReceiveSnapshot(ctx context.Context, workflowID, snapshotID, tok
 			return protocol.SnapshotTransferReceipt{}, err
 		}
 	}
+	a.replicaMutationMu.Lock()
+	modeLocked := false
 	receipt, err := extractVerifyAndPublish(ctx, archivePath, taskRoot, finalPath, transfer, archiveDigest, func() error {
 		if transfer.DestinationKind == "conflict_input" {
 			return nil
 		}
-		return a.reportSnapshotProgress(ctx, workflowID, snapshotID, "publishing")
+		if err := a.reportSnapshotProgress(ctx, workflowID, snapshotID, "publishing"); err != nil {
+			return err
+		}
+		a.stateMu.Lock()
+		if a.state.ControlMode.Mode != protocol.NodeModeManaged {
+			a.stateMu.Unlock()
+			return fmt.Errorf("snapshot publication requires managed mode")
+		}
+		modeLocked = true
+		return nil
 	})
+	if modeLocked {
+		a.stateMu.Unlock()
+	}
+	a.replicaMutationMu.Unlock()
 	if err != nil {
 		_ = a.finishTransfer(snapshotID, "failed")
 		return protocol.SnapshotTransferReceipt{}, err
@@ -1277,6 +1315,11 @@ func extractVerifyAndPublish(
 			return protocol.SnapshotTransferReceipt{}, err
 		}
 	}
+	if transfer.DestinationKind == "hot_standby" {
+		if err := writeReplicaIdentityMetadata(staging, manifest, "hot_standby"); err != nil {
+			return protocol.SnapshotTransferReceipt{}, err
+		}
+	}
 	if beforePublish == nil || beforePublish() != nil {
 		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("snapshot publish fencing failed")
 	}
@@ -1315,6 +1358,42 @@ func writeArchiveReplicaMetadata(
 		return err
 	}
 	return file.Close()
+}
+
+func writeReplicaIdentityMetadata(
+	staging string,
+	manifest protocol.SnapshotManifest,
+	replicaKind string,
+) error {
+	metadata := replicaIdentityMetadata{
+		FormatVersion: 1,
+		SnapshotID:    manifest.SnapshotID, GlobalUserID: manifest.GlobalUserID,
+		Handle: manifest.Handle, TargetNodeID: manifest.TargetNodeID, ReplicaKind: replicaKind,
+	}
+	data, err := json.Marshal(metadata)
+	if err != nil || len(data) > 4<<10 {
+		return fmt.Errorf("invalid replica identity metadata")
+	}
+	path := filepath.Join(staging, replicaIdentityPath)
+	if !isSubPath(staging, path) {
+		return fmt.Errorf("unsafe replica identity path")
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o400)
+	if err != nil {
+		return safeSnapshotStorageError("create replica identity", err)
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return safeSnapshotStorageError("write replica identity", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return safeSnapshotStorageError("sync replica identity", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close replica identity failed")
+	}
+	return nil
 }
 
 func ensureSnapshotDiskCapacity(path string, snapshotBytes int64) error {
@@ -1435,10 +1514,20 @@ func safeArchivePath(path string) bool {
 	// Archive names are a platform-neutral, forward-slash-only namespace. A
 	// Windows drive/UNC/ADS spelling must remain invalid when the receiving
 	// Agent runs on Linux; filepath.IsLocal alone follows only the receiver OS.
-	return path != "" && path != archiveMetadataPath && path != conflictEvidenceMetadataPath &&
+	return path != "" && path != archiveMetadataPath && path != replicaIdentityPath && path != conflictEvidenceMetadataPath &&
 		!strings.ContainsAny(path, "\\:\x00") && filepath.IsLocal(filepath.FromSlash(path)) &&
 		path == filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))) &&
 		!strings.HasPrefix(path, ".stcontrol/")
+}
+
+func controllerReplicaMetadataEntry(path string, info os.FileInfo) (bool, error) {
+	if path != archiveMetadataPath && path != replicaIdentityPath {
+		return false, nil
+	}
+	if info == nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return true, fmt.Errorf("invalid controller replica metadata type")
+	}
+	return true, nil
 }
 
 func validHandle(handle string) bool {

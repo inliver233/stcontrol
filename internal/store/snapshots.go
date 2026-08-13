@@ -194,6 +194,47 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 			return SnapshotWorkflow{}, ErrIndependentReconciliationState
 		}
 	}
+	if !retirementSnapshot && !independentReconciliation {
+		var sourceEligible, targetEligible bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT source.role='compute'
+			    AND source.connectivity_state='online' AND source.operational_state='active'
+			    AND source.compatibility_state='compatible' AND source.control_mode='managed'
+			    AND source.desired_control_mode='managed',
+			  target.role=CASE WHEN $3='archive' THEN 'storage' ELSE 'compute' END
+			    AND target.connectivity_state='online' AND target.operational_state='active'
+			    AND target.compatibility_state='compatible' AND target.control_mode='managed'
+			    AND target.desired_control_mode='managed' AND target.capacity_state IN ('open','busy')
+			    AND COALESCE(target.transfer_url,'')<>''
+			    AND ($3<>'archive' OR target.is_backup_target)
+			    AND NOT EXISTS (
+			      SELECT 1 FROM replica_cleanup_tasks cleanup
+			      WHERE cleanup.user_id=$4 AND cleanup.node_id=target.id
+			        AND cleanup.state IN ('pending','running','retry_wait')
+			    )
+			FROM nodes source CROSS JOIN nodes target
+			WHERE source.id=$1 AND target.id=$2 FOR SHARE OF source,target`,
+			p.SourceNodeID, p.TargetNodeID, p.DestinationKind, p.GlobalUserID).Scan(
+			&sourceEligible, &targetEligible,
+		); err != nil {
+			return SnapshotWorkflow{}, err
+		}
+		if !sourceEligible || !targetEligible {
+			return SnapshotWorkflow{}, ErrInvalidSnapshotWorkflow
+		}
+	}
+	var cleanupActive bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM replica_cleanup_tasks cleanup
+		  WHERE cleanup.user_id=$1 AND cleanup.node_id IN ($2,$3)
+		    AND cleanup.state IN ('pending','running','retry_wait')
+		)`, p.GlobalUserID, p.SourceNodeID, p.TargetNodeID).Scan(&cleanupActive); err != nil {
+		return SnapshotWorkflow{}, err
+	}
+	if cleanupActive {
+		return SnapshotWorkflow{}, ErrSnapshotStateConflict
+	}
 	activityEpoch := int64(1)
 	var leaseEpoch, writerNodeID, inFlightReads, inFlightWrites int64
 	var leaseExpires time.Time
@@ -299,7 +340,9 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 		INSERT INTO user_replicas (user_id, node_id, kind, data_version, state)
 		VALUES ($1,$2,$3,0,'syncing')
 		ON CONFLICT (user_id,node_id) DO UPDATE SET
-		  kind=EXCLUDED.kind, state='syncing'`, p.LegacyUserID, p.TargetNodeID, p.DestinationKind); err != nil {
+		  kind=CASE WHEN user_replicas.state='ready' THEN user_replicas.kind ELSE EXCLUDED.kind END,
+		  state=CASE WHEN user_replicas.state='ready' THEN 'ready' ELSE 'syncing' END`,
+		p.LegacyUserID, p.TargetNodeID, p.DestinationKind); err != nil {
 		return SnapshotWorkflow{}, err
 	}
 	if independentReconciliation {
@@ -923,7 +966,7 @@ func (s *Store) CompleteSnapshotWorkflow(ctx context.Context, p CompleteSnapshot
 	if p.WorkflowID == "" || p.SnapshotID == "" || len(p.CapabilityHash) != 32 || p.TargetNodeID <= 0 ||
 		(p.ReplicaKind != "archive" && p.ReplicaKind != "hot_standby") || len(p.ManifestSHA256) != 32 ||
 		(p.ReplicaOrigin != "configured" && p.ReplicaOrigin != "temporary_failure_protection" &&
-			p.ReplicaOrigin != "migration") ||
+			p.ReplicaOrigin != "migration" && p.ReplicaOrigin != "automatic_repair") ||
 		len(p.ArchiveSHA256) != 32 || p.FileCount < 0 || p.TotalBytes < 0 {
 		return 0, ErrInvalidSnapshotWorkflow
 	}
@@ -997,6 +1040,53 @@ func (s *Store) CompleteSnapshotWorkflow(ctx context.Context, p CompleteSnapshot
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `
+		UPDATE replica_cleanup_tasks SET state='cancelled',lease_owner=NULL,lease_until=NULL,
+		  error_code='replica_replaced',updated_at=$3,finished_at=$3
+		WHERE user_id=$1 AND node_id=$2 AND state IN ('pending','retry_wait')`,
+		userID, p.TargetNodeID, p.Now); err != nil {
+		return 0, err
+	}
+	var cleanupRunning bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM replica_cleanup_tasks
+		  WHERE user_id=$1 AND node_id=$2 AND state='running'
+		)`, userID, p.TargetNodeID).Scan(&cleanupRunning); err != nil {
+		return 0, err
+	}
+	if cleanupRunning {
+		return 0, ErrSnapshotStateConflict
+	}
+	if p.ReplicaKind == "archive" {
+		if _, err := tx.ExecContext(ctx, `
+			WITH stale AS (
+			  UPDATE replica_copies SET state='stale',updated_at=$3
+			  WHERE user_id=$1 AND node_id<>$2 AND replica_kind='archive' AND state='ready'
+			  RETURNING id,user_id,node_id,snapshot_id,replica_kind
+			)
+			INSERT INTO replica_cleanup_tasks (
+			  id,replica_id,user_id,legacy_user_id,node_id,snapshot_id,handle,
+			  replica_kind,reason_code,state,next_attempt_at,created_at,updated_at
+			)
+			SELECT gen_random_uuid(),stale.id,stale.user_id,global_user.legacy_user_id,
+			  stale.node_id,stale.snapshot_id,legacy.username,stale.replica_kind,
+			  'superseded_archive','pending',$3,$3,$3
+			FROM stale
+			JOIN global_users global_user ON global_user.id=stale.user_id
+			JOIN users legacy ON legacy.id=global_user.legacy_user_id
+			WHERE stale.snapshot_id IS NOT NULL
+			ON CONFLICT (node_id,snapshot_id,replica_kind) DO NOTHING`,
+			userID, p.TargetNodeID, p.Now); err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE user_replicas SET state='stale'
+			WHERE user_id=$1 AND node_id<>$2 AND kind='archive' AND state='ready'`,
+			legacyUserID, p.TargetNodeID); err != nil {
+			return 0, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO replica_copies (
 		  id, user_id, node_id, snapshot_id, replica_kind, state, origin,
 		  is_authoritative, compatibility_state, published_at, verified_at, created_at, updated_at,
@@ -1026,20 +1116,6 @@ func (s *Store) CompleteSnapshotWorkflow(ctx context.Context, p CompleteSnapshot
 		  SELECT id::text FROM replica_copies WHERE user_id=$1 AND node_id=$2
 		) AND state IN ('open','acknowledged')`, userID, p.TargetNodeID, p.Now); err != nil {
 		return 0, err
-	}
-	if p.ReplicaKind == "archive" {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE replica_copies SET state='stale',updated_at=$3
-			WHERE user_id=$1 AND node_id<>$2 AND replica_kind='archive' AND state='ready'`,
-			userID, p.TargetNodeID, p.Now); err != nil {
-			return 0, err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE user_replicas SET state='stale'
-			WHERE user_id=$1 AND node_id<>$2 AND kind='archive' AND state='ready'`,
-			legacyUserID, p.TargetNodeID); err != nil {
-			return 0, err
-		}
 	}
 	if oldSnapshotID.Valid && oldSnapshotID.String != p.SnapshotID {
 		if _, err := tx.ExecContext(ctx, `UPDATE snapshot_manifests SET state='deleted' WHERE id=$1`, oldSnapshotID.String); err != nil {
@@ -1118,16 +1194,46 @@ func (s *Store) FailSnapshotWorkflow(ctx context.Context, workflowID, errorCode,
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM workflows WHERE id=$1 FOR UPDATE`, workflowID).Scan(&state); err != nil {
+		return err
+	}
+	if state == "succeeded" || state == "cancelled" {
+		return ErrSnapshotStateConflict
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE workflows SET state='failed', error_code=$2, error_summary=$3,
-		  cleanup_state='pending', updated_at=$4, finished_at=$4
+		  cleanup_state='pending',lease_owner=NULL,lease_until=NULL,updated_at=$4, finished_at=$4
 		WHERE id=$1 AND state NOT IN ('succeeded','cancelled','failed')`,
 		workflowID, errorCode, nullIfEmpty(errorSummary), now); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
+		UPDATE workflow_steps SET state='failed',finished_at=$2,updated_at=$2
+		WHERE workflow_id=$1 AND state NOT IN ('succeeded','cancelled','failed')`, workflowID, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE snapshot_transfer_capabilities SET state='revoked'
 		WHERE workflow_id=$1 AND state='prepared'`, workflowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE backup_jobs SET status='failed',error=$2,finished_at=$3
+		WHERE workflow_id=$1 AND status NOT IN ('done','aborted')`, workflowID, nullIfEmpty(errorSummary), now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE user_replicas legacy SET state='error',data_version=0,checksum=NULL,size_bytes=0,last_sync_at=$2
+		FROM workflows workflow
+		JOIN global_users global_user ON global_user.id=workflow.user_id
+		WHERE workflow.id=$1 AND legacy.user_id=global_user.legacy_user_id
+		  AND legacy.node_id=workflow.target_node_id
+		  AND NOT EXISTS (
+		    SELECT 1 FROM replica_copies copy
+		    WHERE copy.user_id=workflow.user_id AND copy.node_id=workflow.target_node_id
+		      AND copy.state='ready' AND copy.snapshot_id IS NOT NULL
+		  )`, workflowID, now); err != nil {
 		return err
 	}
 	return tx.Commit()

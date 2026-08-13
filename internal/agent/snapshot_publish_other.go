@@ -22,6 +22,10 @@ func recoverSnapshotPublication(string, string) error {
 	return nil
 }
 
+func syncSnapshotDirectory(string) error {
+	return nil
+}
+
 func atomicallyReplaceSnapshotDirectory(
 	staging, finalPath, taskRoot string,
 	checkpoint func(string),

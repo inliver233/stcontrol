@@ -504,8 +504,16 @@ func (s *Store) ListStorageRepairCandidates(
 		  )
 		  AND NOT EXISTS (
 		    SELECT 1 FROM workflows workflow WHERE workflow.user_id=global_user.id
-		      AND workflow.workflow_type='snapshot'
+		      AND workflow.workflow_type IN ('snapshot','restore','conflict_resolution')
 		      AND workflow.state NOT IN ('succeeded','cancelled','failed')
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM replica_conflicts conflict WHERE conflict.user_id=global_user.id
+		      AND conflict.state NOT IN ('resolved','failed')
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM user_data_faults fault WHERE fault.user_id=global_user.id
+		      AND fault.state<>'resolved'
 		  )
 		ORDER BY protection.changed_at,protection.user_id LIMIT $1`, limit, now)
 	if err != nil {

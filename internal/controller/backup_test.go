@@ -61,7 +61,7 @@ func TestTransferCapabilityIsDeterministicButScoped(t *testing.T) {
 
 func TestSnapshotReplicaOriginSeparatesAutomaticStorageRepair(t *testing.T) {
 	t.Parallel()
-	if got := snapshotReplicaOrigin("storage_repair"); got != "temporary_failure_protection" {
+	if got := snapshotReplicaOrigin("storage_repair"); got != "automatic_repair" {
 		t.Fatalf("repair origin=%q", got)
 	}
 	if got := snapshotReplicaOrigin("offline"); got != "configured" {

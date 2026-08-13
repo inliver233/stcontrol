@@ -27,6 +27,7 @@ type Server struct {
 	workflowWorkerID      string
 	snapshotSlots         chan struct{}
 	replicaIntegritySlots chan struct{}
+	replicaCleanupSlots   chan struct{}
 	nodeRetirementSlots   chan struct{}
 	userDataFaultSlots    chan struct{}
 	registrationSlots     chan struct{}
@@ -67,6 +68,7 @@ func New(cfg *config.ControllerConfig, st *store.Store, secretKey []byte) *Serve
 		workflowWorkerID:      workerID,
 		snapshotSlots:         make(chan struct{}, 4),
 		replicaIntegritySlots: make(chan struct{}, 2),
+		replicaCleanupSlots:   make(chan struct{}, 2),
 		nodeRetirementSlots:   make(chan struct{}, 2),
 		userDataFaultSlots:    make(chan struct{}, 2),
 		registrationSlots:     make(chan struct{}, 8),
@@ -156,6 +158,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.sessionJanitor(ctx)
 	go s.snapshotWorkflowReconciler(ctx)
 	go s.replicaIntegrityReconciler(ctx)
+	go s.replicaCleanupReconciler(ctx)
 	go s.restoreWorkflowReconciler(ctx)
 	go s.conflictEvidenceReconciler(ctx)
 	go s.conflictResolutionReconciler(ctx)
@@ -217,6 +220,9 @@ func ValidateRuntimeConfig(cfg *config.ControllerConfig) error {
 	}
 	if cfg.Backup.OfflineGraceMin < 1 || cfg.Backup.OfflineGraceMin > 24*60 {
 		return fmt.Errorf("offline backup grace must be between 1 and 1440 minutes")
+	}
+	if cfg.Backup.RetainVersions != 1 {
+		return fmt.Errorf("backup retain_versions must be exactly 1")
 	}
 	if cfg.Relay.Listen != "" {
 		return validateRelayListenerConfig(cfg.Relay)

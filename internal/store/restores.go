@@ -111,6 +111,10 @@ func (s *Store) ListRestoreTargets(ctx context.Context, globalUserID int64, limi
 		      AND copy.node_id=node.id AND copy.state='conflict'
 		  )
 		  AND NOT EXISTS (
+		    SELECT 1 FROM replica_cleanup_tasks cleanup WHERE cleanup.user_id=protection.user_id
+		      AND cleanup.node_id=node.id AND cleanup.state IN ('pending','running','retry_wait')
+		  )
+		  AND NOT EXISTS (
 		    SELECT 1 FROM node_accounts account WHERE account.node_id=node.id
 		      AND ((account.user_id=protection.user_id AND account.status IN ('disabled','conflict'))
 		        OR (account.user_id<>protection.user_id AND account.local_handle=legacy.username))
@@ -246,6 +250,9 @@ func (s *Store) CreateRestoreWorkflow(
 		  AND node.capacity_state IN ('open','busy') AND node.transfer_url<>''
 		  AND NOT EXISTS (
 		    SELECT 1 FROM replica_copies copy WHERE copy.user_id=$1 AND copy.node_id=$2 AND copy.state='conflict'
+		  ) AND NOT EXISTS (
+		    SELECT 1 FROM replica_cleanup_tasks cleanup WHERE cleanup.user_id=$1 AND cleanup.node_id=$2
+		      AND cleanup.state IN ('pending','running','retry_wait')
 		  ) AND NOT EXISTS (
 		    SELECT 1 FROM node_accounts account WHERE account.node_id=$2
 		      AND ((account.user_id=$1 AND account.status IN ('disabled','conflict'))

@@ -37,6 +37,7 @@ type safeCommandResult struct {
 	Ciphertext         string                              `json:"ciphertext,omitempty"`
 	RelayPublicKey     string                              `json:"relay_public_key,omitempty"`
 	ReplicaIntegrity   *protocol.ReplicaIntegrityReceipt   `json:"replica_integrity,omitempty"`
+	ReplicaCleanup     *protocol.DeleteReplicaReceipt      `json:"replica_cleanup,omitempty"`
 }
 
 // StartCommandLoop maintains the Agent-initiated control channel. It never
@@ -321,6 +322,8 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		if err := json.Unmarshal(plaintext, &payload); err != nil || !validUUID(payload.WorkflowID) ||
 			!validUUID(payload.SnapshotID) || payload.GlobalUserID <= 0 || !validHandle(payload.Handle) || payload.SourceNodeID <= 0 ||
 			payload.ActivityEpoch <= 0 || (payload.DestinationKind != "archive" && payload.DestinationKind != "hot_standby" && payload.DestinationKind != "restore" && payload.DestinationKind != "conflict_input") ||
+			(payload.DestinationKind == "archive" && a.Cfg.Role != "storage") ||
+			(payload.DestinationKind == "hot_standby" && a.Cfg.Role != "compute") ||
 			(payload.DestinationKind == "restore" && a.Cfg.Role != "compute") ||
 			(payload.DestinationKind == "conflict_input" && a.Cfg.Role != "compute") ||
 			!validCapabilityHash(payload.CapabilityHash) || !payload.ExpiresAt.After(time.Now().UTC()) ||
@@ -410,6 +413,18 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: code})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, ReplicaIntegrity: &receipt})
+	case "delete_snapshot_replica":
+		var payload protocol.DeleteReplicaRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil || !validUUID(payload.CleanupID) ||
+			!validUUID(payload.SnapshotID) || payload.GlobalUserID <= 0 || !validHandle(payload.Handle) ||
+			(payload.ReplicaKind != "archive" && payload.ReplicaKind != "hot_standby") {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		receipt, err := a.deleteSnapshotReplica(ctx, payload)
+		if err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "replica_cleanup_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, ReplicaCleanup: &receipt})
 	case "capture_conflict_evidence":
 		var payload protocol.CaptureConflictEvidenceRequest
 		if err := json.Unmarshal(plaintext, &payload); err != nil || !validConflictEvidenceRequest(payload) {

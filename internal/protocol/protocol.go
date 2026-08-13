@@ -545,6 +545,37 @@ type ReplicaIntegrityReceipt struct {
 	TotalBytes     int64  `json:"total_bytes"`
 }
 
+// DeleteReplicaRequest is a fixed, Controller-issued cleanup capability. The
+// Agent only removes a replica when its private on-disk identity still matches
+// every field in this request, so a delayed cleanup cannot delete a replacement.
+type DeleteReplicaRequest struct {
+	CleanupID    string `json:"cleanup_id"`
+	SnapshotID   string `json:"snapshot_id"`
+	GlobalUserID int64  `json:"global_user_id"`
+	Handle       string `json:"handle"`
+	ReplicaKind  string `json:"replica_kind"`
+}
+
+const (
+	DeleteReplicaOutcomeDeleted       = "deleted"
+	DeleteReplicaOutcomeAlreadyAbsent = "already_absent"
+	DeleteReplicaOutcomeSuperseded    = "superseded"
+)
+
+// DeleteReplicaReceipt binds a successful destructive command to the exact
+// replica scope checked by the Agent. Outcome distinguishes a physical delete
+// from safe idempotent replay and a delayed command that preserved a newer
+// publication at the same handle.
+type DeleteReplicaReceipt struct {
+	CleanupID    string `json:"cleanup_id"`
+	SnapshotID   string `json:"snapshot_id"`
+	GlobalUserID int64  `json:"global_user_id"`
+	Handle       string `json:"handle"`
+	ReplicaKind  string `json:"replica_kind"`
+	TargetNodeID int64  `json:"target_node_id"`
+	Outcome      string `json:"outcome"`
+}
+
 // ManifestEntry 单个文件的校验条目。
 type ManifestEntry struct {
 	Path   string `json:"path"`

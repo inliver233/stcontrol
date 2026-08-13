@@ -31,6 +31,12 @@ func TestCreateSnapshotWorkflowPersistsFactsBeforeMutation(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(70)))
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(3)))
+	mock.ExpectQuery(`(?s)SELECT source.role='compute'.*FROM nodes source CROSS JOIN nodes target`).
+		WithArgs(int64(8), int64(9), "archive", int64(70)).
+		WillReturnRows(sqlmock.NewRows([]string{"source_eligible", "target_eligible"}).AddRow(true, true))
+	mock.ExpectQuery(`(?s)SELECT EXISTS \(.*FROM replica_cleanup_tasks cleanup`).
+		WithArgs(int64(70), int64(8), int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectQuery(`SELECT activity_epoch, writer_node_id, lease_expires_at`).WithArgs(int64(70)).
 		WillReturnRows(sqlmock.NewRows([]string{"activity_epoch", "writer_node_id", "lease_expires_at", "in_flight_reads", "in_flight_writes", "state"}))
 	mock.ExpectExec(`INSERT INTO workflows`).
@@ -49,7 +55,7 @@ func TestCreateSnapshotWorkflowPersistsFactsBeforeMutation(t *testing.T) {
 	mock.ExpectExec(`UPDATE backup_jobs SET workflow_id`).
 		WithArgs(int64(6), p.WorkflowID, p.SnapshotID, int64(1), int64(7), int64(8), int64(9)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`INSERT INTO user_replicas`).
+	mock.ExpectExec(`(?s)INSERT INTO user_replicas.*state=CASE WHEN user_replicas.state='ready' THEN 'ready' ELSE 'syncing' END`).
 		WithArgs(int64(7), int64(9), "archive").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -71,6 +77,12 @@ func TestCreateSnapshotWorkflowRejectsLiveWriter(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(70)))
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(3)))
+	mock.ExpectQuery(`(?s)SELECT source.role='compute'.*FROM nodes source CROSS JOIN nodes target`).
+		WithArgs(int64(8), int64(9), "archive", int64(70)).
+		WillReturnRows(sqlmock.NewRows([]string{"source_eligible", "target_eligible"}).AddRow(true, true))
+	mock.ExpectQuery(`(?s)SELECT EXISTS \(.*FROM replica_cleanup_tasks cleanup`).
+		WithArgs(int64(70), int64(8), int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectQuery(`SELECT activity_epoch, writer_node_id, lease_expires_at`).
 		WillReturnRows(sqlmock.NewRows([]string{"activity_epoch", "writer_node_id", "lease_expires_at", "in_flight_reads", "in_flight_writes", "state"}).
 			AddRow(int64(4), int64(8), now.Add(time.Minute), int64(0), int64(0), "active"))
@@ -257,18 +269,24 @@ func TestCompleteSnapshotWorkflowPublishesFactsAfterVerification(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"snapshot_id"}))
 	mock.ExpectQuery(`SELECT COALESCE\(MAX\(data_version\),0\)\+1`).WithArgs(int64(70)).
 		WillReturnRows(sqlmock.NewRows([]string{"data_version"}).AddRow(int64(5)))
+	mock.ExpectExec(`UPDATE replica_cleanup_tasks SET state='cancelled'`).
+		WithArgs(int64(70), int64(9), now).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`(?s)SELECT EXISTS \(.*FROM replica_cleanup_tasks.*state='running'`).
+		WithArgs(int64(70), int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectExec(`(?s)WITH stale AS \(.*INSERT INTO replica_cleanup_tasks`).
+		WithArgs(int64(70), int64(9), now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE user_replicas SET state='stale'`).
+		WithArgs(int64(7), int64(9)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO replica_copies`).
 		WithArgs(int64(70), int64(9), "snapshot", "archive", "configured", now,
 			now.Add(ReplicaIntegrityLightInterval), now.Add(ReplicaIntegrityDeepInterval)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE alerts SET state='resolved'`).
 		WithArgs(int64(70), int64(9), now).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`UPDATE replica_copies SET state='stale'`).
-		WithArgs(int64(70), int64(9), now).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`UPDATE user_replicas SET state='stale'`).
-		WithArgs(int64(7), int64(9)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE snapshot_transfer_capabilities`).
 		WithArgs("workflow", now, p.CapabilityHash).
@@ -310,6 +328,75 @@ func TestCompleteSnapshotWorkflowReplaysCommittedResult(t *testing.T) {
 	version, err := st.CompleteSnapshotWorkflow(context.Background(), p)
 	if err != nil || version != 5 {
 		t.Fatalf("version=%d err=%v", version, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestCompleteSnapshotWorkflowRefusesRunningReplicaCleanup(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 7, 21, 10, 0, 0, time.UTC)
+	p := CompleteSnapshotWorkflowParams{
+		WorkflowID: "workflow", SnapshotID: "snapshot", CapabilityHash: make([]byte, 32),
+		TargetNodeID: 9, ReplicaKind: "archive", ReplicaOrigin: "configured",
+		ManifestSHA256: make([]byte, 32), ArchiveSHA256: make([]byte, 32), Now: now,
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT workflow.user_id, global_user.legacy_user_id`).WithArgs("workflow").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "legacy_user_id", "controller_generation", "state"}).
+			AddRow(int64(70), int64(7), int64(3), "publishing"))
+	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
+		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(3)))
+	mock.ExpectExec(`UPDATE snapshot_manifests`).
+		WithArgs("snapshot", "workflow", p.ManifestSHA256, p.ArchiveSHA256, int64(0), int64(0)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT snapshot_id FROM replica_copies`).WithArgs(int64(70), int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{"snapshot_id"}))
+	mock.ExpectQuery(`SELECT COALESCE\(MAX\(data_version\),0\)\+1`).WithArgs(int64(70)).
+		WillReturnRows(sqlmock.NewRows([]string{"data_version"}).AddRow(int64(5)))
+	mock.ExpectExec(`UPDATE replica_cleanup_tasks SET state='cancelled'`).
+		WithArgs(int64(70), int64(9), now).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`(?s)SELECT EXISTS \(.*FROM replica_cleanup_tasks.*state='running'`).
+		WithArgs(int64(70), int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectRollback()
+	_, err := st.CompleteSnapshotWorkflow(context.Background(), p)
+	if !errors.Is(err, ErrSnapshotStateConflict) {
+		t.Fatalf("error=%v, want cleanup fence conflict", err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestFailSnapshotWorkflowAtomicallyPreservesExistingReadyReplica(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 7, 21, 15, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT state FROM workflows WHERE id=\$1 FOR UPDATE`).WithArgs("workflow").
+		WillReturnRows(sqlmock.NewRows([]string{"state"}).AddRow("verifying"))
+	mock.ExpectExec(`UPDATE workflows SET state='failed'`).
+		WithArgs("workflow", "archive_hash_mismatch", "verification failed", now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE workflow_steps SET state='failed'`).WithArgs("workflow", now).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(`UPDATE snapshot_transfer_capabilities SET state='revoked'`).WithArgs("workflow").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE backup_jobs SET status='failed'`).
+		WithArgs("workflow", "verification failed", now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// The compatibility projection is degraded only when there is no current
+	// normalized ready snapshot on the target.  A failed replacement therefore
+	// cannot hide the last successfully published replica.
+	mock.ExpectExec(`(?s)UPDATE user_replicas legacy SET state='error'.*NOT EXISTS \(.*FROM replica_copies copy.*copy.state='ready'.*copy.snapshot_id IS NOT NULL`).
+		WithArgs("workflow", now).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+	if err := st.FailSnapshotWorkflow(
+		context.Background(), "workflow", "archive_hash_mismatch", "verification failed", now,
+	); err != nil {
+		t.Fatal(err)
 	}
 	assertMockExpectations(t, mock)
 }

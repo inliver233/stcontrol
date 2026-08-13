@@ -112,6 +112,22 @@ func TestControllerRejectsUnsafeOfflineBackupGrace(t *testing.T) {
 	}
 }
 
+func TestControllerRequiresExactlyOneRetainedReplicaVersion(t *testing.T) {
+	t.Parallel()
+	for _, versions := range []int{0, 2, 4} {
+		cfg := config.DefaultController()
+		cfg.Backup.RetainVersions = versions
+		if err := ValidateRuntimeConfig(cfg); err == nil {
+			t.Fatalf("retain_versions=%d was accepted; product scope requires exactly one", versions)
+		}
+	}
+	cfg := config.DefaultController()
+	cfg.Backup.RetainVersions = 1
+	if err := ValidateRuntimeConfig(cfg); err != nil {
+		t.Fatalf("retain_versions=1 rejected: %v", err)
+	}
+}
+
 func TestControllerTLSPreflightFailsBeforeDatabaseOrWorkers(t *testing.T) {
 	t.Parallel()
 	if err := ValidateRuntimeTLSFiles(config.DefaultController()); err != nil {

@@ -41,12 +41,19 @@ func (s *Server) scheduleOfflineBackups(ctx context.Context) {
 	}
 	s.actMu.Unlock()
 
+	storageRepairUsers, err := s.Store.ListActiveStorageRepairUserIDs(ctx)
+	if err != nil {
+		return
+	}
 	users, err := s.Store.ListUsers(ctx)
 	if err != nil {
 		return
 	}
 	for _, u := range users {
 		if u.Status != "active" || !u.HomeNodeID.Valid {
+			continue
+		}
+		if _, repairing := storageRepairUsers[u.GlobalID]; repairing {
 			continue
 		}
 		nodeID := u.HomeNodeID.Int64
@@ -76,6 +83,9 @@ func (s *Server) TriggerUserBackup(ctx context.Context, userID, srcNodeID int64,
 	if err := s.checkNewOperations(); err != nil {
 		return err
 	}
+	if trigger == "storage_repair" {
+		return fmt.Errorf("storage repair must be created by the durable repair reconciler")
+	}
 	user, err := s.Store.GetUserByID(ctx, userID)
 	if err != nil || user == nil {
 		return err
@@ -85,17 +95,7 @@ func (s *Server) TriggerUserBackup(ctx context.Context, userID, srcNodeID int64,
 		return err
 	}
 
-	// 存储故障修复只允许纯存储目标；普通离线备份仍可使用显式热备。
-	var dstNode *store.Node
-	dstKind := ""
-	if trigger == "storage_repair" {
-		dstNode = s.pickStorageRepairTarget(ctx, srcNodeID)
-		if dstNode != nil {
-			dstKind = "archive"
-		}
-	} else {
-		dstNode, dstKind = s.pickBackupTarget(ctx, userID, srcNodeID)
-	}
+	dstNode, dstKind := s.pickBackupTarget(ctx, userID, srcNodeID)
 	if dstNode == nil {
 		return nil // 无可用备份目标, 跳过
 	}
@@ -384,7 +384,7 @@ func (s *Server) completeSnapshotExecution(
 
 func snapshotReplicaOrigin(trigger string) string {
 	if trigger == "storage_repair" {
-		return "temporary_failure_protection"
+		return "automatic_repair"
 	}
 	if trigger == "node_retirement" || trigger == "node_retirement_storage" {
 		return "migration"
@@ -513,45 +513,12 @@ func (s *Server) resumeSnapshotWorkflows(ctx context.Context) {
 	}
 }
 
-func (s *Server) scheduleStorageRepairs(ctx context.Context) bool {
-	candidates, err := s.Store.ListStorageRepairCandidates(ctx, 50, time.Now().UTC())
-	if err != nil {
-		return false
-	}
-	nodes, err := s.Store.ListNodes(ctx)
-	if err != nil {
-		return false
-	}
-	scheduled := false
-	for _, candidate := range candidates {
-		candidate := candidate
-		if chooseStorageRepairTarget(nodes, candidate.HomeNodeID) == nil {
-			continue
-		}
-		select {
-		case s.snapshotSlots <- struct{}{}:
-			scheduled = true
-			go func() {
-				defer func() { <-s.snapshotSlots }()
-				_ = s.TriggerUserBackup(
-					ctx, candidate.LegacyUserID, candidate.HomeNodeID, "storage_repair",
-				)
-			}()
-		default:
-			return scheduled
-		}
-	}
-	return scheduled
-}
-
 func (s *Server) failSnapshotWorkflow(ctx context.Context, job *store.BackupJob, workflowID, code, summary string) {
 	if current, _ := s.Store.GetBackupJob(ctx, job.ID); current != nil && current.Status == "aborted" {
 		_ = s.Store.CancelSnapshotWorkflow(ctx, workflowID, "用户恢复使用，取消未发布快照", time.Now().UTC())
 		return
 	}
 	_ = s.Store.FailSnapshotWorkflow(ctx, workflowID, code, summary, time.Now().UTC())
-	_ = s.Store.UpdateBackupJobStatus(ctx, job.ID, "failed", 0, 0, 0, summary)
-	_ = s.Store.UpdateReplicaState(ctx, job.UserID, job.DstNodeID, "error", 0, "", 0)
 }
 
 func decodeSnapshotDigest(value string) ([]byte, error) {
@@ -577,17 +544,22 @@ func deriveWorkflowOperationID(workflowID, step string) string {
 }
 
 // pickBackupTarget 为用户选备份目标。
-// 优先: 该用户已存在的 hot_standby/archive 副本节点(且节点在线)。
+// 优先: 该用户已存在且 ready 的 archive，其次 hot_standby；绝不把
+// stale/deleting/error 物理目录重新选为新发布目标。
 // 否则: 系统内第一台 is_backup_target 且在线的节点。
 func (s *Server) pickBackupTarget(ctx context.Context, userID, srcNodeID int64) (*store.Node, string) {
 	replicas, _ := s.Store.ListReplicasByUser(ctx, userID)
-	for _, rep := range replicas {
-		if rep.Kind == "hot_standby" || rep.Kind == "archive" {
+	for _, kind := range []string{"archive", "hot_standby"} {
+		for _, rep := range replicas {
+			if rep.Kind != kind || rep.State != "ready" {
+				continue
+			}
 			if rep.NodeID == srcNodeID {
 				continue
 			}
 			n, err := s.Store.GetNodeByID(ctx, rep.NodeID)
-			if err == nil && n != nil && nodeAcceptsNewData(n) {
+			if err == nil && n != nil && nodeAcceptsNewData(n) &&
+				((kind == "archive" && n.Role == "storage") || (kind == "hot_standby" && n.Role == "compute")) {
 				return n, rep.Kind
 			}
 		}

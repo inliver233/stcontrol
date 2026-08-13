@@ -70,3 +70,32 @@ func TestMigrationAndLeadershipLocksAreDomainSeparated(t *testing.T) {
 		t.Fatal("migration lock must not block a passive Controller behind active leadership")
 	}
 }
+
+func TestReplicaRetentionMigrationRepairsBothReplicaProjections(t *testing.T) {
+	t.Parallel()
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sqlText string
+	for _, migration := range migrations {
+		if migration.Name == "0038_replica_retention_cleanup.sql" {
+			sqlText = migration.SQL
+			break
+		}
+	}
+	if sqlText == "" {
+		t.Fatal("replica retention migration is not embedded")
+	}
+	for _, required := range []string{
+		"UPDATE user_replicas replica SET state='stale'",
+		"UPDATE replica_copies copy SET state='stale'",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_replica_one_ready_archive",
+		"CREATE TABLE IF NOT EXISTS replica_cleanup_tasks",
+		"'automatic_repair'",
+	} {
+		if !strings.Contains(sqlText, required) {
+			t.Fatalf("replica retention migration missing %q", required)
+		}
+	}
+}

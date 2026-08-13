@@ -110,7 +110,7 @@ func TestListStorageRepairCandidatesRequiresSafeHomeAndNoWriter(t *testing.T) {
 	st, mock, closeDB := newMockStore(t)
 	defer closeDB()
 	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
-	mock.ExpectQuery(`(?s)FROM user_protection_states protection.*home_replica.state='ready'.*archive_snapshot.state='immutable'.*lease.lease_expires_at>\$2.*workflow.workflow_type='snapshot'`).
+	mock.ExpectQuery(`(?s)FROM user_protection_states protection.*home_replica.state='ready'.*archive_snapshot.state='immutable'.*lease.lease_expires_at>\$2.*workflow.workflow_type IN \('snapshot','restore','conflict_resolution'\).*FROM replica_conflicts conflict.*FROM user_data_faults fault`).
 		WithArgs(50, now).
 		WillReturnRows(sqlmock.NewRows([]string{"legacy_user_id", "global_user_id", "home_node_id"}).
 			AddRow(int64(7), int64(70), int64(8)))

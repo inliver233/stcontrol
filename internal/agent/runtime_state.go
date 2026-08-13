@@ -112,6 +112,9 @@ func (a *Agent) runtimeStatePath() string {
 func (a *Agent) loadRuntimeState() error {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
+	if err := a.recoverReplicaCleanupTombstones(); err != nil {
+		return fmt.Errorf("recover interrupted replica cleanup: %w", err)
+	}
 	path := a.runtimeStatePath()
 	data, err := os.ReadFile(path)
 	if err == nil {

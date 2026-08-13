@@ -46,6 +46,7 @@ func TestExecuteCommandRejectsEveryUnsupportedOrMalformedFixedCapability(t *test
 		{"start_restore_transfer", `{`, "invalid_command_payload"},
 		{"get_snapshot_receipt", `{}`, "invalid_command_payload"},
 		{"verify_replica_integrity_v2", `{`, "invalid_command_payload"},
+		{"delete_snapshot_replica", `{}`, "invalid_command_payload"},
 		{"capture_conflict_evidence", `{}`, "invalid_command_payload"},
 		{"read_conflict_evidence_page", `{}`, "invalid_command_payload"},
 		{"start_conflict_evidence_transfer", `{`, "invalid_command_payload"},

@@ -25,6 +25,7 @@ type Agent struct {
 	transferSlots       chan struct{}
 	witnessSlots        chan struct{}
 	stateMu             sync.Mutex
+	replicaMutationMu   sync.Mutex
 	auditMu             sync.Mutex
 	ownershipTakeoverMu sync.Mutex
 	adapterNonceMu      sync.Mutex

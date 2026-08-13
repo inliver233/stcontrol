@@ -118,11 +118,14 @@ func measureConflictEvidenceTree(ctx context.Context, source string) (int, int64
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if rel == archiveMetadataPath {
-			if entry.IsDir() {
-				return fmt.Errorf("invalid archive metadata type")
+		if rel == archiveMetadataPath || rel == replicaIdentityPath {
+			info, err := entry.Info()
+			if err != nil {
+				return err
 			}
-			return nil
+			if skip, err := controllerReplicaMetadataEntry(rel, info); skip || err != nil {
+				return err
+			}
 		}
 		if !safeArchivePath(rel) {
 			return fmt.Errorf("unsafe conflict evidence path")
@@ -232,11 +235,14 @@ func copyConflictEvidenceTree(
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if rel == archiveMetadataPath {
-			if entry.IsDir() {
-				return fmt.Errorf("invalid archive metadata type")
+		if rel == archiveMetadataPath || rel == replicaIdentityPath {
+			info, err := entry.Info()
+			if err != nil {
+				return err
 			}
-			return nil
+			if skip, err := controllerReplicaMetadataEntry(rel, info); skip || err != nil {
+				return err
+			}
 		}
 		if !safeArchivePath(rel) {
 			return fmt.Errorf("unsafe conflict evidence path")
