@@ -446,7 +446,7 @@ func (s *Store) ReleaseExpiredRegistrationReservations(ctx context.Context, now 
 	}
 	if released > 0 {
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE registration_workflows SET reservation_state='released',updated_at=$2
+			UPDATE registration_workflows SET reservation_state='released',updated_at=$1
 			WHERE reservation_state='pending' AND workflow_id IN (
 			  SELECT id FROM workflows WHERE workflow_type='registration' AND state='failed'
 			    AND error_code='reservation_expired')`, now); err != nil {
