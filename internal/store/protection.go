@@ -806,3 +806,40 @@ func getReplicaTakeoverOperation(
 	result.TargetNodeID = targetNodeID
 	return result, true, nil
 }
+
+// ProtectionAggregate summarizes the real protection projection (AI 监管层
+// Phase 1 monitoring). The monitoring observation previously derived these
+// numbers from visible alerts, but ListVisibleProtectionAlerts filters
+// category='user_protection', so per-keyword counting was always zero (D6).
+type ProtectionAggregate struct {
+	TotalUsers       int64
+	ProtectedCount   int64
+	UnprotectedCount int64
+	ConflictCount    int64
+	CorruptCount     int64
+	AvgReplicaAgeSec int64
+}
+
+// AggregateProtectionStates computes the anonymous protection aggregates from
+// user_protection_states / user_replicas; no identifiers leave the store.
+func (s *Store) AggregateProtectionStates(ctx context.Context, now time.Time) (ProtectionAggregate, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var agg ProtectionAggregate
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT
+		  (SELECT count(*) FROM user_protection_states),
+		  (SELECT count(*) FROM user_protection_states WHERE state='protected'),
+		  (SELECT count(*) FROM user_protection_states WHERE state='unprotected'),
+		  (SELECT count(*) FROM user_protection_states WHERE state='conflict'),
+		  (SELECT count(DISTINCT user_id) FROM user_replicas WHERE state='corrupt'),
+		  COALESCE((SELECT avg(EXTRACT(epoch FROM $1::timestamptz - last_sync_at))::bigint
+		    FROM user_replicas WHERE last_sync_at IS NOT NULL), 0)`,
+		now).Scan(&agg.TotalUsers, &agg.ProtectedCount, &agg.UnprotectedCount,
+		&agg.ConflictCount, &agg.CorruptCount, &agg.AvgReplicaAgeSec)
+	if err != nil {
+		return ProtectionAggregate{}, err
+	}
+	return agg, nil
+}

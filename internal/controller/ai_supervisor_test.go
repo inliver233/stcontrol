@@ -61,11 +61,17 @@ func TestBuildAIObservationProducesRedactedSnapshot(t *testing.T) {
 		"severity", "state", "category", "user_uuid", "username", "node_name",
 		"summary", "first_seen_at", "last_seen_at",
 	}).AddRow(
-		"warning", "open", "unprotected", "11111111-1111-4111-8111-111111111111",
+		"warning", "open", "user_protection", "11111111-1111-4111-8111-111111111111",
 		"alice", "", "用户暂无可用备份副本", now.Add(-time.Hour), now,
 	)
+	// Production SQL only ever returns category='user_protection'; injecting
+	// other values here previously masked D6 (per-keyword counting was dead).
 	mock.ExpectQuery(`SELECT .* FROM alerts`).
 		WillReturnRows(alertRows)
+	mock.ExpectQuery(`(?s)SELECT.*FROM user_protection_states.*FROM user_replicas`).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"total", "protected", "unprotected", "conflict", "corrupt", "avg_age",
+		}).AddRow(int64(10), int64(6), int64(2), int64(1), int64(1), int64(3600)))
 
 	raw, evidence, candidates, dedupKey, taskType, err := s.buildAIObservation(context.Background())
 	if err != nil {
@@ -86,6 +92,11 @@ func TestBuildAIObservationProducesRedactedSnapshot(t *testing.T) {
 	}
 	if len(decoded.Nodes) != 1 || decoded.Nodes[0].Ref == "" {
 		t.Fatalf("nodes=%+v", decoded.Nodes)
+	}
+	if decoded.Protection.TotalUsers != 10 || decoded.Protection.ProtectedCount != 6 ||
+		decoded.Protection.UnprotectedCount != 2 || decoded.Protection.ConflictCount != 1 ||
+		decoded.Protection.CorruptCount != 1 || decoded.Protection.AvgReplicaAgeSec != 3600 {
+		t.Fatalf("protection aggregates=%+v, want real projection dimensions", decoded.Protection)
 	}
 	rawStr := string(raw)
 	for _, forbidden := range []string{"http://internal", "fp", "alice", "11111111-1111-4111-8111-111111111111"} {

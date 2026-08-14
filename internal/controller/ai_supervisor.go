@@ -152,12 +152,18 @@ func (s *Server) buildAIObservation(ctx context.Context) ([]byte, map[string]boo
 		})
 	}
 
+	protectionAgg, aggErr := s.Store.AggregateProtectionStates(ctx, now)
+	if aggErr != nil {
+		// The aggregates are advisory context only; never fail the observation.
+		protectionAgg = store.ProtectionAggregate{}
+	}
 	protection := ai.ProtectionObservation{
-		TotalUsers:       int64(len(alerts)),
-		ProtectedCount:   countAlertsByCategory(alerts, "protected"),
-		UnprotectedCount: countAlertsByCategory(alerts, "unprotected"),
-		ConflictCount:    countAlertsByCategory(alerts, "conflict"),
-		CorruptCount:     countAlertsByCategory(alerts, "corrupt"),
+		TotalUsers:       protectionAgg.TotalUsers,
+		ProtectedCount:   protectionAgg.ProtectedCount,
+		UnprotectedCount: protectionAgg.UnprotectedCount,
+		ConflictCount:    protectionAgg.ConflictCount,
+		CorruptCount:     protectionAgg.CorruptCount,
+		AvgReplicaAgeSec: protectionAgg.AvgReplicaAgeSec,
 	}
 
 	raw, evidence, candidates, digest, err := ai.BuildObservation(redactor, obsID, now, nodeObs, alertObs, nil, protection)
@@ -186,18 +192,6 @@ func nodeEligibleAsBackupTarget(n *store.Node) bool {
 	}
 	return n.ConnectivityState == "online" && n.OperationalState == "active" &&
 		n.CompatibilityState == "compatible" && n.CapacityState != "full"
-}
-
-// countAlertsByCategory counts alerts whose summary contains the category
-// keyword (the ProtectionAlert carries no structured category in its view).
-func countAlertsByCategory(alerts []store.ProtectionAlert, keyword string) int64 {
-	var n int64
-	for _, a := range alerts {
-		if a.Category == keyword {
-			n++
-		}
-	}
-	return n
 }
 
 // startAISupervisor starts the background AI worker when configured.
