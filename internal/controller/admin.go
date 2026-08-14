@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -241,8 +242,28 @@ func (s *Server) handleAdminNodeRegisterToken(w http.ResponseWriter, r *http.Req
 	}
 	installCmd := "curl -sSL " + s.Cfg.PublicURL + "/install.sh | bash -s -- --controller " +
 		s.Cfg.PublicURL + " --token " + token + " --role " + node.Role
+	// install.sh hard-fails compute nodes without --tavern-dir (I4): splice the
+	// target machine's SillyTavern directory into the generated command so a
+	// copy-paste install actually works. A visible placeholder is used when the
+	// admin has not provided the directory yet.
+	installHint := ""
+	tavernDir := strings.TrimSpace(r.URL.Query().Get("tavern_dir"))
+	if node.Role == "compute" {
+		if tavernDir != "" {
+			if len(tavernDir) > 256 || strings.ContainsAny(tavernDir, "`$\"' \t\r\n") {
+				protocol.WriteError(w, http.StatusBadRequest, "酒馆目录参数无效")
+				return
+			}
+			installCmd += " --tavern-dir " + tavernDir
+		} else {
+			installCmd += " --tavern-dir <酒馆安装目录>"
+			installHint = "计算节点安装必须提供目标机器上的 SillyTavern 安装目录（--tavern-dir），请替换命令中的占位符后再执行。"
+		}
+	} else {
+		installHint = "存储节点可选 --transfer-url 指定备份传输地址；备份目录由节点本地配置。"
+	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{
-		"token": token, "expires_at": expires, "install_cmd": installCmd,
+		"token": token, "expires_at": expires, "install_cmd": installCmd, "install_hint": installHint,
 	})
 }
 

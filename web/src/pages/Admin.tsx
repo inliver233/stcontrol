@@ -46,7 +46,7 @@ const adminApi = {
     }),
   retirement: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/retirement`),
   compatibilityIncident: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/compatibility-incident`),
-  registerToken: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/register-token`, { method: 'POST' }),
+  registerToken: (id: number, tavernDir?: string) => adminReq<any>(`/api/admin/nodes/${id}/register-token${tavernDir ? `?tavern_dir=${encodeURIComponent(tavernDir)}` : ''}`, { method: 'POST' }),
   scanExisting: (id: number, operationID: string) => adminReq<any>(`/api/admin/nodes/${id}/scan-existing`, {
     method: 'POST', body: JSON.stringify({ operation_id: operationID }),
   }),
@@ -507,8 +507,12 @@ function NodesAdmin() {
       setError(err instanceof Error ? err.message : '节点生命周期更新失败')
     }
   }
-  const genToken = async (id: number) => {
-    const info = await adminApi.registerToken(id)
+  const genToken = async (id: number, role: string) => {
+    let tavernDir = ''
+    if (role === 'compute') {
+      tavernDir = window.prompt('计算节点安装必须提供 --tavern-dir（目标机器上的 SillyTavern 安装目录，例如 /opt/SillyTavern）。\n可留空，但需在生成的命令中手动替换占位符。') || ''
+    }
+    const info = await adminApi.registerToken(id, tavernDir.trim())
     setTokenInfo(info)
   }
   const scan = async (id: number) => {
@@ -615,6 +619,7 @@ function NodesAdmin() {
         <div className="success-msg">
           一次性注册令牌（15 分钟内有效）：<br />
           <div className="mono">{tokenInfo.install_cmd}</div>
+          {tokenInfo.install_hint && <div style={{ marginTop: 6 }}>{tokenInfo.install_hint}</div>}
           <button className="btn-sm" style={{ marginTop: 8 }} onClick={() => setTokenInfo(null)}>关闭</button>
         </div>
       )}
@@ -785,7 +790,7 @@ function NodesAdmin() {
                     : (n.is_backup_target ? '停止接收热备' : '允许作为热备目标')}
                 </button>{' '}
                 <button className="btn-sm" onClick={() => openQuotaEditor(n)} title="配置期望磁盘配额并下发到 Agent">配额策略</button>{' '}
-                <button className="btn-sm primary" onClick={() => genToken(n.id)}>注册令牌</button>{' '}
+                <button className="btn-sm primary" onClick={() => genToken(n.id, n.role)}>注册令牌</button>{' '}
                 <button className="btn-sm" disabled={scanningNode === n.id} onClick={() => scan(n.id)}>
                   {scanningNode === n.id ? '扫描中…' : '扫描用户'}
                 </button>{' '}
