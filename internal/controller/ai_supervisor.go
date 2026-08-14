@@ -52,6 +52,10 @@ func (a *aiStoreAdapter) ListDueAIAdvisoryRequests(ctx context.Context, limit in
 	return out, nil
 }
 
+func (a *aiStoreAdapter) ExpireOverdueAIAdvisoryRequests(ctx context.Context, now time.Time) (int64, error) {
+	return a.st.ExpireOverdueAIAdvisoryRequests(ctx, now)
+}
+
 func (a *aiStoreAdapter) MarkAIAdvisoryRequestState(ctx context.Context, id int64, state, errorCode string) error {
 	return a.st.MarkAIAdvisoryRequestState(ctx, id, state, errorCode)
 }

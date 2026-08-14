@@ -40,6 +40,7 @@ func ParseMode(value string) (Mode, error) {
 type Store interface {
 	InsertAIAdvisoryRequest(ctx context.Context, req AIAdvisoryRequestLike) (int64, error)
 	ListDueAIAdvisoryRequests(ctx context.Context, limit int) ([]AIAdvisoryRequestLike, error)
+	ExpireOverdueAIAdvisoryRequests(ctx context.Context, now time.Time) (int64, error)
 	MarkAIAdvisoryRequestState(ctx context.Context, id int64, state, errorCode string) error
 	InsertAIAdvisory(ctx context.Context, adv AIAdvisoryLike) (int64, error)
 	InsertAIAdvisoryOutcome(ctx context.Context, outcome AIAdvisoryOutcomeLike) error
@@ -227,8 +228,15 @@ func (s *Supervisor) enqueueMonitoring(ctx context.Context, build func(ctx conte
 	return err
 }
 
-// processDue drains one batch of due requests.
+// processDue drains one batch of due requests. Overdue queued rows (deadline
+// passed while the worker was down or the provider was broken) first get a
+// terminal superseded state so they can never linger in the queue forever.
 func (s *Supervisor) processDue(ctx context.Context) error {
+	if expired, err := s.store.ExpireOverdueAIAdvisoryRequests(ctx, time.Now().UTC()); err != nil {
+		log.Printf("ai: expire overdue advisory requests: %v", err)
+	} else if expired > 0 {
+		log.Printf("ai: superseded %d overdue advisory request(s)", expired)
+	}
 	reqs, err := s.store.ListDueAIAdvisoryRequests(ctx, 4)
 	if err != nil {
 		return err

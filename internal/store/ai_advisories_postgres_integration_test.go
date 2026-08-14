@@ -117,3 +117,61 @@ func TestPostgresAIAdvisoryRoundTrip(t *testing.T) {
 		t.Fatalf("counts=%+v", counts)
 	}
 }
+
+// TestPostgresExpireOverdueAIAdvisoryRequests exercises the overdue-queued
+// sweep (suggestion #4) against real PostgreSQL.
+func TestPostgresExpireOverdueAIAdvisoryRequests(t *testing.T) {
+	dsn, cleanupSchema := newPostgresIntegrationSchema(t)
+	defer cleanupSchema()
+	st, err := Open(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	now := time.Now().UTC()
+	seed := func(dedup string, deadline time.Time) {
+		t.Helper()
+		if _, err := st.DB.ExecContext(ctx, `
+			INSERT INTO ai_advisory_requests (
+			  task_type,schema_version,prompt_version,model_id,observation_digest,
+			  dedup_key,deadline_at,state
+			) VALUES ('monitoring_inspection','1.0','v1','m',$1,$2,$3,'queued')`,
+			make32Byte(dedup), dedup, deadline); err != nil {
+			t.Fatalf("seed %s: %v", dedup, err)
+		}
+	}
+	seed("stale-a", now.Add(-time.Minute))
+	seed("stale-b", now.Add(-time.Second))
+	seed("fresh-a", now.Add(time.Minute))
+
+	expired, err := st.ExpireOverdueAIAdvisoryRequests(ctx, now)
+	if err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	if expired != 2 {
+		t.Fatalf("expired=%d, want 2", expired)
+	}
+	var state, errorCode string
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT state,error_code FROM ai_advisory_requests WHERE dedup_key='stale-a'`).
+		Scan(&state, &errorCode); err != nil {
+		t.Fatal(err)
+	}
+	if state != "superseded" || errorCode != "deadline_passed" {
+		t.Fatalf("stale row state=%q error=%q", state, errorCode)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT state FROM ai_advisory_requests WHERE dedup_key='fresh-a'`).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "queued" {
+		t.Fatalf("fresh row state=%q, want queued", state)
+	}
+	// Idempotent.
+	if expired, err = st.ExpireOverdueAIAdvisoryRequests(ctx, now); err != nil || expired != 0 {
+		t.Fatalf("second sweep expired=%d err=%v, want 0", expired, err)
+	}
+}

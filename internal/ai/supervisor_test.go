@@ -40,6 +40,20 @@ func (f *fakeStore) ListDueAIAdvisoryRequests(_ context.Context, limit int) ([]A
 	return out, nil
 }
 
+func (f *fakeStore) ExpireOverdueAIAdvisoryRequests(_ context.Context, now time.Time) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int64
+	for i := range f.requests {
+		if f.requests[i].State == "queued" && !f.requests[i].DeadlineAt.After(now) {
+			f.requests[i].State = "superseded"
+			f.requests[i].ErrorCode = "deadline_passed"
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (f *fakeStore) MarkAIAdvisoryRequestState(_ context.Context, id int64, state, errorCode string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -255,5 +269,36 @@ func TestSupervisorOrderingAdvisoryRoundTrip(t *testing.T) {
 	}
 	if len(st.outcomes) != 1 || st.outcomes[0].Decision != "shown" {
 		t.Fatalf("outcomes=%+v", st.outcomes)
+	}
+}
+
+// TestSupervisorExpiresOverdueQueuedRequests guards suggestion #4: queued
+// requests whose deadline passed (worker downtime, provider outage) must
+// reach a terminal superseded state instead of lingering forever.
+func TestSupervisorExpiresOverdueQueuedRequests(t *testing.T) {
+	t.Parallel()
+	st := &fakeStore{}
+	_, _ = st.InsertAIAdvisoryRequest(context.Background(), AIAdvisoryRequestLike{
+		TaskType: string(TaskMonitoringInspect), SchemaVersion: SchemaVersion,
+		PromptVersion: PromptVersion, ModelID: "mock-model",
+		DedupKey: "stale", DeadlineAt: time.Now().Add(-time.Minute), State: "queued",
+	})
+	_, _ = st.InsertAIAdvisoryRequest(context.Background(), AIAdvisoryRequestLike{
+		TaskType: string(TaskMonitoringInspect), SchemaVersion: SchemaVersion,
+		PromptVersion: PromptVersion, ModelID: "mock-model",
+		DedupKey: "fresh", DeadlineAt: time.Now().Add(time.Minute), State: "queued",
+	})
+	provider := MockProvider([]string{`{"schema_version":"9.9"}`}, nil)
+	sup := NewSupervisor(st, provider, NewRedactor([]byte("key")), ModeShadow, "mock-model", time.Second)
+	if err := sup.processDue(context.Background()); err != nil {
+		t.Fatalf("processDue: %v", err)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.requests[0].State != "superseded" || st.requests[0].ErrorCode != "deadline_passed" {
+		t.Fatalf("overdue request=%+v, want superseded/deadline_passed", st.requests[0])
+	}
+	if st.requests[1].State == "superseded" {
+		t.Fatalf("fresh request must not be expired: %+v", st.requests[1])
 	}
 }

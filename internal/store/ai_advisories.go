@@ -280,3 +280,21 @@ func (s *Store) CountAIAdvisoryRequestsByTask(ctx context.Context) (map[string]i
 	}
 	return out, rows.Err()
 }
+
+// ExpireOverdueAIAdvisoryRequests moves queued requests whose deadline has
+// passed into the terminal 'superseded' state (error_code='deadline_passed').
+// Without this sweep such rows lingered in 'queued' forever because
+// ListDueAIAdvisoryRequests filters deadline_at > now(). The 0046 state CHECK
+// already allows 'superseded'.
+func (s *Store) ExpireOverdueAIAdvisoryRequests(ctx context.Context, now time.Time) (int64, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	result, err := s.DB.ExecContext(ctx, `
+		UPDATE ai_advisory_requests SET state='superseded',error_code='deadline_passed'
+		WHERE state='queued' AND deadline_at<=$1`, now)
+	if err != nil {
+		return 0, fmt.Errorf("expire overdue ai advisory requests: %w", err)
+	}
+	return result.RowsAffected()
+}
