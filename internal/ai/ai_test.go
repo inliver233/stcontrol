@@ -184,3 +184,22 @@ func TestMockProviderRoundRobin(t *testing.T) {
 		t.Fatalf("repeat=%q", got3)
 	}
 }
+
+func TestValidateAdvisoryRejectsUnknownRiskFlagAndRequestedObservation(t *testing.T) {
+	t.Parallel()
+	raw := `{"schema_version":"1.0","task_type":"monitoring_inspection","observation_id":"obs_test1234567890","action":"NO_ACTION","candidate_refs":[],"confidence":0.9,"abstain":false,"reason_summary":"x","evidence_refs":[],"risk_flags":["TOTALLY_MADE_UP_FLAG"],"requested_observations":[]}`
+	if _, err := ValidateAdvisory(raw, TaskMonitoringInspect, "obs_test1234567890", nil, nil); err == nil ||
+		!strings.Contains(err.Error(), "invalid_risk_flag") {
+		t.Fatalf("expected invalid_risk_flag, got %v", err)
+	}
+	raw = `{"schema_version":"1.0","task_type":"monitoring_inspection","observation_id":"obs_test1234567890","action":"NO_ACTION","candidate_refs":[],"confidence":0.9,"abstain":false,"reason_summary":"x","evidence_refs":[],"risk_flags":["STALE_DATA"],"requested_observations":["FREE_STUFF_PLEASE"]}`
+	if _, err := ValidateAdvisory(raw, TaskMonitoringInspect, "obs_test1234567890", nil, nil); err == nil ||
+		!strings.Contains(err.Error(), "invalid_requested_observation") {
+		t.Fatalf("expected invalid_requested_observation, got %v", err)
+	}
+	// The full §6.2 enumerations stay accepted.
+	raw = `{"schema_version":"1.0","task_type":"monitoring_inspection","observation_id":"obs_test1234567890","action":"NO_ACTION","candidate_refs":[],"confidence":0.9,"abstain":false,"reason_summary":"x","evidence_refs":[],"risk_flags":["STALE_DATA","HUMAN_CONFIRMATION_REQUIRED"],"requested_observations":["FRESH_NODE_METRICS","OPERATOR_CONTEXT"]}`
+	if _, err := ValidateAdvisory(raw, TaskMonitoringInspect, "obs_test1234567890", nil, nil); err != nil {
+		t.Fatalf("valid enumeration rejected: %v", err)
+	}
+}

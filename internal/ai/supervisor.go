@@ -285,6 +285,16 @@ func (s *Supervisor) processOne(ctx context.Context, req AIAdvisoryRequestLike) 
 			code = ve.Code
 		}
 		_ = s.store.MarkAIAdvisoryRequestState(ctx, req.ID, "failed", code)
+		// Decision ⑤ (audit black box): every validator rejection leaves a
+		// durable rejected outcome row so the review can replay what was
+		// offered and why it was refused.
+		_ = s.store.InsertAIAdvisoryOutcome(ctx, AIAdvisoryOutcomeLike{
+			RequestID:       req.ID,
+			Decision:        "rejected",
+			ValidatorCode:   code,
+			ActorType:       "system",
+			ObservedOutcome: "validation_failed",
+		})
 		return
 	}
 	brk.record(true, now)

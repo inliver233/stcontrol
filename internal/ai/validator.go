@@ -80,8 +80,18 @@ func ValidateAdvisory(
 	if len(adv.RiskFlags) > 10 {
 		return nil, validationErrorf("too_many_risks", "risk_flags exceeds 10")
 	}
+	for _, flag := range adv.RiskFlags {
+		if !validRiskFlags[flag] {
+			return nil, validationErrorf("invalid_risk_flag", "risk flag %q not in the §6.2 enumeration", flag)
+		}
+	}
 	if len(adv.RequestedObservations) > 8 {
 		return nil, validationErrorf("too_many_requests", "requested_observations exceeds 8")
+	}
+	for _, requested := range adv.RequestedObservations {
+		if !validRequestedObservations[requested] {
+			return nil, validationErrorf("invalid_requested_observation", "requested observation %q not in the §6.2 enumeration", requested)
+		}
 	}
 	if utf8.RuneCountInString(adv.ReasonSummary) > 300 {
 		return nil, validationErrorf("reason_too_long", "reason_summary exceeds 300 chars")

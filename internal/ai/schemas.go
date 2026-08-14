@@ -121,6 +121,31 @@ const (
 	ReqOperatorContext     RequestedObservation = "OPERATOR_CONTEXT"
 )
 
+// validRiskFlags and validRequestedObservations are the §6.2 enumerations the
+// validator whitelists; anything else is rejected before persistence.
+var validRiskFlags = map[string]bool{
+	string(RiskStaleData):           true,
+	string(RiskConflictingSignals):  true,
+	string(RiskLowTelemetryQuality): true,
+	string(RiskCapacity):            true,
+	string(RiskDataLoss):            true,
+	string(RiskIdentity):            true,
+	string(RiskPrivacy):             true,
+	string(RiskPromptInjection):     true,
+	string(RiskHumanConfirmation):   true,
+}
+
+var validRequestedObservations = map[string]bool{
+	string(ReqFreshNodeMetrics):    true,
+	string(ReqSessionCounts):       true,
+	string(ReqWorkflowStatus):      true,
+	string(ReqReplicaFreshness):    true,
+	string(ReqConflictAggregates):  true,
+	string(ReqCompatibilityStatus): true,
+	string(ReqRegistrationPolicy):  true,
+	string(ReqOperatorContext):     true,
+}
+
 // Advisory is the validated model output (unified schema §6.2).
 type Advisory struct {
 	SchemaVersion         string   `json:"schema_version"`

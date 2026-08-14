@@ -190,3 +190,70 @@ type providerDownError struct{}
 func (e *providerDownError) Error() string { return "provider down" }
 
 var _ = json.Marshal
+
+// TestSupervisorWritesRejectedOutcomeOnValidationFailure guards decision ⑤:
+// a validator rejection must leave a durable ai_advisory_outcomes row with
+// decision='rejected' and the validator error code, not only a failed request.
+func TestSupervisorWritesRejectedOutcomeOnValidationFailure(t *testing.T) {
+	t.Parallel()
+	st := &fakeStore{}
+	obsID := "obs_test1234567890"
+	obsJSON := buildTestObservation(obsID)
+	_, _ = st.InsertAIAdvisoryRequest(context.Background(), AIAdvisoryRequestLike{
+		TaskType: string(TaskMonitoringInspect), SchemaVersion: SchemaVersion,
+		PromptVersion: PromptVersion, ModelID: "mock-model",
+		ObservationDigest: []byte("d"), ObservationJSON: obsJSON,
+		DedupKey: "monitor_rejected", DeadlineAt: time.Now().Add(time.Minute), State: "queued",
+	})
+	response := fmt.Sprintf(`{"schema_version":"1.0","task_type":"monitoring_inspection","observation_id":"%s","action":"NO_ACTION","candidate_refs":[],"confidence":0.9,"abstain":false,"reason_summary":"x","evidence_refs":[],"risk_flags":["INVENTED_FLAG"],"requested_observations":[]}`, obsID)
+	provider := MockProvider([]string{response}, nil)
+	sup := NewSupervisor(st, provider, NewRedactor([]byte("key")), ModeShadow, "mock-model", time.Second)
+	if err := sup.processDue(context.Background()); err != nil {
+		t.Fatalf("processDue: %v", err)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.requests[0].State != "failed" || st.requests[0].ErrorCode != "invalid_risk_flag" {
+		t.Fatalf("req=%+v", st.requests[0])
+	}
+	if len(st.outcomes) != 1 || st.outcomes[0].Decision != "rejected" ||
+		st.outcomes[0].ValidatorCode != "invalid_risk_flag" || st.outcomes[0].ActorType != "system" {
+		t.Fatalf("rejected outcome row missing or malformed: %+v", st.outcomes)
+	}
+}
+
+// TestSupervisorOrderingAdvisoryRoundTrip guards D5 end to end: an
+// observation that serializes candidate_catalog must let an ordering action
+// (RECOMMEND_NODE_ORDER) pass validation, get stored as an advisory and be
+// audited as shown - previously the catalog was never serialized, so every
+// ordering advisory died with empty_candidates and pushed the breaker open.
+func TestSupervisorOrderingAdvisoryRoundTrip(t *testing.T) {
+	t.Parallel()
+	st := &fakeStore{}
+	obsID := "obs_test1234567890"
+	obsJSON := []byte(`{"observation_id":"` + obsID + `","evidence_catalog":[{"ref":"ev_abcdefghijklmnopqrst","kind":"node_capacity","value":"open"}],"candidate_catalog":[{"ref":"ref_aaaaaaaaaaaaaaaa","kind":"node"},{"ref":"ref_bbbbbbbbbbbbbbbb","kind":"node"}]}`)
+	_, _ = st.InsertAIAdvisoryRequest(context.Background(), AIAdvisoryRequestLike{
+		TaskType: string(TaskScheduleRecommend), SchemaVersion: SchemaVersion,
+		PromptVersion: PromptVersion, ModelID: "mock-model",
+		ObservationDigest: []byte("d"), ObservationJSON: obsJSON,
+		DedupKey: "schedule_roundtrip", DeadlineAt: time.Now().Add(time.Minute), State: "queued",
+	})
+	response := fmt.Sprintf(`{"schema_version":"1.0","task_type":"schedule_recommendation","observation_id":"%s","action":"RECOMMEND_NODE_ORDER","candidate_refs":["ref_aaaaaaaaaaaaaaaa","ref_bbbbbbbbbbbbbbbb"],"confidence":0.8,"abstain":false,"reason_summary":"两个节点均开放","evidence_refs":["ev_abcdefghijklmnopqrst"],"risk_flags":[],"requested_observations":[]}`, obsID)
+	provider := MockProvider([]string{response}, nil)
+	sup := NewSupervisor(st, provider, NewRedactor([]byte("key")), ModeShadow, "mock-model", time.Second)
+	if err := sup.processDue(context.Background()); err != nil {
+		t.Fatalf("processDue: %v", err)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.requests[0].State != "succeeded" || st.requests[0].ErrorCode != "" {
+		t.Fatalf("request=%+v, want succeeded without error", st.requests[0])
+	}
+	if len(st.advisories) != 1 || st.advisories[0].Action != "RECOMMEND_NODE_ORDER" ||
+		len(st.advisories[0].CandidateRefs) != 2 {
+		t.Fatalf("advisories=%+v", st.advisories)
+	}
+	if len(st.outcomes) != 1 || st.outcomes[0].Decision != "shown" {
+		t.Fatalf("outcomes=%+v", st.outcomes)
+	}
+}

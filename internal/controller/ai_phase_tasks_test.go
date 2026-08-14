@@ -54,7 +54,7 @@ func TestEnqueueAnomalyAttribution(t *testing.T) {
 		"severity", "state", "category", "user_uuid", "username", "node_name",
 		"summary", "first_seen_at", "last_seen_at",
 	}).AddRow(
-		"critical", "open", "corrupt", "11111111-1111-4111-8111-111111111111",
+		"critical", "open", "user_protection", "11111111-1111-4111-8111-111111111111",
 		"alice", "", "archive 完整性复核失败", now.Add(-time.Hour), now,
 	)
 	mock.ExpectQuery(`SELECT .* FROM alerts`).WillReturnRows(alertRows)
@@ -154,6 +154,20 @@ func TestEnqueueScheduleRecommendation(t *testing.T) {
 			t.Fatalf("observation leaked %q", forbidden)
 		}
 	}
+	// D5 regression: the candidate catalog must be serialized so ordering
+	// actions can pass validation instead of failing with empty_candidates.
+	var obs aiAnomalyObservation
+	if err := json.Unmarshal(sup.tasks[0].obs, &obs); err != nil {
+		t.Fatalf("obs: %v", err)
+	}
+	if len(obs.CandidateCatalog) != 2 {
+		t.Fatalf("candidate_catalog=%+v, want 2 eligible node refs", obs.CandidateCatalog)
+	}
+	for _, c := range obs.CandidateCatalog {
+		if c.Kind != "node" || c.Ref == "" {
+			t.Fatalf("malformed candidate %+v", c)
+		}
+	}
 }
 
 func TestEnqueueScheduleRecommendationSkipsWithoutTwoCandidates(t *testing.T) {
@@ -210,6 +224,16 @@ func TestEnqueueRecoveryPlan(t *testing.T) {
 	sup := s.aiSupervisor.(*fakeAISupervisor)
 	if len(sup.tasks) != 1 || sup.tasks[0].taskType != string(ai.TaskRecoveryPlan) {
 		t.Fatalf("tasks=%+v", sup.tasks)
+	}
+	// D5 regression: workflow refs must be serialized as candidates so
+	// RECOVERY_STEP_ORDER advisories can pass validation.
+	var obs aiRecoveryObservation
+	if err := json.Unmarshal(sup.tasks[0].obs, &obs); err != nil {
+		t.Fatalf("obs: %v", err)
+	}
+	if len(obs.CandidateCatalog) != 1 || obs.CandidateCatalog[0].Kind != "workflow" ||
+		obs.CandidateCatalog[0].Ref == "" {
+		t.Fatalf("candidate_catalog=%+v, want 1 workflow ref", obs.CandidateCatalog)
 	}
 }
 

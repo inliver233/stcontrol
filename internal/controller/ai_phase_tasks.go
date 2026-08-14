@@ -18,12 +18,17 @@ import (
 // ---------- Phase 2: 告警归因 (anomaly_attribution) ----------
 
 type aiAnomalyObservation struct {
-	ObservationID   string                `json:"observation_id"`
-	GeneratedAt     string                `json:"generated_at"`
-	EvidenceCatalog []ai.Evidence         `json:"evidence_catalog"`
-	AlertCounts     map[string]int64      `json:"alert_counts"`
-	Alerts          []ai.AlertObservation `json:"alerts"`
-	Nodes           []ai.NodeObservation  `json:"nodes"`
+	ObservationID string `json:"observation_id"`
+	GeneratedAt   string `json:"generated_at"`
+	EvidenceCatalog []ai.Evidence `json:"evidence_catalog"`
+	// CandidateCatalog must be serialized: the supervisor rebuilds the
+	// eligible candidate set from the stored observation JSON when validating
+	// ordering actions (RECOMMEND_NODE_ORDER etc.); omitting it made every
+	// ordering advisory fail with empty_candidates (D5).
+	CandidateCatalog []ai.Candidate `json:"candidate_catalog"`
+	AlertCounts      map[string]int64 `json:"alert_counts"`
+	Alerts           []ai.AlertObservation `json:"alerts"`
+	Nodes            []ai.NodeObservation `json:"nodes"`
 }
 
 func (s *Server) enqueueAnomalyAttribution(ctx context.Context) error {
@@ -113,9 +118,13 @@ func (s *Server) enqueueScheduleRecommendation(ctx context.Context) error {
 	if len(candidateCatalog) < 2 {
 		return nil // fewer than two eligible candidates: nothing to order
 	}
+	candidates := make([]ai.Candidate, 0, len(candidateCatalog))
+	for ref := range candidateCatalog {
+		candidates = append(candidates, ai.Candidate{Ref: ref, Kind: "node"})
+	}
 	raw, err := json.Marshal(aiAnomalyObservation{
 		ObservationID: obsID, GeneratedAt: now.UTC().Format(time.RFC3339),
-		EvidenceCatalog: evidence, Nodes: nodeObs,
+		EvidenceCatalog: evidence, CandidateCatalog: candidates, Nodes: nodeObs,
 	})
 	if err != nil {
 		return err
@@ -127,10 +136,13 @@ func (s *Server) enqueueScheduleRecommendation(ctx context.Context) error {
 // ---------- Phase 4: 恢复编排 (recovery_plan) ----------
 
 type aiRecoveryObservation struct {
-	ObservationID   string                   `json:"observation_id"`
-	GeneratedAt     string                   `json:"generated_at"`
-	EvidenceCatalog []ai.Evidence            `json:"evidence_catalog"`
-	Workflows       []ai.WorkflowObservation `json:"workflows"`
+	ObservationID string `json:"observation_id"`
+	GeneratedAt   string `json:"generated_at"`
+	EvidenceCatalog []ai.Evidence `json:"evidence_catalog"`
+	// CandidateCatalog serializes the orderable workflow refs so the
+	// supervisor can validate RECOVERY_STEP_ORDER candidate_refs (D5).
+	CandidateCatalog []ai.Candidate `json:"candidate_catalog"`
+	Workflows        []ai.WorkflowObservation `json:"workflows"`
 }
 
 func (s *Server) enqueueRecoveryPlan(ctx context.Context) error {
@@ -154,9 +166,13 @@ func (s *Server) enqueueRecoveryPlan(ctx context.Context) error {
 	if len(wfObs) == 0 {
 		return nil
 	}
+	candidates := make([]ai.Candidate, 0, len(wfObs))
+	for _, w := range wfObs {
+		candidates = append(candidates, ai.Candidate{Ref: w.Ref, Kind: "workflow"})
+	}
 	raw, err := json.Marshal(aiRecoveryObservation{
 		ObservationID: obsID, GeneratedAt: now.UTC().Format(time.RFC3339),
-		EvidenceCatalog: evidence, Workflows: wfObs,
+		EvidenceCatalog: evidence, CandidateCatalog: candidates, Workflows: wfObs,
 	})
 	if err != nil {
 		return err
