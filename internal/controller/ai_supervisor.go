@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -200,12 +201,19 @@ func (s *Server) startAISupervisor(ctx context.Context) {
 	if !policy.Enabled {
 		return
 	}
+	fail := func(reason string) {
+		// Never crash the controller over an optional subsystem, but never stay
+		// silent either: an operator must see why AI supervision did not start.
+		log.Printf("ai supervisor disabled: %s", reason)
+	}
 	mode, err := ai.ParseMode(policy.Mode)
 	if err != nil {
+		fail(err.Error())
 		return
 	}
 	kind, err := ai.ParseProviderKind(policy.Provider)
 	if err != nil {
+		fail(err.Error())
 		return
 	}
 	apiKeyEnv := policy.APIKeyEnv
@@ -224,6 +232,7 @@ func (s *Server) startAISupervisor(ctx context.Context) {
 		Timeout: timeout,
 	})
 	if err != nil {
+		fail(err.Error())
 		return
 	}
 	inspectEvery := time.Duration(policy.InspectEverySec) * time.Second

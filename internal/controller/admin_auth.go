@@ -38,13 +38,16 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	passwordValid := crypto.CheckPassword(passwordHash, req.Password)
 	if admin == nil || admin.Status != "active" || !passwordValid {
 		if s.loginLockout != nil {
-			s.loginLockout.recordFailure(username)
+			// Namespace the key with "admin:" so a remote attacker who only knows
+			// the admin username cannot lock the administrator out of the system
+		// by spamming the ordinary user login endpoint with the same name.
+			s.loginLockout.recordFailure("admin:" + username)
 		}
 		protocol.WriteError(w, http.StatusForbidden, "用户名或密码错误")
 		return
 	}
 	if s.loginLockout != nil {
-		s.loginLockout.recordSuccess(username)
+		s.loginLockout.recordSuccess("admin:" + username)
 	}
 	if err := s.Store.RecordAdminLogin(r.Context(), admin.ID, time.Now().UTC()); err != nil {
 		protocol.WriteError(w, http.StatusServiceUnavailable, "管理员认证暂不可用")

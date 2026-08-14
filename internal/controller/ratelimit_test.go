@@ -203,3 +203,41 @@ func TestGlobalRateLimitMountedOnUserAndAdminRoutes(t *testing.T) {
 		t.Fatalf("health route status=%d want 204 (must not be rate limited)", recorder.Code)
 	}
 }
+
+// TestAdminLoginLockoutKeyIsNamespacedFromUserLockout guards suggestion #1:
+// knowing the admin username must not allow locking the administrator out
+// through the ordinary user login endpoint (shared bare key = remote DoS).
+func TestAdminLoginLockoutKeyIsNamespacedFromUserLockout(t *testing.T) {
+	t.Parallel()
+	server := &Server{loginLockout: newLoginLockout(2, time.Minute, 10*time.Minute)}
+	// Attacker fails the *user* login as the admin's username repeatedly.
+	for i := 0; i < 5; i++ {
+		server.loginLockout.recordFailure("root")
+	}
+	if locked, _ := server.loginLockout.locked("root"); !locked {
+		t.Fatal("user key should be locked after repeated failures")
+	}
+	if locked, _ := server.loginLockout.locked("admin:root"); locked {
+		t.Fatal("admin key must be independent of user-key failures")
+	}
+	// The admin endpoint check uses the namespaced key.
+	request := httptest.NewRequest(http.MethodPost, "/api/auth/admin/login",
+		strings.NewReader(`{"username":"root","password":"x"}`))
+	recorder := httptest.NewRecorder()
+	server.loginLockoutMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(recorder, request)
+	if recorder.Code == http.StatusTooManyRequests {
+		t.Fatal("admin login was rejected because of user-side failures on the same handle")
+	}
+	// While the user endpoint with the same body stays locked out.
+	request = httptest.NewRequest(http.MethodPost, "/api/auth/login",
+		strings.NewReader(`{"username":"root","password":"x"}`))
+	recorder = httptest.NewRecorder()
+	server.loginLockoutMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatal("user endpoint lockout not enforced")
+	}
+}

@@ -47,7 +47,10 @@ func SealMasterKeyRecovery(passphrase string, masterKey []byte) (*MasterKeyRecov
 		return nil, err
 	}
 	const (
-		n = 1 << 15
+		// N=2^17 (~131k iterations * 8 * 1): ~256MiB derived-key cost, raising
+		// the offline brute-force price of the recovery passphrase without
+		// hurting interactive unwrap times on a controller host.
+		n = 1 << 17
 		r = 8
 		p = 1
 	)

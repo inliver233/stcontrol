@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -139,7 +140,13 @@ func (s *Server) loginLockoutMiddleware(next http.Handler) http.Handler {
 		if raw != nil {
 			r.Body = io.NopCloser(bytes.NewReader(raw))
 		}
-		if locked, wait := s.loginLockout.locked(username); locked {
+		// Namespace the lockout key for the admin endpoint so user-side failures
+		// against the same handle can never lock an administrator out (DoS).
+		lockoutKey := username
+		if strings.HasSuffix(r.URL.Path, "/admin/login") {
+			lockoutKey = "admin:" + username
+		}
+		if locked, wait := s.loginLockout.locked(lockoutKey); locked {
 			w.Header().Set("Retry-After", formatRetryAfter(wait))
 			protocol.WriteError(w, http.StatusTooManyRequests, "登录尝试过于频繁，请稍后再试")
 			return

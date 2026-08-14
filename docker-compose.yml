@@ -6,7 +6,7 @@ services:
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: stcontrol
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-stcontrol}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in the environment}
       POSTGRES_DB: stcontrol
     volumes:
       - pgdata:/var/lib/postgresql/data

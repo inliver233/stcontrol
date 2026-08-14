@@ -297,7 +297,9 @@ func (p *geminiProvider) Complete(ctx context.Context, params CallParams) (strin
 	endpoint := p.base + "/v1beta/models/" + params.Model + ":generateContent"
 	headers := map[string]string{}
 	if p.cfg.APIKey != "" {
-		endpoint += "?key=" + p.cfg.APIKey
+		// The API key belongs in the x-goog-api-key header, never in the URL
+		// query string where it leaks into proxies and access logs.
+		headers["x-goog-api-key"] = p.cfg.APIKey
 	}
 	raw, err := postJSON(ctx, p.client, endpoint, headers, body)
 	if err != nil {
