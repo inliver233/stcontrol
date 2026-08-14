@@ -35,9 +35,10 @@ export default function NodesPage() {
 					setRestoreTargetsLoading(true)
 					try {
 						const { targets } = await api.restoreTargets()
+						const targetList = targets ?? []
 						if (!cancelled) {
-							setRestoreTargets(targets)
-							if (targets.length === 1) setSelectedRestoreTarget(targets[0].node_id)
+							setRestoreTargets(targetList)
+							if (targetList.length === 1) setSelectedRestoreTarget(targetList[0].node_id)
 						}
 					} catch (err: unknown) {
 						if (!cancelled) setError(err instanceof Error ? err.message : '加载恢复目标失败')

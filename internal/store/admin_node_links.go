@@ -61,7 +61,7 @@ func (s *Store) ListAdminNodeLinks(ctx context.Context, adminID int64) ([]AdminN
 		return nil, err
 	}
 	defer rows.Close()
-	var links []AdminNodeLink
+	links := make([]AdminNodeLink, 0)
 	for rows.Next() {
 		var link AdminNodeLink
 		var verified sql.NullTime

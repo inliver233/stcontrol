@@ -133,7 +133,7 @@ func (s *Store) ListRestoreTargets(ctx context.Context, globalUserID int64, limi
 		return nil, err
 	}
 	defer rows.Close()
-	var targets []RestoreTarget
+	targets := make([]RestoreTarget, 0)
 	for rows.Next() {
 		var target RestoreTarget
 		if err := rows.Scan(&target.NodeID, &target.Name, &target.Region); err != nil {

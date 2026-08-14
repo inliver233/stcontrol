@@ -123,7 +123,7 @@ func (s *Store) ListAdmins(ctx context.Context) ([]*Admin, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var admins []*Admin
+	admins := make([]*Admin, 0)
 	for rows.Next() {
 		admin := &Admin{}
 		var createdBy sql.NullInt64

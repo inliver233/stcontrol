@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -448,6 +449,30 @@ func TestRestoreWorkflowSchedulingAndStatusUsePublicOperationIdentity(t *testing
 	status, err := st.GetRestoreOperationStatus(context.Background(), 70, "operation")
 	if err != nil || status == nil || status.State != "transferring" || status.TargetNodeName != "compute-b" {
 		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+// TestListRestoreTargetsEmptyResultIsJSONArrayNotSQLNull guards the last
+// residue of bug实测#1: an empty target list must serialize as [] (not null),
+// otherwise Nodes.tsx crashes on targets.length.
+func TestListRestoreTargetsEmptyResultIsJSONArrayNotSQLNull(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	mock.ExpectQuery(`FROM user_protection_states protection`).
+		WithArgs(int64(70), 50).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "region"}))
+	targets, err := st.ListRestoreTargets(context.Background(), 70, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if targets == nil {
+		t.Fatal("empty result must be a non-nil slice, not nil (JSON null)")
+	}
+	encoded, err := json.Marshal(targets)
+	if err != nil || string(encoded) != "[]" {
+		t.Fatalf("encoded=%q err=%v, want []", encoded, err)
 	}
 	assertMockExpectations(t, mock)
 }
