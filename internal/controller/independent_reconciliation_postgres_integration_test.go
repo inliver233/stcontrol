@@ -66,14 +66,25 @@ func TestControllerIndependentReconciliationSnapshotsAndCompletesAfterRetry(t *t
 	restarted.reconcileIndependentWrites(ctx)
 	waitControllerIndependentState(t, ctx, st, source.ID, marker, "succeeded", 5*time.Second)
 	var completionCommands, completionAudits int
-	if err := st.DB.QueryRowContext(ctx, `
-		SELECT
-		  (SELECT count(*) FROM agent_commands WHERE command_type='complete_independent_sync'),
-		  (SELECT count(*) FROM audit_logs WHERE action='independent-reconciliation-complete'
-		     AND target=$1)`, "node:"+int64Text(source.ID)+"/user:"+int64Text(user.GlobalID)).Scan(
-		&completionCommands, &completionAudits,
-	); err != nil || completionCommands != 2 || completionAudits != 1 {
-		t.Fatalf("independent completion commands=%d audits=%d err=%v", completionCommands, completionAudits, err)
+	// The audit row is written in a separate transaction after the
+	// reconciliation state flips to succeeded, so poll briefly instead of
+	// asserting immediately (avoids a flake under parallel package load).
+	completionDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := st.DB.QueryRowContext(ctx, `
+			SELECT
+			  (SELECT count(*) FROM agent_commands WHERE command_type='complete_independent_sync'),
+			  (SELECT count(*) FROM audit_logs WHERE action='independent-reconciliation-complete'
+			     AND target=$1)`, "node:"+int64Text(source.ID)+"/user:"+int64Text(user.GlobalID)).Scan(
+			&completionCommands, &completionAudits,
+		); err != nil || completionCommands != 2 || completionAudits != 1 {
+			if time.Now().After(completionDeadline) {
+				t.Fatalf("independent completion commands=%d audits=%d err=%v", completionCommands, completionAudits, err)
+			}
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		break
 	}
 	if errs := harness.errors(); len(errs) > 0 {
 		t.Fatalf("independent durable Agent harness errors: %v", errs)
