@@ -3,6 +3,7 @@ package controller
 import (
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -99,15 +100,29 @@ func clientIP(r *http.Request) string {
 	if err != nil {
 		host = r.RemoteAddr
 	}
+	host = normalizeIP(host)
 	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
 		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-			first, _, err := net.SplitHostPort(forwarded)
-			if err != nil {
-				first = forwarded
+			// XFF is a comma-separated list; take the first (original client)
+			// segment and trim surrounding whitespace before parsing.
+			first := strings.TrimSpace(strings.SplitN(forwarded, ",", 2)[0])
+			if h, _, err := net.SplitHostPort(first); err == nil {
+				first = h
 			}
 			if parsed := net.ParseIP(first); parsed != nil {
-				return first
+				return normalizeIP(first)
 			}
+		}
+	}
+	return host
+}
+
+// normalizeIP collapses IPv4-mapped IPv6 addresses (::ffff:1.2.3.4) to their
+// plain IPv4 form so both spellings share one rate-limit bucket.
+func normalizeIP(host string) string {
+	if ip := net.ParseIP(host); ip != nil {
+		if v4 := ip.To4(); v4 != nil {
+			return v4.String()
 		}
 	}
 	return host

@@ -12,7 +12,11 @@ import (
 func newRouter() *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// No middleware.RealIP: it would unconditionally trust spoofable
+	// True-Client-IP/X-Real-IP/X-Forwarded-For headers and rewrite RemoteAddr
+	// before ratelimit.clientIP runs, defeating its "private peer only"
+	// defense (R21). clientIP itself trusts XFF only from loopback/private
+	// peers, which is the correct behavior behind the deployment proxy.
 	r.Use(middleware.RequestLogger(queryRedactingLogFormatter{delegate: &middleware.DefaultLogFormatter{
 		Logger: log.New(os.Stdout, "", log.LstdFlags), NoColor: true,
 	}}))
@@ -100,8 +104,9 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Post("/snapshots/progress", s.handleSnapshotProgress)
 	})
 
-	// 用户区（需登录）
+	// 用户区（需登录；R21 全局 120/min 限流，agent HMAC 通道与健康检查不套全局限流）
 	r.Route("/api", func(r chi.Router) {
+		r.Use(s.rateLimitMiddleware)
 		r.Use(s.userAuthMiddleware)
 		r.Get("/users/me", s.handleMe)
 		r.Get("/users/me/nodes", s.handleMyNodes)
@@ -132,8 +137,9 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Post("/auth/logout", s.handleLogout)
 	})
 
-	// 管理后台（需管理员）
+	// 管理后台（需管理员；同样挂 R21 全局限流）
 	r.Route("/api/admin", func(r chi.Router) {
+		r.Use(s.rateLimitMiddleware)
 		r.Use(s.userAuthMiddleware)
 		r.Use(s.adminOnly)
 		r.Get("/overview", s.handleAdminOverview)
