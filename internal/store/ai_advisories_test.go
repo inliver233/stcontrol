@@ -1,7 +1,9 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"regexp"
 	"testing"
 	"time"
@@ -134,6 +136,23 @@ func TestListRecentAIAdvisoriesAndCountByTask(t *testing.T) {
 	if len(rows) != 1 || rows[0].TaskType != "monitoring_inspection" || rows[0].ReasonSummary != "一切正常" {
 		t.Fatalf("rows=%+v", rows)
 	}
+	// The admin AI page reads snake_case keys; the response must never
+	// serialize Go field names (regression guard for the contract bug that
+	// rendered Invalid Date / NaN% in the console).
+	payload, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{"advisory_id", "task_type", "reason_summary", "created_at", "model_id", "action", "confidence"} {
+		if !bytes.Contains(payload, []byte(`"`+key+`"`)) {
+			t.Fatalf("advisory JSON missing snake_case key %q: %s", key, payload)
+		}
+	}
+	for _, goName := range []string{"AdvisoryID", "TaskType", "ReasonSummary", "CreatedAt"} {
+		if bytes.Contains(payload, []byte(`"`+goName+`"`)) {
+			t.Fatalf("advisory JSON leaked Go field name %q: %s", goName, payload)
+		}
+	}
 	mock.ExpectQuery(`SELECT task_type, COUNT\(\*\) FROM ai_advisory_requests GROUP BY task_type`).
 		WillReturnRows(sqlmock.NewRows([]string{"task_type", "count"}).
 			AddRow("monitoring_inspection", int64(3)))
@@ -172,6 +191,18 @@ func TestListAIAdvisoryRequestsPage(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].ID != 1 {
 		t.Fatalf("rows=%+v", rows)
+	}
+	payload, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{"requested_at", "model_id", "error_code", "task_type", "state"} {
+		if !bytes.Contains(payload, []byte(`"`+key+`"`)) {
+			t.Fatalf("request JSON missing snake_case key %q: %s", key, payload)
+		}
+	}
+	if bytes.Contains(payload, []byte(`"RequestedAt"`)) || bytes.Contains(payload, []byte(`"ModelID"`)) {
+		t.Fatalf("request JSON leaked Go field names: %s", payload)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet: %v", err)

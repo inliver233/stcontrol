@@ -11,20 +11,22 @@ import (
 // AI 监管层（Phase 0）持久事实。所有 AI 建议都是只读 advisory，不是 Store
 // truth；Agent 不信任这些表。observation 只存脱敏投影或 digest。
 
-// AIAdvisoryRequest mirrors ai_advisory_requests.
+// AIAdvisoryRequest mirrors ai_advisory_requests. json tags define the
+// admin HTTP contract: the React AI page reads snake_case keys (advisory
+// tables previously serialized Go field names, which the UI never matched).
 type AIAdvisoryRequest struct {
-	ID                int64
-	TaskType          string
-	SchemaVersion     string
-	PromptVersion     string
-	ModelID           string
-	ObservationDigest []byte
-	ObservationJSON   json.RawMessage
-	DedupKey          string
-	RequestedAt       time.Time
-	DeadlineAt        time.Time
-	State             string
-	ErrorCode         string
+	ID                int64           `json:"id"`
+	TaskType          string          `json:"task_type"`
+	SchemaVersion     string          `json:"schema_version"`
+	PromptVersion     string          `json:"prompt_version"`
+	ModelID           string          `json:"model_id"`
+	ObservationDigest []byte          `json:"-"`
+	ObservationJSON   json.RawMessage `json:"-"`
+	DedupKey          string          `json:"dedup_key"`
+	RequestedAt       time.Time       `json:"requested_at"`
+	DeadlineAt        time.Time       `json:"deadline_at"`
+	State             string          `json:"state"`
+	ErrorCode         string          `json:"error_code"`
 }
 
 // AIAdvisory mirrors ai_advisories.
@@ -86,7 +88,7 @@ func (s *Store) ListDueAIAdvisoryRequests(ctx context.Context, limit int) ([]AIA
 		return nil, err
 	}
 	defer rows.Close()
-	var out []AIAdvisoryRequest
+	out := make([]AIAdvisoryRequest, 0)
 	for rows.Next() {
 		var r AIAdvisoryRequest
 		var obs []byte
@@ -172,19 +174,26 @@ func (s *Store) InsertAIAdvisoryOutcome(ctx context.Context, outcome struct {
 	return nil
 }
 
+// AIAdvisorySummary is the admin-facing join of one validated advisory with
+// its request metadata. json tags are the HTTP contract read by the React AI
+// page (previously the anonymous struct serialized Go field names like
+// AdvisoryID/CreatedAt, which the UI's snake_case reads rendered as
+// Invalid Date / NaN%).
+type AIAdvisorySummary struct {
+	RequestID     int64     `json:"request_id"`
+	AdvisoryID    int64     `json:"advisory_id"`
+	TaskType      string    `json:"task_type"`
+	ModelID       string    `json:"model_id"`
+	Action        string    `json:"action"`
+	Confidence    float64   `json:"confidence"`
+	Abstain       bool      `json:"abstain"`
+	ReasonSummary string    `json:"reason_summary"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
 // ListRecentAIAdvisories returns the most recent validated advisories joined
 // with their request metadata, newest first.
-func (s *Store) ListRecentAIAdvisories(ctx context.Context, limit int) ([]struct {
-	RequestID     int64
-	AdvisoryID    int64
-	TaskType      string
-	ModelID       string
-	Action        string
-	Confidence    float64
-	Abstain       bool
-	ReasonSummary string
-	CreatedAt     time.Time
-}, error) {
+func (s *Store) ListRecentAIAdvisories(ctx context.Context, limit int) ([]AIAdvisorySummary, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT a.request_id, a.id, r.task_type, r.model_id, a.action,
 		       a.confidence, a.abstain, a.reason_summary, a.created_at
@@ -196,29 +205,9 @@ func (s *Store) ListRecentAIAdvisories(ctx context.Context, limit int) ([]struct
 		return nil, err
 	}
 	defer rows.Close()
-	var out []struct {
-		RequestID     int64
-		AdvisoryID    int64
-		TaskType      string
-		ModelID       string
-		Action        string
-		Confidence    float64
-		Abstain       bool
-		ReasonSummary string
-		CreatedAt     time.Time
-	}
+	out := make([]AIAdvisorySummary, 0)
 	for rows.Next() {
-		var v struct {
-			RequestID     int64
-			AdvisoryID    int64
-			TaskType      string
-			ModelID       string
-			Action        string
-			Confidence    float64
-			Abstain       bool
-			ReasonSummary string
-			CreatedAt     time.Time
-		}
+		var v AIAdvisorySummary
 		if err := rows.Scan(&v.RequestID, &v.AdvisoryID, &v.TaskType, &v.ModelID,
 			&v.Action, &v.Confidence, &v.Abstain, &v.ReasonSummary, &v.CreatedAt); err != nil {
 			return nil, err
@@ -242,7 +231,7 @@ func (s *Store) ListAIAdvisoryRequestsPage(ctx context.Context, cursor int64, li
 		return nil, err
 	}
 	defer rows.Close()
-	var out []AIAdvisoryRequest
+	out := make([]AIAdvisoryRequest, 0)
 	for rows.Next() {
 		var r AIAdvisoryRequest
 		var obs []byte
