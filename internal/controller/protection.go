@@ -222,10 +222,34 @@ func (s *Server) replicaTakeoverDigest(
 
 func (s *Server) handleAdminProtectionAlerts(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	alerts, err := s.Store.ListVisibleProtectionAlerts(r.Context(), limit, time.Now().UTC())
+	now := time.Now().UTC()
+	alerts, err := s.Store.ListVisibleProtectionAlerts(r.Context(), limit, now)
 	if err != nil {
 		protocol.WriteError(w, http.StatusInternalServerError, "读取保护告警失败")
 		return
 	}
-	protocol.WriteJSON(w, http.StatusOK, map[string]any{"alerts": alerts})
+	// Decision ④ adopted alert notes are merged as a SEPARATE field; the
+	// deterministic summary is never overwritten by AI text. Lookup failures
+	// degrade to no notes.
+	notes := map[string]string{}
+	if effects, err := s.Store.ListActiveAIAdoptionEffects(r.Context(), "alert_note", now); err == nil {
+		for _, e := range effects {
+			var payload struct {
+				Note string `json:"note"`
+			}
+			if json.Unmarshal(e.Payload, &payload) == nil && payload.Note != "" {
+				notes[e.TargetRef] = payload.Note
+			}
+		}
+	}
+	type alertWithNote struct {
+		store.ProtectionAlert
+		AINote string `json:"ai_note,omitempty"`
+	}
+	out := make([]alertWithNote, 0, len(alerts))
+	for _, a := range alerts {
+		note := notes[a.UserUUID]
+		out = append(out, alertWithNote{ProtectionAlert: a, AINote: note})
+	}
+	protocol.WriteJSON(w, http.StatusOK, map[string]any{"alerts": out})
 }

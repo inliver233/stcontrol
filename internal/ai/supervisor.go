@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -88,6 +89,32 @@ type AIAdvisoryOutcomeLike struct {
 	ObservedOutcome  string
 }
 
+// ErrAdoptionNotExecutable reports that an advisory has no deterministic,
+// reversible executor (the action is informational only, or the current
+// cluster state fails the hard gate). The caller keeps the advisory "shown";
+// this is never a request failure.
+var ErrAdoptionNotExecutable = errors.New("adoption not executable")
+
+// AdoptionResult is what a deterministic executor applied.
+type AdoptionResult struct {
+	// EffectRef names the applied effect for the audit outcome row
+	// (e.g. "node_order_hint:3,1,2"), never the AI row itself.
+	EffectRef string
+	// ObservedOutcome is a short machine-readable summary
+	// ("applied" / "unchanged").
+	ObservedOutcome string
+}
+
+// Adopter executes auto-adoptable advisories against deterministic system
+// points (decision ④). Implementations MUST re-check hard gates against
+// current store state before applying anything, return ErrAdoptionNotExecutable
+// for anything without a reversible executor, and never write agent-facing or
+// user-facing state. Disaster, identity, takeover and conflict-publish
+// suggestions are always human-confirm and have no executor at all.
+type Adopter interface {
+	Adopt(ctx context.Context, req AIAdvisoryRequestLike, adv *Advisory, advisoryID int64) (AdoptionResult, error)
+}
+
 // breaker is a per provider+model+task circuit breaker (§5.2).
 type breaker struct {
 	mu          sync.Mutex
@@ -134,6 +161,11 @@ type Supervisor struct {
 	mode     Mode
 	model    string
 	timeout  time.Duration
+	// adopter and autoConfidence implement decision ④ (auto_low_risk graded
+	// adoption). adopter is nil in shadow/advisory modes or when no executor
+	// is wired; adoption then never happens and every advisory stays "shown".
+	adopter        Adopter
+	autoConfidence float64
 
 	mu       sync.Mutex
 	breakers map[string]*breaker
@@ -143,14 +175,31 @@ type Supervisor struct {
 // disabled (the controller must not start it then).
 func NewSupervisor(store Store, provider Provider, redactor *Redactor, mode Mode, model string, timeout time.Duration) *Supervisor {
 	return &Supervisor{
-		store:    store,
-		provider: provider,
-		redactor: redactor,
-		mode:     mode,
-		model:    model,
-		timeout:  timeout,
-		breakers: make(map[string]*breaker),
+		store:          store,
+		provider:       provider,
+		redactor:       redactor,
+		mode:           mode,
+		model:          model,
+		timeout:        timeout,
+		breakers:       make(map[string]*breaker),
+		autoConfidence: defaultAutoAdoptConfidence,
 	}
+}
+
+// defaultAutoAdoptConfidence is the minimum model confidence an advisory
+// needs before the auto_low_risk executor may apply it (decision ④ hard gate).
+const defaultAutoAdoptConfidence = 0.8
+
+// WithAdopter wires the decision-④ adoption executor. Only takes effect in
+// ModeAutoLowRisk; passing minConfidence outside [0.5,1) falls back to the
+// default. Returns the supervisor for chaining.
+func (s *Supervisor) WithAdopter(a Adopter, minConfidence float64) *Supervisor {
+	s.adopter = a
+	s.autoConfidence = defaultAutoAdoptConfidence
+	if minConfidence >= 0.5 && minConfidence < 1 {
+		s.autoConfidence = minConfidence
+	}
+	return s
 }
 
 // EnqueueTask persists one queued advisory request for any task type (used
@@ -307,7 +356,7 @@ func (s *Supervisor) processOne(ctx context.Context, req AIAdvisoryRequestLike) 
 	}
 	brk.record(true, now)
 	digest := sha256.Sum256([]byte(raw))
-	_, err = s.store.InsertAIAdvisory(ctx, AIAdvisoryLike{
+	advisoryID, err := s.store.InsertAIAdvisory(ctx, AIAdvisoryLike{
 		RequestID:         req.ID,
 		Action:            adv.Action,
 		CandidateRefs:     adv.CandidateRefs,
@@ -325,11 +374,42 @@ func (s *Supervisor) processOne(ctx context.Context, req AIAdvisoryRequestLike) 
 		return
 	}
 	_ = s.store.MarkAIAdvisoryRequestState(ctx, req.ID, "succeeded", "")
+
+	// Decision ④ (graded adoption): only in auto_low_risk mode, only for
+	// non-abstaining suggestions at or above the configured confidence, only
+	// for actions the validator whitelist marks reversible, and never when a
+	// risk flag or task family demands human confirmation. Double-gated on
+	// purpose: AutoAdoptable alone must never be sufficient (defense in depth
+	// against future whitelist edits), and HumanConfirmRequired is checked even
+	// though AutoAdoptable already excludes the human-confirm task families.
+	decision, actor, detRef, obsOut := "shown", "none", "", "stored"
+	if s.adopter != nil && s.mode == ModeAutoLowRisk &&
+		!adv.Abstain && adv.Confidence >= s.autoConfidence &&
+		AutoAdoptable(task, adv) && !HumanConfirmRequired(task, adv) {
+		res, aerr := s.adopter.Adopt(ctx, req, adv, advisoryID)
+		switch {
+		case aerr == nil && res.EffectRef != "":
+			decision, actor, detRef = "auto_adopted", "system", res.EffectRef
+			obsOut = res.ObservedOutcome
+			if obsOut == "" {
+				obsOut = "applied"
+			}
+		case errors.Is(aerr, ErrAdoptionNotExecutable):
+			// Informational or hard-gate-refused: stays shown; never a failure.
+			obsOut = "no_executor"
+		default:
+			// Executor error: the advisory stays shown and the deterministic
+			// system is untouched; log for the operator, do not fail the request.
+			log.Printf("ai: adopt advisory request %d: %v", req.ID, aerr)
+			obsOut = "adoption_error"
+		}
+	}
 	_ = s.store.InsertAIAdvisoryOutcome(ctx, AIAdvisoryOutcomeLike{
-		RequestID:       req.ID,
-		Decision:        "shown",
-		ActorType:       "none",
-		ObservedOutcome: "stored",
+		RequestID:        req.ID,
+		Decision:         decision,
+		ActorType:        actor,
+		DeterministicRef: detRef,
+		ObservedOutcome:  obsOut,
 	})
 }
 

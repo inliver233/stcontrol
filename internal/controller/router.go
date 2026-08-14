@@ -173,6 +173,7 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Get("/ai/status", s.handleAdminAIStatus)
 		r.Get("/ai/advisories", s.handleAdminListAIAdvisories)
 		r.Get("/ai/requests", s.handleAdminListAIAdvisoryRequests)
+		r.Post("/ai/advisories/{requestID}/adopt", s.handleAdminAdoptAIAdvisory)
 		r.Get("/admins", s.handleAdminListAdmins)
 		r.Post("/admins", s.handleAdminCreateAdmin)
 		r.Put("/admins/{id}/status", s.handleAdminSetAdminStatus)

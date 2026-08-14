@@ -244,6 +244,12 @@ func (s *Server) startAISupervisor(ctx context.Context) {
 		inspectEvery = 10 * time.Minute
 	}
 	supervisor := ai.NewSupervisor(&aiStoreAdapter{st: s.Store}, provider, ai.NewRedactor(s.secretKey), mode, policy.Model, timeout)
+	// Decision ④: wire the adoption executor only in auto_low_risk mode.
+	// shadow/advisory keep zero-effect behavior; advisory-mode operators can
+	// still apply suggestions one by one via the admin adopt endpoint.
+	if mode == ai.ModeAutoLowRisk {
+		supervisor.WithAdopter(&aiAdopter{srv: s}, policy.AutoAdoptMinConfidence)
+	}
 	s.aiSupervisor = supervisor
 	go supervisor.Run(ctx, inspectEvery, s.buildAIObservation)
 	s.startAIPhaseWorkers(ctx)

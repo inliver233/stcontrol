@@ -574,19 +574,38 @@ func (s *Server) pickBackupTarget(ctx context.Context, userID, srcNodeID int64) 
 			}
 		}
 	}
-	// 默认存储节点
+	// 默认存储节点；决策④采纳的备份目标排序仅在同一确定性合格集内作次级
+	// 偏好（不在 hint 中的合格节点仍可被选中，只是排在 hint 之后）。
 	nodes, _ := s.Store.ListNodes(ctx)
+	hint := s.aiOrderingHint(ctx, "backup_order_hint", "backup")
+	position := make(map[int64]int, len(hint))
+	for idx, id := range hint {
+		position[id] = idx
+	}
+	unhinted := len(hint)
+	var best *store.Node
+	var bestKind string
+	var bestPos int
 	for _, n := range nodes {
 		if n.ID == srcNodeID {
 			continue
 		}
 		if n.IsBackupTarget && nodeAcceptsNewData(n) {
-			kind := "archive"
-			if n.Role == "compute" {
-				kind = "hot_standby"
+			pos := unhinted
+			if p, ok := position[n.ID]; ok {
+				pos = p
 			}
-			return n, kind
+			if best == nil || pos < bestPos {
+				kind := "archive"
+				if n.Role == "compute" {
+					kind = "hot_standby"
+				}
+				best, bestKind, bestPos = n, kind, pos
+			}
 		}
+	}
+	if best != nil {
+		return best, bestKind
 	}
 	return nil, ""
 }
@@ -596,19 +615,52 @@ func (s *Server) pickStorageRepairTarget(ctx context.Context, srcNodeID int64) *
 	if err != nil {
 		return nil
 	}
-	return chooseStorageRepairTarget(nodes, srcNodeID)
+	// 决策④采纳的备份目标排序仅作同容量档内的次级偏好；确定性容量/健康
+	// 门禁与最小 ID 平局规则保持不变。
+	return chooseStorageRepairTarget(nodes, srcNodeID, s.aiOrderingHint(ctx, "backup_order_hint", "backup"))
 }
 
-func chooseStorageRepairTarget(nodes []*store.Node, srcNodeID int64) *store.Node {
+func chooseStorageRepairTarget(nodes []*store.Node, srcNodeID int64, backupOrderHint []int64) *store.Node {
+	position := make(map[int64]int, len(backupOrderHint))
+	for idx, id := range backupOrderHint {
+		position[id] = idx
+	}
+	unhinted := len(backupOrderHint)
 	var best *store.Node
+	var bestPos int
 	for _, node := range nodes {
 		if node == nil || node.ID == srcNodeID || node.Role != "storage" || !node.IsBackupTarget ||
 			node.TransferURL == "" || !nodeAcceptsNewData(node) {
 			continue
 		}
-		if best == nil || (best.CapacityState == "busy" && node.CapacityState == "open") ||
-			(best.CapacityState == node.CapacityState && node.ID < best.ID) {
+		if best == nil {
+			best, bestPos = node, unhinted
+			if p, ok := position[node.ID]; ok {
+				bestPos = p
+			}
+			continue
+		}
+		better := false
+		switch {
+		case best.CapacityState == "busy" && node.CapacityState == "open":
+			better = true
+		case best.CapacityState == node.CapacityState:
+			nodePos := unhinted
+			if p, ok := position[node.ID]; ok {
+				nodePos = p
+			}
+			if nodePos != bestPos {
+				better = nodePos < bestPos
+			} else {
+				better = node.ID < best.ID
+			}
+		}
+		if better {
 			best = node
+			bestPos = unhinted
+			if p, ok := position[node.ID]; ok {
+				bestPos = p
+			}
 		}
 	}
 	return best

@@ -302,3 +302,172 @@ func TestSupervisorExpiresOverdueQueuedRequests(t *testing.T) {
 		t.Fatalf("fresh request must not be expired: %+v", st.requests[1])
 	}
 }
+
+// fakeAdopter records adoption attempts for decision-④ gate tests.
+type fakeAdopter struct {
+	calls  int
+	result AdoptionResult
+	err    error
+}
+
+func (f *fakeAdopter) Adopt(_ context.Context, _ AIAdvisoryRequestLike, _ *Advisory, _ int64) (AdoptionResult, error) {
+	f.calls++
+	if f.err != nil {
+		return AdoptionResult{}, f.err
+	}
+	return f.result, nil
+}
+
+func enqueueAdoptableRequest(st *fakeStore, task TaskType, obsJSON []byte, dedup string) {
+	_, _ = st.InsertAIAdvisoryRequest(context.Background(), AIAdvisoryRequestLike{
+		TaskType: string(task), SchemaVersion: SchemaVersion,
+		PromptVersion: PromptVersion, ModelID: "mock-model",
+		ObservationDigest: []byte("d"), ObservationJSON: obsJSON,
+		DedupKey: dedup, DeadlineAt: time.Now().Add(time.Minute), State: "queued",
+	})
+}
+
+// TestSupervisorAutoLowRiskAdoptsLowRiskAdvisory guards decision ④: in
+// auto_low_risk mode a confident, non-abstaining, validator-whitelisted
+// advisory is executed by the adopter and audited as auto_adopted/system with
+// a deterministic effect reference.
+func TestSupervisorAutoLowRiskAdoptsLowRiskAdvisory(t *testing.T) {
+	t.Parallel()
+	st := &fakeStore{}
+	obsID := "obs_test1234567890"
+	obsJSON := buildTestObservation(obsID)
+	enqueueAdoptableRequest(st, TaskMonitoringInspect, obsJSON, "adopt_ok")
+	response := fmt.Sprintf(`{"schema_version":"1.0","task_type":"monitoring_inspection","observation_id":"%s","action":"NO_ACTION","candidate_refs":[],"confidence":0.95,"abstain":false,"reason_summary":"一切正常","evidence_refs":[],"risk_flags":[],"requested_observations":[]}`, obsID)
+	provider := MockProvider([]string{response}, nil)
+	adopter := &fakeAdopter{result: AdoptionResult{EffectRef: "inspection_summary:cluster", ObservedOutcome: "applied"}}
+	sup := NewSupervisor(st, provider, NewRedactor([]byte("key")), ModeAutoLowRisk, "mock-model", time.Second).
+		WithAdopter(adopter, 0.8)
+	if err := sup.processDue(context.Background()); err != nil {
+		t.Fatalf("processDue: %v", err)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.requests[0].State != "succeeded" {
+		t.Fatalf("request=%+v", st.requests[0])
+	}
+	if adopter.calls != 1 {
+		t.Fatalf("adopter calls=%d", adopter.calls)
+	}
+	if len(st.outcomes) != 1 || st.outcomes[0].Decision != "auto_adopted" ||
+		st.outcomes[0].ActorType != "system" ||
+		st.outcomes[0].DeterministicRef != "inspection_summary:cluster" ||
+		st.outcomes[0].ObservedOutcome != "applied" {
+		t.Fatalf("outcome=%+v, want auto_adopted/system with deterministic ref", st.outcomes)
+	}
+}
+
+// TestSupervisorAdoptionModeGate: shadow and advisory modes must NEVER call
+// the adopter even when it is wired; every advisory stays shown. Auto-adoption
+// exists only in auto_low_risk mode.
+func TestSupervisorAdoptionModeGate(t *testing.T) {
+	for _, mode := range []Mode{ModeShadow, ModeAdvisory} {
+		t.Run(string(mode), func(t *testing.T) {
+			st := &fakeStore{}
+			obsID := "obs_test1234567890"
+			obsJSON := buildTestObservation(obsID)
+			enqueueAdoptableRequest(st, TaskMonitoringInspect, obsJSON, "gate_"+string(mode))
+			response := fmt.Sprintf(`{"schema_version":"1.0","task_type":"monitoring_inspection","observation_id":"%s","action":"NO_ACTION","candidate_refs":[],"confidence":0.95,"abstain":false,"reason_summary":"ok","evidence_refs":[],"risk_flags":[],"requested_observations":[]}`, obsID)
+			provider := MockProvider([]string{response}, nil)
+			adopter := &fakeAdopter{result: AdoptionResult{EffectRef: "x"}}
+			sup := NewSupervisor(st, provider, NewRedactor([]byte("key")), mode, "mock-model", time.Second).
+				WithAdopter(adopter, 0.8)
+			if err := sup.processDue(context.Background()); err != nil {
+				t.Fatalf("processDue: %v", err)
+			}
+			st.mu.Lock()
+			defer st.mu.Unlock()
+			if adopter.calls != 0 {
+				t.Fatalf("adopter must not run in %s mode, calls=%d", mode, adopter.calls)
+			}
+			if len(st.outcomes) != 1 || st.outcomes[0].Decision != "shown" || st.outcomes[0].ActorType != "none" {
+				t.Fatalf("outcome=%+v, want shown/none in %s mode", st.outcomes, mode)
+			}
+		})
+	}
+}
+
+// TestSupervisorAdoptionHardGates: even in auto_low_risk mode with a wired
+// adopter, adoption is refused for (a) abstaining advisories, (b) confidence
+// below the configured floor, (c) disaster/conflict/import task families,
+// (d) risk flags demanding human confirmation.
+func TestSupervisorAdoptionHardGates(t *testing.T) {
+	obsID := "obs_test1234567890"
+	obsJSON := buildTestObservation(obsID)
+	disasterObs := []byte(`{"observation_id":"` + obsID + `","evidence_catalog":[],"mode_events":[]}`)
+	cases := []struct {
+		name     string
+		task     TaskType
+		obs      []byte
+		response string
+	}{
+		{"abstain", TaskMonitoringInspect, obsJSON, fmt.Sprintf(`{"schema_version":"1.0","task_type":"monitoring_inspection","observation_id":"%s","action":"NO_ACTION","candidate_refs":[],"confidence":0.95,"abstain":true,"reason_summary":"x","evidence_refs":[],"risk_flags":[],"requested_observations":[]}`, obsID)},
+		{"low_confidence", TaskMonitoringInspect, obsJSON, fmt.Sprintf(`{"schema_version":"1.0","task_type":"monitoring_inspection","observation_id":"%s","action":"NO_ACTION","candidate_refs":[],"confidence":0.6,"abstain":false,"reason_summary":"x","evidence_refs":[],"risk_flags":[],"requested_observations":[]}`, obsID)},
+		{"disaster_task", TaskDisasterReview, disasterObs, fmt.Sprintf(`{"schema_version":"1.0","task_type":"disaster_review","observation_id":"%s","action":"NO_ACTION","candidate_refs":[],"confidence":0.95,"abstain":false,"reason_summary":"x","evidence_refs":[],"risk_flags":[],"requested_observations":[]}`, obsID)},
+		{"human_confirm_flag", TaskMonitoringInspect, obsJSON, fmt.Sprintf(`{"schema_version":"1.0","task_type":"monitoring_inspection","observation_id":"%s","action":"NO_ACTION","candidate_refs":[],"confidence":0.95,"abstain":false,"reason_summary":"x","evidence_refs":[],"risk_flags":["DATA_LOSS_RISK"],"requested_observations":[]}`, obsID)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &fakeStore{}
+			enqueueAdoptableRequest(st, tc.task, tc.obs, "gate_"+tc.name)
+			provider := MockProvider([]string{tc.response}, nil)
+			adopter := &fakeAdopter{result: AdoptionResult{EffectRef: "x"}}
+			sup := NewSupervisor(st, provider, NewRedactor([]byte("key")), ModeAutoLowRisk, "mock-model", time.Second).
+				WithAdopter(adopter, 0.8)
+			if err := sup.processDue(context.Background()); err != nil {
+				t.Fatalf("processDue: %v", err)
+			}
+			st.mu.Lock()
+			defer st.mu.Unlock()
+			if adopter.calls != 0 {
+				t.Fatalf("adopter must be gated (%s), calls=%d", tc.name, adopter.calls)
+			}
+			if len(st.outcomes) != 1 || st.outcomes[0].Decision != "shown" {
+				t.Fatalf("outcome=%+v, want shown for %s", st.outcomes, tc.name)
+			}
+		})
+	}
+}
+
+// TestSupervisorAdoptionFailureNeverFailsRequest: an executor error (or a
+// not-executable action) keeps the request succeeded and the advisory shown;
+// AI adoption problems can never degrade the advisory pipeline itself.
+func TestSupervisorAdoptionFailureNeverFailsRequest(t *testing.T) {
+	t.Parallel()
+	obsID := "obs_test1234567890"
+	obsJSON := buildTestObservation(obsID)
+	response := fmt.Sprintf(`{"schema_version":"1.0","task_type":"monitoring_inspection","observation_id":"%s","action":"NO_ACTION","candidate_refs":[],"confidence":0.95,"abstain":false,"reason_summary":"ok","evidence_refs":[],"risk_flags":[],"requested_observations":[]}`, obsID)
+
+	st1 := &fakeStore{}
+	enqueueAdoptableRequest(st1, TaskMonitoringInspect, obsJSON, "adopt_notexec")
+	sup1 := NewSupervisor(st1, MockProvider([]string{response}, nil), NewRedactor([]byte("key")), ModeAutoLowRisk, "mock-model", time.Second).
+		WithAdopter(&fakeAdopter{err: ErrAdoptionNotExecutable}, 0.8)
+	if err := sup1.processDue(context.Background()); err != nil {
+		t.Fatalf("processDue: %v", err)
+	}
+	st1.mu.Lock()
+	if st1.requests[0].State != "succeeded" || len(st1.outcomes) != 1 ||
+		st1.outcomes[0].Decision != "shown" || st1.outcomes[0].ObservedOutcome != "no_executor" {
+		st1.mu.Unlock()
+		t.Fatalf("not-executable case: request=%+v outcomes=%+v", st1.requests, st1.outcomes)
+	}
+	st1.mu.Unlock()
+
+	st2 := &fakeStore{}
+	enqueueAdoptableRequest(st2, TaskMonitoringInspect, obsJSON, "adopt_err")
+	sup2 := NewSupervisor(st2, MockProvider([]string{response}, nil), NewRedactor([]byte("key")), ModeAutoLowRisk, "mock-model", time.Second).
+		WithAdopter(&fakeAdopter{err: fmt.Errorf("boom")}, 0.8)
+	if err := sup2.processDue(context.Background()); err != nil {
+		t.Fatalf("processDue: %v", err)
+	}
+	st2.mu.Lock()
+	defer st2.mu.Unlock()
+	if st2.requests[0].State != "succeeded" || len(st2.outcomes) != 1 ||
+		st2.outcomes[0].Decision != "shown" || st2.outcomes[0].ObservedOutcome != "adoption_error" {
+		t.Fatalf("error case: request=%+v outcomes=%+v", st2.requests, st2.outcomes)
+	}
+}

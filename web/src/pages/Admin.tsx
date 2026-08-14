@@ -114,6 +114,8 @@ const adminApi = {
     if (taskType) params.set('task_type', taskType)
     return adminReq<{ requests: any[]; next_cursor: number }>(`/api/admin/ai/requests?${params}`)
   },
+  aiAdopt: (requestID: number) => adminReq<{ ok: boolean; deterministic_ref: string; observed_outcome: string }>(
+    `/api/admin/ai/advisories/${requestID}/adopt`, { method: 'POST' }),
 }
 
 interface AdminNodeLink {
@@ -1511,6 +1513,18 @@ function AISupervisionAdmin() {
   const [nextCursor, setNextCursor] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [adopting, setAdopting] = useState(0)
+
+  const adopt = (requestID: number) => {
+    setAdopting(requestID)
+    setNotice('')
+    setError('')
+    adminApi.aiAdopt(requestID)
+      .then(data => { setNotice(`已采纳：${data.deterministic_ref}（${data.observed_outcome}）`); load() })
+      .catch((err: Error) => setError(`采纳失败：${err.message}`))
+      .finally(() => setAdopting(0))
+  }
 
   const load = () => {
     setLoading(true)
@@ -1546,35 +1560,60 @@ function AISupervisionAdmin() {
     <>
       <h2>AI 监管</h2>
       <p style={{ color: 'var(--text-dim)', marginBottom: 16 }}>
-        只读 AI 顾问的建议与调用记录。AI 不执行任何操作；所有建议均经过本地校验，
-        仅作展示与审计（影子模式）。
+        AI 顾问只输出经过本地校验的建议；shadow/advisory 模式不产生任何动作。
+        auto_low_risk 模式下，仅“告警说明 / 节点排序 / 备份目标排序”这类可逆低风险建议会被自动采纳，且采纳前会重新校验当前硬门禁；
+        灾难、身份、接管、冲突发布建议永远需要人工确认，人工采纳仅对可逆建议开放。
       </p>
       {error && <div className="error-msg">{error}</div>}
+      {notice && <div className="card" style={{ margin: '0 0 12px', padding: 10, borderLeft: '3px solid var(--ok, green)' }}>{notice}</div>}
       <div className="card" style={{ margin: '0 0 16px', padding: 12 }}>
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
           <span>状态：<span className={`badge ${status?.enabled ? "green" : "gray"}`}>{status?.enabled ? '已启用' : '未启用（默认）'}</span></span>
           {status?.enabled && (<span>模式：<span className="badge yellow">{status?.mode || '-'}</span></span>)}
           {status?.enabled && (<span>供应商：<span className="mono" style={{ fontSize: 12 }}>{status?.provider || '-'}</span></span>)}
           {status?.enabled && (<span>模型：<span className="mono" style={{ fontSize: 12 }}>{status?.model || '-'}</span></span>)}
+          {status?.enabled && status?.mode === 'auto_low_risk' && (<span>自动采纳门槛：<span className="mono" style={{ fontSize: 12 }}>{Math.round((status?.auto_adopt_min_confidence ?? 0) * 100)}%</span></span>)}
+          {(status?.auto_adopted_24h > 0 || status?.accepted_24h > 0) && (
+            <span>近 24h：自动采纳 {status?.auto_adopted_24h ?? 0} 条，人工采纳 {status?.accepted_24h ?? 0} 条</span>
+          )}
           {status?.task_counts && Object.entries(status.task_counts).length > 0 && (
             <span>累计调用：{Object.entries(status.task_counts).map(([task, count]) => `${taskLabel(task)}: ${count}`).join('，')}</span>
           )}
         </div>
       </div>
+      {status?.latest_cluster_summary && (
+        <div className="card" style={{ margin: '0 0 16px', padding: 12 }}>
+          <strong style={{ fontSize: 12 }}>AI 巡检摘要（自动采纳，随建议过期）：</strong>
+          <span style={{ fontSize: 12 }}> {status.latest_cluster_summary}</span>
+        </div>
+      )}
       <h3 style={{ margin: '16px 0 8px' }}>最近建议</h3>
       <table className="table">
-        <thead><tr><th>时间</th><th>任务</th><th>动作</th><th>置信度</th><th>摘要</th></tr></thead>
+        <thead><tr><th>时间</th><th>任务</th><th>动作</th><th>置信度</th><th>摘要</th><th>操作</th></tr></thead>
         <tbody>
-          {advisories.map(adv => (
+          {advisories.map(adv => {
+            const adoptable = !adv.abstain && (
+              ['EXPLAIN_ALERT', 'RECOMMEND_NODE_ORDER', 'RECOMMEND_BACKUP_TARGET_ORDER'].includes(adv.action)
+            )
+            return (
             <tr key={adv.advisory_id}>
               <td style={{ fontSize: 12 }}>{new Date(adv.created_at).toLocaleString()}</td>
               <td style={{ fontSize: 12 }}>{taskLabel(adv.task_type)}</td>
               <td style={{ fontSize: 12 }}>{actionLabel(adv.action)}</td>
               <td style={{ fontSize: 12 }}>{adv.abstain ? '弃权' : Math.round(adv.confidence * 100) + '%'}</td>
               <td style={{ fontSize: 12 }}>{adv.reason_summary}</td>
+              <td style={{ fontSize: 12 }}>
+                {adoptable && (
+                  <button className="btn-sm" disabled={adopting === adv.request_id}
+                    onClick={() => adopt(adv.request_id)}>
+                    {adopting === adv.request_id ? '采纳中…' : '人工采纳'}
+                  </button>
+                )}
+              </td>
             </tr>
-          ))}
-          {!loading && advisories.length === 0 && <tr><td colSpan={5}>暂无 AI 建议（启用后由后台巡检生成）</td></tr>}
+            )
+          })}
+          {!loading && advisories.length === 0 && <tr><td colSpan={6}>暂无 AI 建议（启用后由后台巡检生成）</td></tr>}
         </tbody>
       </table>
       <h3 style={{ margin: '16px 0 8px' }}>调用记录</h3>

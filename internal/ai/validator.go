@@ -173,6 +173,10 @@ func AutoAdoptable(task TaskType, adv *Advisory) bool {
 		task == TaskRecoveryPlan {
 		return false
 	}
+	// An abstaining suggestion carries no recommendation to apply.
+	if adv.Abstain {
+		return false
+	}
 	switch Action(adv.Action) {
 	case ActionExplainAlert, ActionNoAction:
 		return true

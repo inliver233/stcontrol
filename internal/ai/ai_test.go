@@ -137,6 +137,12 @@ func TestHumanConfirmAndAutoAdoptBoundaries(t *testing.T) {
 	if !HumanConfirmRequired(TaskMonitoringInspect, flagged) {
 		t.Fatal("data-loss flag requires human confirmation")
 	}
+	// An abstaining suggestion carries nothing to apply, regardless of the
+	// otherwise-low-risk action.
+	abstainer := &Advisory{Action: string(ActionExplainAlert), Abstain: true}
+	if AutoAdoptable(TaskAnomalyAttribution, abstainer) {
+		t.Fatal("abstaining advisories must never auto-adopt")
+	}
 }
 
 func TestBuildObservationProducesDigestAndCatalogs(t *testing.T) {

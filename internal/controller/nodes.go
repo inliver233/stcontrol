@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"net/http"
 	"sort"
 	"time"
@@ -8,6 +9,24 @@ import (
 	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
+
+// aiOrderingHint returns the active adopted node ordering of one hint kind,
+// or nil when no live hint exists. Hints are decision-④ adoption effects:
+// they only ever reorder nodes that already pass every deterministic gate
+// (capacity/compatibility/admin weight) and expire with the advisory that
+// produced them; a lookup error is treated as "no hint" so the AI layer can
+// never degrade the deterministic path.
+func (s *Server) aiOrderingHint(ctx context.Context, kind, target string) []int64 {
+	effect, err := s.Store.GetLatestAIAdoptionEffect(ctx, kind, target, time.Now().UTC())
+	if err != nil || effect == nil {
+		return nil
+	}
+	hint, ok := store.AIOrderingHintFrom(effect)
+	if !ok {
+		return nil
+	}
+	return hint.Order
+}
 
 // nodeRegistrable admits new allocations only when every independent health
 // dimension is safe. Busy nodes remain selectable but sort below open nodes;
@@ -91,6 +110,34 @@ func (s *Server) handleAvailableNodes(w http.ResponseWriter, r *http.Request) {
 	sort.SliceStable(out, func(i, j int) bool {
 		return availableNodeRank(out[i]) < availableNodeRank(out[j])
 	})
+	// Decision-④ adopted ordering hint: reorders nodes ONLY within the same
+	// deterministic rank tier (registrable + capacity + admin weight + latency
+	// tier). Unhinted nodes keep their deterministic position ahead of hinted
+	// reshuffles only when the hint does not mention them; the recommended flag
+	// below still picks the first registrable node, so the AI can never promote
+	// an ineligible node or override the admin weight tiers.
+	if order := s.aiOrderingHint(r.Context(), "node_order_hint", "registration"); len(order) > 1 {
+		position := make(map[int64]int, len(order))
+		for idx, id := range order {
+			position[id] = idx
+		}
+		unhinted := len(order)
+		sort.SliceStable(out, func(i, j int) bool {
+			ri, rj := availableNodeRank(out[i]), availableNodeRank(out[j])
+			if ri != rj {
+				return ri < rj
+			}
+			pi, ok := position[out[i].ID]
+			if !ok {
+				pi = unhinted
+			}
+			pj, ok := position[out[j].ID]
+			if !ok {
+				pj = unhinted
+			}
+			return pi < pj
+		})
+	}
 	for index := range out {
 		if out[index].Registrable {
 			out[index].Recommended = true

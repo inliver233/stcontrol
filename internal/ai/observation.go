@@ -160,6 +160,14 @@ func BuildObservation(
 }
 
 func shortHash(redactor *Redactor, salt, kind, value string) string {
+	return EvidenceShortHash(redactor, salt, kind, value)
+}
+
+// EvidenceShortHash derives the short stable suffix used for evidence refs of
+// the standard observation catalog ("ev_" + this). Exported so the adoption
+// executor can map an advisory's evidence refs back to current deterministic
+// facts without storing a reverse mapping.
+func EvidenceShortHash(redactor *Redactor, salt, kind, value string) string {
 	full := redactor.Ref(kind, salt, value)
 	if len(full) > 24 {
 		return full[len(full)-20:]

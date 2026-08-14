@@ -82,15 +82,15 @@ func TestChooseStorageRepairTargetUsesHealthyPureStorage(t *testing.T) {
 		{ID: 4, Role: "storage", IsBackupTarget: true, TransferURL: "https://open/transfer", ConnectivityState: "online", OperationalState: "active", ControlMode: "managed", DesiredControlMode: "managed", CompatibilityState: "compatible", CapacityState: "open"},
 		{ID: 5, Role: "storage", IsBackupTarget: true, TransferURL: "https://full/transfer", ConnectivityState: "online", OperationalState: "active", ControlMode: "managed", DesiredControlMode: "managed", CompatibilityState: "compatible", CapacityState: "full"},
 	}
-	target := chooseStorageRepairTarget(nodes, 1)
+	target := chooseStorageRepairTarget(nodes, 1, nil)
 	if target == nil || target.ID != 4 {
 		t.Fatalf("target=%+v", target)
 	}
-	if target := chooseStorageRepairTarget(nodes, 4); target == nil || target.ID != 3 {
+	if target := chooseStorageRepairTarget(nodes, 4, nil); target == nil || target.ID != 3 {
 		t.Fatalf("fallback target=%+v", target)
 	}
 	nodes[2].ControlMode = "independent"
-	if target := chooseStorageRepairTarget(nodes, 1); target == nil || target.ID != 3 {
+	if target := chooseStorageRepairTarget(nodes, 1, nil); target == nil || target.ID != 3 {
 		t.Fatalf("independent target was not excluded: %+v", target)
 	}
 }
