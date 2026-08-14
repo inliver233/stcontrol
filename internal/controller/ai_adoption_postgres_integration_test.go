@@ -14,6 +14,8 @@ import (
 	"stcontrol/internal/ai"
 	"stcontrol/internal/config"
 	"stcontrol/internal/store"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // TestControllerAIAdoptionOrderingHardGates exercises the decision-④
@@ -271,4 +273,102 @@ func make32Byte(seed string) []byte {
 		out[i] = seed[i%len(seed)]
 	}
 	return out
+}
+
+// TestControllerAIAdoptionAdminEndpoint covers the manual-adoption HTTP
+// surface on real PostgreSQL: a valid stored advisory is applied through the
+// same executor and audited as accepted/admin, an expired advisory is refused
+// with 409, and a disaster-family advisory is structurally refused with 422.
+func TestControllerAIAdoptionAdminEndpoint(t *testing.T) {
+	dsn, cleanupSchema := newControllerBackupPostgresSchema(t)
+	defer cleanupSchema()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	cfg := config.DefaultController()
+	cfg.StaticDir = t.TempDir()
+	cfg.Relay.Listen = ""
+	secretKey := []byte("0123456789abcdef0123456789abcdef")
+	server := New(cfg, st, secretKey)
+
+	n1 := createControllerBackupNode(t, ctx, st, "ai-adopt-http-n1", "compute", false, 1)
+	n2 := createControllerBackupNode(t, ctx, st, "ai-adopt-http-n2", "compute", false, 1)
+	obsID := "obs_adopthttp123"
+	redactor := ai.NewRedactor(secretKey)
+	ref1 := redactor.Ref("node", obsID, itoa64(n1.ID))
+	ref2 := redactor.Ref("node", obsID, itoa64(n2.ID))
+
+	seed := func(task, action string, refs []string, expires time.Time) int64 {
+		t.Helper()
+		obsJSON := []byte(`{"observation_id":"` + obsID + `","evidence_catalog":[],"candidate_catalog":[]}`)
+		reqID, err := st.InsertAIAdvisoryRequest(ctx, store.AIAdvisoryRequest{
+			TaskType: task, SchemaVersion: ai.SchemaVersion, PromptVersion: ai.PromptVersion,
+			ModelID: "test-model", ObservationDigest: make32Byte("http"), ObservationJSON: obsJSON,
+			DedupKey: "http_" + action + "_" + time.Now().Format("150405.000000000"),
+			DeadlineAt: time.Now().UTC().Add(2 * time.Minute), State: "succeeded",
+		})
+		if err != nil {
+			t.Fatalf("insert request: %v", err)
+		}
+		if _, err := st.InsertAIAdvisory(ctx, store.AIAdvisory{
+			RequestID: reqID, Action: action, CandidateRefs: refs, Confidence: 0.9,
+			ReasonSummary: "HTTP 采纳测试", EvidenceRefs: []string{}, RiskFlags: []string{},
+			RequestedObs: []string{}, RawResponseDigest: make32Byte("raw"),
+			ExpiresAt: expires,
+		}); err != nil {
+			t.Fatalf("insert advisory: %v", err)
+		}
+		return reqID
+	}
+
+	post := func(requestID int64) *httptest.ResponseRecorder {
+		t.Helper()
+		routeContext := chi.NewRouteContext()
+		routeContext.URLParams.Add("requestID", itoa64(requestID))
+		request := httptest.NewRequest(http.MethodPost, "/api/admin/ai/advisories/0/adopt", nil)
+		request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
+		recorder := httptest.NewRecorder()
+		server.handleAdminAdoptAIAdvisory(recorder, request)
+		return recorder
+	}
+
+	// 1) Valid full ordering: applied and audited accepted/admin.
+	validID := seed(string(ai.TaskScheduleRecommend), string(ai.ActionRecommendNodeOrder),
+		[]string{ref1, ref2}, time.Now().UTC().Add(15*time.Minute))
+	rec := post(validID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adopt: %d %s", rec.Code, rec.Body.String())
+	}
+	var accepted, autoAdopted int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT count(*) FILTER (WHERE decision='accepted' AND actor_type='admin'),
+		       count(*) FILTER (WHERE decision='auto_adopted')
+		FROM ai_advisory_outcomes WHERE request_id=$1`, validID).Scan(&accepted, &autoAdopted); err != nil ||
+		accepted != 1 || autoAdopted != 0 {
+		t.Fatalf("outcome accepted=%d auto=%d err=%v", accepted, autoAdopted, err)
+	}
+
+	// 2) Expired advisory: 409, no effect.
+	expiredID := seed(string(ai.TaskScheduleRecommend), string(ai.ActionRecommendNodeOrder),
+		[]string{ref1, ref2}, time.Now().UTC().Add(-time.Minute))
+	if rec := post(expiredID); rec.Code != http.StatusConflict {
+		t.Fatalf("expired adopt status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// 3) Disaster-family advisory: structurally refused (no executor exists).
+	disasterID := seed(string(ai.TaskDisasterReview), "RECOMMEND_HOLD_AND_OBSERVE",
+		nil, time.Now().UTC().Add(15*time.Minute))
+	if rec := post(disasterID); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("disaster adopt status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// 4) Unknown request id: 404.
+	if rec := post(999999); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown adopt status=%d body=%s", rec.Code, rec.Body.String())
+	}
 }

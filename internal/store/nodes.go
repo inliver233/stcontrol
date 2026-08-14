@@ -11,6 +11,11 @@ import (
 
 var ErrNodeLifecycleBlocked = errors.New("node lifecycle transition blocked")
 
+// ErrNodeNotFound reports that an operation targeted a node id that does not
+// exist (used by the client latency endpoint to reject samples for nodes the
+// console never listed).
+var ErrNodeNotFound = errors.New("node not found")
+
 var machineReasonCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 // ValidMachineReasonCode accepts only bounded, language-neutral identifiers.
@@ -437,13 +442,22 @@ func (s *Store) RecordNodeClientLatency(ctx context.Context, nodeID, latencyMS i
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	_, err := s.DB.ExecContext(ctx, `
+	result, err := s.DB.ExecContext(ctx, `
 		UPDATE nodes SET
 		  client_latency_ms=CASE WHEN client_latency_ms IS NULL THEN $2
 		    ELSE (client_latency_ms*3+$2)/4 END,
 		  client_latency_observed_at=$3
 		WHERE id=$1`, nodeID, latencyMS, now)
-	return err
+	if err != nil {
+		return err
+	}
+	// Unknown node IDs must not be silently accepted: the browser can only
+	// measure latency for nodes the console actually lists, so a miss is either
+	// a stale page or a probe for nonexistent infrastructure.
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return ErrNodeNotFound
+	}
+	return nil
 }
 // MarkStaleNodesOffline 把超过 timeout 未心跳的节点标记为 offline。
 func (s *Store) MarkStaleNodesOffline(ctx context.Context, timeout time.Duration) error {

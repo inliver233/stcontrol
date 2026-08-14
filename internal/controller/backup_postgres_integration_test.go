@@ -768,6 +768,18 @@ func (h *controllerBackupCommandHarness) handleCommand(
 			return agentCommandSummary{OK: false, Code: "adapter_completion_failed"}, false, nil
 		}
 		return agentCommandSummary{OK: true}, true, nil
+	case "receive_controller_backup":
+		if nodeID != h.targetNodeID {
+			return agentCommandSummary{}, false, fmt.Errorf("controller backup command leased by non-target node %d", nodeID)
+		}
+		var request protocol.PrepareControllerBackupRequest
+		if err := json.Unmarshal(plaintext, &request); err != nil || !isUUID(request.OperationID) ||
+			request.ControllerGeneration <= 0 || request.CapabilityHash == "" ||
+			(request.BackupKind != "full" && request.BackupKind != "pg_dump" && request.BackupKind != "control_snapshot") {
+			return agentCommandSummary{}, false, fmt.Errorf("decode controller backup command: %w", err)
+		}
+		return agentCommandSummary{OK: true}, true, nil
+
 	default:
 		return agentCommandSummary{}, false, fmt.Errorf("unexpected durable Agent command %q", lease.CommandType)
 	}

@@ -2,10 +2,12 @@ package controller
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
 	"stcontrol/internal/protocol"
+	"stcontrol/internal/store"
 )
 
 // handleReportNodeLatency persists a browser-measured latency sample so node
@@ -25,6 +27,12 @@ func (s *Server) handleReportNodeLatency(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.Store.RecordNodeClientLatency(r.Context(), req.NodeID, req.LatencyMS, time.Now().UTC()); err != nil {
+		if errors.Is(err, store.ErrNodeNotFound) {
+			// The browser can only measure latency for nodes the console lists;
+			// an unknown id is a stale page or a probe, not a sample to store.
+			protocol.WriteError(w, http.StatusNotFound, "节点不存在")
+			return
+		}
 		protocol.WriteError(w, http.StatusServiceUnavailable, "保存延迟样本失败")
 		return
 	}

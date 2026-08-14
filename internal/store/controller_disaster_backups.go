@@ -190,7 +190,7 @@ func (s *Store) ClaimControllerDisasterBackup(
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil { return nil, err }
 	defer func() { _ = tx.Rollback() }()
-	run := &ControllerDisasterBackupRun{}
+	run := &ControllerDisasterBackupRun{OperationID: p.OperationID}
 	err = tx.QueryRowContext(ctx, `		SELECT id::text,node_id,state,controller_generation,backup_kind,attempt,next_attempt_at
 		FROM controller_disaster_backups
 		WHERE operation_id=$1 FOR UPDATE`, p.OperationID).Scan(
@@ -223,8 +223,8 @@ func (s *Store) ClaimControllerDisasterBackup(
 		  AND node.compatibility_state='compatible' AND node.control_mode='managed'
 		  AND node.desired_control_mode='managed'
 		  AND COALESCE(node.transfer_url,'')<>''
-		RETURNING tgt.state,tgt.lease_owner::text,tgt.lease_until::text,
-		  tgt.started_at::text,tgt.finished_at::text,tgt.attempt`,
+		RETURNING tgt.state,tgt.lease_owner::text,tgt.lease_until,
+		  tgt.started_at,tgt.finished_at,tgt.attempt`,
 		run.ID, p.LeaseOwner, p.MaxAttempts, p.Now, p.Now.Add(p.LeaseTTL)).
 		Scan(&run.State, &leaseOwner, &leaseUntil, &startedAt, &finishedAt, &newAttempt)
 	if err == sql.ErrNoRows {
