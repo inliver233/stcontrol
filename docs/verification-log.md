@@ -1,5 +1,58 @@
 # 验证记录
 
+## 2026-08-15：独立审查修复批次（B1–B2 / D1–D7 / I1–I5 / 建议级）
+
+> 依据 E:/dshtest/AI_REVIEW_REPORT.md 的全面独立审查，本轮修复全部阻断级、缺陷级、不一致级问题与建议级 1–9、11 项。建议级第 10 项（节点延迟上报按用户会话节点限权，低风险）未做，见文末。
+
+### 阻断级（真实 PostgreSQL 必错路径）
+
+- **B1 `FailReplicaCleanupTask`（b8aadf3）**：第三段 UPDATE 4 实参对 $1..$3、$2 双义、且 `user_replicas` 无 `updated_at` 列；第一段 UPDATE 还跳号 $5（`finished_at=$4` 重复绑定），任一都会使副本清理失败回收在真实库整体回滚、用户快照/恢复路径永久卡死。占位符重排为连续 $1..$n，迁移 0047 补列 `user_replicas.updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`。新增真实 PG 测试 `TestPostgresReplicaCleanupFailRecovery`（archive→stale、hot_standby→ready、终态重放被 fence 拦截、updated_at 落盘）。
+- **B2 `ReleaseExpiredRegistrationReservations`（352b78c）**：释放 UPDATE 1 实参对 2 占位符（$1 未出现、$2 未绑定），只要存在过期 pending 预留必报错回滚，R15 handle 预留 24h TTL 完全失效。改为单占位符正确绑定。新增真实 PG 测试 `TestPostgresReleaseExpiredRegistrationReservations`（过期→failed/released、新鲜 pending 不动、二次清扫幂等）。
+
+### 缺陷级
+
+- **D1+D2（506bc59）**：删除全局 `middleware.RealIP`（无条件信任可伪造头改写 RemoteAddr，击穿 clientIP"私网 peer 才信 XFF"防线，公网可轮换 key 绕过 20/min 登录限流）；`rateLimitMiddleware`（120/min）从死代码变为真正挂载到 /api 用户与管理路由组（agent HMAC 通道与 /api/health 除外）。测试：伪造 X-Real-IP/XFF 不改变公网 peer 的限流 key、路由不改写 RemoteAddr、预算耗尽后 429 且跨组共享、健康检查不受限。clientIP 顺带修复 XFF 逗号列表解析（原先整头解析失败）与 IPv4-mapped IPv6 归一化。
+- **D4（7b95183）**：`ListRestoreTargets/ListAdmins/ListAdminNodeLinks` 空结果初始化为 `make([]T,0)`（此前 nil→JSON null 使 Nodes.tsx `targets.length` 白屏，bug实测#1 最后残留）；前端另加 `?? []` 防御。测试断言空结果序列化为 `[]`。
+- **D5（8c07262）**：Phase 3/4 观测结构体补 `candidate_catalog` 序列化（此前 `catalogsFromObservation` 恒空 → RECOMMEND_* 排序动作必然 empty_candidates 且误开熔断）。端到端 mock provider round-trip 测试覆盖排序类动作过校验、落库、shown outcome。
+- **D6（b446d41）**：保护态观测统计改为真实投影聚合 `Store.AggregateProtectionStates`（user_protection_states 计数 + corrupt 用户数 + last_sync_at 平均年龄），替换恒为零的按告警 keyword 计数与错误的 TotalUsers=len(alerts)。sqlmock 测试数据同步改为与生产 SQL 一致的 category='user_protection'；真实 PG 测试覆盖空表与种子场景。
+- **D7（8c07262）**：validator 对 risk_flags/requested_observations 增加 §6.2 枚举白名单（invalid_risk_flag / invalid_requested_observation），未知名不再入库进 admin UI。
+- **D3（Sillytarven-online 91b623b，online 分支）**：user handoff 成功分支 `delete request.session.stcontrolAdmin`，admin handoff 同时清除残留 user envelope；同一 session 先 admin 后 user handoff 后写请求仍被围栏拦截（423），适配器 5 个测试文件 28/28 通过。
+
+### 不一致级
+
+- **I3（8c07262）**：决策⑤ rejected outcome 落地——校验失败除写 request.error_code 外，同时写 `ai_advisory_outcomes(decision='rejected', validator_code=code, actor=system)`（迁移 0046 表已备）；决策④ auto_low_risk 采纳链路仍未接线，traceability 交付口径已收窄为"shadow 观测链路完成，采纳链路待接"。
+- **I4（f2d8427）**：注册令牌安装命令补 `--tavern-dir`（install.sh 对计算节点强制要求）；后端接受可选 tavern_dir 查询参数（含 shell 元字符校验）或生成可见占位符 + install_hint；Admin.tsx 按角色采集酒馆目录并展示提示。
+- **I5（5d59013）**：`livecheck.log` 移出版本库跟踪（.gitignore 已有）；迁移口径核对——本轮前为 46 个（0001–0046），历史记录中"47 个迁移"系当时笔误；本轮新增 0047 后现为 47 个（0001–0047 连续）。
+- **I1**：traceability 矩阵刷新至 2026-08-15（R18 延迟持久化已实现、R21 限流真实状态、AI 交付口径收窄）。
+
+### 建议级
+
+1. 管理员 lockout key 加 `admin:` 前缀（middleware 与 handleAdminLogin 同步），用户侧失败无法再远程锁死管理员（e658c4f，含路由级测试）。
+2. clientIP IPv4-mapped IPv6 归一化（506bc59）。
+3. Gemini API key 从 URL query 改为 `x-goog-api-key` header（e658c4f）。
+4. 过期 queued 请求清扫：`Store.ExpireOverdueAIAdvisoryRequests` → 终态 superseded/deadline_passed（0046 CHECK 已允许，无需迁移），supervisor 每 pass 先清扫（d946d2a；内存 + 真实 PG 双测试）。
+5. 非法 AI 配置 startAISupervisor 打一行日志而非静默关闭（e658c4f）。
+6. docker-compose POSTGRES_PASSWORD 删除 `:-stcontrol` 弱默认回退（e658c4f）。
+7. master key 恢复口令 scrypt N 2^15→2^17（e658c4f；envelope 记录参数，旧备份仍可解）。
+8. `web/src/pages/Admin.tsx` adminApi 返回类型 any：本轮未做（见文末）。
+9. 占位符跳号重排连续：controller_disaster_backups（$2→$1）与 imports.go（跳 $2/$3、重复 $n）+ B1 内 $5（e658c4f/b8aadf3）。
+10. nodes_latency.go 按用户会话节点限权：未做（见文末）。
+11. `ErrAIAdvisoryDedupConflict` 未使用，删除（e658c4f）。
+
+### 验证证据（本轮全部实际执行）
+
+- `go build ./... && go vet ./...`：通过（0 告警）。
+- `go test -short -count=1 ./...`：7 个包全绿。
+- **真实 PostgreSQL 17.10**（`STCONTROL_TEST_POSTGRES_DSN=postgres://postgres:postgres@127.0.0.1:55432/postgres?sslmode=disable`，WSLENV 转发确认无静默 SKIP）：`go test -count=1 -run 'TestPostgres|TestController' ./internal/store/ ./internal/controller/ -v` → **39 PASS / 0 SKIP / 0 FAIL**（store 18–23s / controller 119s；基线 35 + 本轮新增 4：B1、B2、D6 聚合、#4 清扫）。47 个迁移（0001–0047）在隔离 schema 全部应用。
+- 前端：`npx tsc -b` 通过；`npx vitest run` 16/16。
+- Sillytarven-online：5 个 stcontrol 测试文件 `node --test` 28/28（27 基线 + D3 回归 1）。
+- 方法论固化：本轮新增的每段生产 SQL（B1 三段 UPDATE、B2 释放 UPDATE、D6 聚合查询、#4 清扫 UPDATE）均有真实 PG 用例触达，sqlmock 绿灯不作为 SQL 类修复的验收依据。
+
+### 未做项与原因
+
+- 建议级 8（Admin.tsx adminApi 去 any）：纯类型加固，涉及 30+ 个端点返回形状定义，工作量与回归面大而收益为编译期防护；留待前端专项。
+- 建议级 10（节点延迟上报限权）：已认证 + 数值钳制下风险低，改动需会话→节点归属查询；审查同样标注"低风险，可留"。
+
 ## 2026-08-08：保守灾难模式与恢复排空
 
 - Agent 在原子写入的 runtime state 中持久化节点控制模式、模式世代、双探针失败计数、失联/独立时间和 adapter 排空计数。
