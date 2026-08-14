@@ -489,7 +489,7 @@ func (s *Store) FailReplicaCleanupTask(
 	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx, `
 		UPDATE replica_cleanup_tasks SET state='failed',error_code=$6,
-		  lease_owner=NULL,lease_until=NULL,updated_at=$4,finished_at=$4
+		  lease_owner=NULL,lease_until=NULL,updated_at=$4,finished_at=$5
 		WHERE id=$1 AND operation_id=$2 AND controller_generation=$3 AND lease_owner=$7
 		  AND state='running'`, task.ID, task.OperationID, task.ControllerGeneration,
 		now, now, errorCode, task.LeaseOwner)
@@ -512,7 +512,7 @@ func (s *Store) FailReplicaCleanupTask(
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE user_replicas SET state=CASE WHEN kind='archive' THEN 'stale' ELSE 'ready' END,
-		  updated_at=$2
+		  updated_at=$4
 		WHERE user_id=$1 AND node_id=$2 AND kind=$3 AND state='deleting'`,
 		task.LegacyUserID, task.NodeID, task.ReplicaKind, now); err != nil {
 		return err
