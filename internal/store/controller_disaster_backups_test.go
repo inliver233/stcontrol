@@ -48,7 +48,7 @@ func TestScheduleControllerDisasterBackupCreatesRunOnEligibleTarget(t *testing.T
 	mock.ExpectQuery(`(?s)SELECT generation FROM controller_epochs.*FOR SHARE`).WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(7)))
 	mock.ExpectQuery(`(?s)SELECT EXISTS.*controller_disaster_backups`).WithArgs(now.Add(-24*time.Hour)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectQuery(`(?s)SELECT node.id,node.name.*role=.*storage.*is_backup_target.*FOR UPDATE OF node SKIP LOCKED`).
-		WithArgs(now, now.Add(-2*time.Minute)).
+		WithArgs(now.Add(-2*time.Minute)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(int64(9), "storage-9"))
 	mock.ExpectQuery(`(?s)INSERT INTO controller_disaster_backups.*NOT EXISTS.*RETURNING id::text`).
 		WithArgs("11111111-1111-4111-8111-111111111111", int64(9), int64(7), "full", now, "22222222-2222-4222-8222-222222222222", now.Add(6*time.Hour)).
@@ -71,7 +71,7 @@ func TestScheduleControllerDisasterBackupReturnsNoRowsWithoutEligibleNode(t *tes
 	mock.ExpectQuery(`(?s)SELECT generation FROM controller_epochs.*FOR SHARE`).WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(7)))
 	mock.ExpectQuery(`(?s)SELECT EXISTS.*controller_disaster_backups`).WithArgs(now.Add(-24*time.Hour)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectQuery(`(?s)SELECT node.id,node.name.*FOR UPDATE OF node SKIP LOCKED`).
-		WithArgs(now, now.Add(-2*time.Minute)).WillReturnError(sql.ErrNoRows)
+		WithArgs(now.Add(-2*time.Minute)).WillReturnError(sql.ErrNoRows)
 	mock.ExpectCommit()
 	run, err := st.ScheduleControllerDisasterBackup(context.Background(), controllerBackupScheduleParams(now))
 	if err != sql.ErrNoRows { t.Fatalf("expected ErrNoRows, got %v", err) }

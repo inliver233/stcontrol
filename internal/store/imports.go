@@ -198,7 +198,7 @@ func (s *Store) ResolveOAuthUnmatchedCandidates(
 	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE account_import_candidates candidate
-		SET resolution_state='auto_linked',matched_user_id=$4,reason_code='oauth_login_proof',updated_at=$5
+		SET resolution_state='auto_linked',matched_user_id=$3,reason_code='oauth_login_proof',updated_at=$4
 		FROM account_import_batches batch
 		WHERE candidate.batch_id=batch.id
 		  AND candidate.resolution_state='oauth_unmatched'
@@ -206,10 +206,10 @@ func (s *Store) ResolveOAuthUnmatchedCandidates(
 		  AND NOT EXISTS (
 		    SELECT 1 FROM node_accounts account
 		    WHERE account.node_id=candidate.node_id
-		      AND (account.user_id=$4 OR account.local_user_id=candidate.local_user_id)
+		      AND (account.user_id=$3 OR account.local_user_id=candidate.local_user_id)
 		  )
 		RETURNING candidate.id`,
-		provider, fingerprint, globalUserID, globalUserID, now)
+		provider, fingerprint, globalUserID, now)
 	if err != nil {
 		return 0, err
 	}
@@ -219,13 +219,13 @@ func (s *Store) ResolveOAuthUnmatchedCandidates(
 	}
 	if resolved > 0 {
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE account_import_batches SET auto_linked_count=auto_linked_count+$2,
-			  unresolved_count=GREATEST(0,unresolved_count-$2),
-			  state=CASE WHEN unresolved_count<=$2 THEN 'resolved' ELSE state END,updated_at=$3
+			UPDATE account_import_batches SET auto_linked_count=auto_linked_count+$1,
+			  unresolved_count=GREATEST(0,unresolved_count-$1),
+			  state=CASE WHEN unresolved_count<=$1 THEN 'resolved' ELSE state END,updated_at=$2
 			WHERE id IN (
 			  SELECT batch_id FROM account_import_candidates
-			  WHERE resolution_state='auto_linked' AND reason_code='oauth_login_proof' AND updated_at=$3
-			)`, now, resolved, now); err != nil {
+			  WHERE resolution_state='auto_linked' AND reason_code='oauth_login_proof' AND updated_at=$2
+			)`, resolved, now); err != nil {
 			return 0, err
 		}
 	}

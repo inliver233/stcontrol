@@ -122,12 +122,13 @@ func (s *Store) ScheduleControllerDisasterBackup(
 		  AND node.compatibility_state='compatible' AND node.control_mode='managed'
 		  AND node.desired_control_mode='managed' AND node.capacity_state IN ('open','busy')
 		  AND COALESCE(node.transfer_url,'')<>''
-		  AND node.metrics_observed_at IS NOT NULL AND node.metrics_observed_at>=$2
+		  AND node.metrics_observed_at IS NOT NULL AND node.metrics_observed_at>=$1
 		  AND node.disk_available_bytes IS NOT NULL AND node.disk_quota_bytes IS NOT NULL
 		ORDER BY CASE node.capacity_state WHEN 'open' THEN 0 ELSE 1 END,
 		  LEAST(node.disk_available_bytes,node.disk_quota_bytes-node.allocated_disk_bytes) DESC,
 		  node.id
-		FOR UPDATE OF node SKIP LOCKED LIMIT 1`, p.Now, p.Now.Add(-2*time.Minute)).Scan(&nodeID, &nodeName)
+		FOR UPDATE OF node SKIP LOCKED LIMIT 1`,
+		p.Now.Add(-2*time.Minute)).Scan(&nodeID, &nodeName)
 	if err == sql.ErrNoRows {
 		if err := tx.Commit(); err != nil { return nil, err }
 		return nil, sql.ErrNoRows

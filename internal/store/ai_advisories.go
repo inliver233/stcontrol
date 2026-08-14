@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 )
@@ -44,10 +43,6 @@ type AIAdvisory struct {
 	ExpiresAt         time.Time
 	CreatedAt         time.Time
 }
-
-// ErrAIAdvisoryDedupConflict is returned when the same dedup_key is already
-// recorded (the request is a duplicate and must be skipped, not retried).
-var ErrAIAdvisoryDedupConflict = errors.New("ai advisory dedup conflict")
 
 // InsertAIAdvisoryRequest durably records a queued AI request. Idempotent on
 // dedup_key: a second insert for the same fact returns the existing row.

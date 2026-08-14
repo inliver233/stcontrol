@@ -259,9 +259,9 @@ func TestResolveOAuthUnmatchedCandidatesLinksOnlyMatchingNodes(t *testing.T) {
 	mock.ExpectQuery(`SELECT EXISTS \(SELECT 1 FROM global_users WHERE id=\$1 AND status='active'\)`).
 		WithArgs(int64(70)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectExec(`(?s)UPDATE account_import_candidates candidate.*SET resolution_state='auto_linked'.*RETURNING candidate.id`).
-		WithArgs("discord", fp, int64(70), int64(70), now).WillReturnResult(sqlmock.NewResult(0, 2))
+		WithArgs("discord", fp, int64(70), now).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec(`UPDATE account_import_batches SET auto_linked_count`).
-		WithArgs(now, int64(2), now).WillReturnResult(sqlmock.NewResult(0, 1))
+		WithArgs(int64(2), now).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	resolved, err = st.ResolveOAuthUnmatchedCandidates(context.Background(), "discord", fp, 70, now)
 	if err != nil || resolved != 2 {
