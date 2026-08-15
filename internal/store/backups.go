@@ -127,31 +127,6 @@ func (s *Store) FindRunningBackupForUserOnNode(ctx context.Context, userID, node
 	return j, err
 }
 
-// ListBackupJobs 列出任务（管理后台）。
-func (s *Store) ListBackupJobs(ctx context.Context, limit int) ([]*BackupJob, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-	rows, err := s.DB.QueryContext(ctx, `
-	  SELECT id, user_id, src_node_id, dst_node_id, trigger, status,
-	    data_version, bytes, file_count, error, started_at, finished_at, created_at
-	  FROM backup_jobs ORDER BY id DESC LIMIT $1`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*BackupJob
-	for rows.Next() {
-		j := &BackupJob{}
-		if err := rows.Scan(&j.ID, &j.UserID, &j.SrcNodeID, &j.DstNodeID, &j.Trigger, &j.Status,
-			&j.DataVersion, &j.Bytes, &j.FileCount, &j.Error, &j.StartedAt, &j.FinishedAt, &j.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, j)
-	}
-	return out, rows.Err()
-}
-
 func nullableInt64(v int64) any {
 	if v == 0 {
 		return nil

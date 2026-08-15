@@ -190,3 +190,30 @@ func TestMarkControllerDisasterBackupProgressTransitions(t *testing.T) {
 	if err != nil { t.Fatalf("err=%v", err) }
 	assertMockExpectations(t, mock)
 }
+// TestListControllerDisasterBackupsPageEmptyIsJSONArrayNotSQLNull guards the
+// D4 list-endpoint contract for the admin controller-backups page: an empty
+// result must serialize as [] (never JSON null).
+func TestListControllerDisasterBackupsPageEmptyIsJSONArrayNotSQLNull(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	mock.ExpectQuery(`FROM controller_disaster_backups backup`).
+		WithArgs(nil, 50).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation_id", "node_id", "node_name", "state", "backup_kind",
+			"payload_file_name", "payload_size_bytes", "payload_sha256", "error_code",
+			"attempt", "next_attempt_at", "started_at", "finished_at", "created_at", "updated_at",
+		}))
+	runs, err := st.ListControllerDisasterBackupsPage(context.Background(), ListControllerDisasterBackupPageParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs == nil {
+		t.Fatal("empty result must be a non-nil slice, not nil (JSON null)")
+	}
+	encoded, err := json.Marshal(runs)
+	if err != nil || string(encoded) != "[]" {
+		t.Fatalf("encoded=%q err=%v, want []", encoded, err)
+	}
+	assertMockExpectations(t, mock)
+}

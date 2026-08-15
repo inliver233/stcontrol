@@ -368,7 +368,9 @@ func (s *Store) ListControllerDisasterBackupsPage(
 	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil { return nil, err }
 	defer rows.Close()
-	var out []*ControllerDisasterBackupRun
+	// Empty result must serialize as [] (never JSON null) for the admin
+	// controller-backups endpoint, matching the D4 list-endpoint contract.
+	out := make([]*ControllerDisasterBackupRun, 0)
 	for rows.Next() {
 		r := &ControllerDisasterBackupRun{}
 		var startedAt, finishedAt sql.NullTime
