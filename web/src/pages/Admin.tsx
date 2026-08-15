@@ -2,6 +2,33 @@ import { useEffect, useRef, useState } from 'react'
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { api, submitLoginHandoff, type BrowserHandoff } from '../api'
 import { useAuth } from '../App'
+import type {
+  AdminBackup,
+  AdminNode,
+  AdminNodeCreateInput,
+  AdminNodeLink,
+  AdminNodeStatusView,
+  AdminOverview,
+  AdminRow,
+  AdminUser,
+  AIAdoptResult,
+  AIAdvisory,
+  AIRequest,
+  AIStatus,
+  AuditEvent,
+  CompatibilityIncident,
+  ControllerRebuild,
+  ControllerRebuildNode,
+  IdentityRecoveryResult,
+  NodeRetirement,
+  NullFloat64,
+  NullInt64,
+  ProtectionAlert,
+  RegisterToken,
+  ScanCandidate,
+  ScanResult,
+  UserDataFaultStatus,
+} from '../adminTypes'
 
 function readCookie(name: string): string {
   const prefix = `${encodeURIComponent(name)}=`
@@ -35,24 +62,24 @@ async function adminReq<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 const adminApi = {
-  overview: () => adminReq<any>('/api/admin/overview'),
-  controllerRebuild: () => adminReq<any>('/api/admin/controller/rebuild'),
-  nodes: () => adminReq<{ nodes: any[] }>('/api/admin/nodes'),
-  createNode: (body: any) => adminReq<any>('/api/admin/nodes', { method: 'POST', body: JSON.stringify(body) }),
-  updateNode: (id: number, body: any) => adminReq<any>(`/api/admin/nodes/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  overview: () => adminReq<AdminOverview>('/api/admin/overview'),
+  controllerRebuild: () => adminReq<ControllerRebuild>('/api/admin/controller/rebuild'),
+  nodes: () => adminReq<{ nodes: AdminNode[] }>('/api/admin/nodes'),
+  createNode: (body: AdminNodeCreateInput) => adminReq<{ ok: boolean; id: number }>('/api/admin/nodes', { method: 'POST', body: JSON.stringify(body) }),
+  updateNode: (id: number, body: AdminNode) => adminReq<{ ok: boolean }>(`/api/admin/nodes/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   transitionNode: (id: number, state: string, reason_code: string, acknowledge_risk = false) =>
-    adminReq<any>(`/api/admin/nodes/${id}/lifecycle`, {
+    adminReq<{ ok: boolean; state: string }>(`/api/admin/nodes/${id}/lifecycle`, {
       method: 'POST', body: JSON.stringify({ operation_id: crypto.randomUUID(), state, reason_code, acknowledge_risk }),
     }),
-  retirement: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/retirement`),
-  compatibilityIncident: (id: number) => adminReq<any>(`/api/admin/nodes/${id}/compatibility-incident`),
-  registerToken: (id: number, tavernDir?: string) => adminReq<any>(`/api/admin/nodes/${id}/register-token${tavernDir ? `?tavern_dir=${encodeURIComponent(tavernDir)}` : ''}`, { method: 'POST' }),
-  scanExisting: (id: number, operationID: string) => adminReq<any>(`/api/admin/nodes/${id}/scan-existing`, {
+  retirement: (id: number) => adminReq<NodeRetirement>(`/api/admin/nodes/${id}/retirement`),
+  compatibilityIncident: (id: number) => adminReq<CompatibilityIncident>(`/api/admin/nodes/${id}/compatibility-incident`),
+  registerToken: (id: number, tavernDir?: string) => adminReq<RegisterToken>(`/api/admin/nodes/${id}/register-token${tavernDir ? `?tavern_dir=${encodeURIComponent(tavernDir)}` : ''}`, { method: 'POST' }),
+  scanExisting: (id: number, operationID: string) => adminReq<ScanResult>(`/api/admin/nodes/${id}/scan-existing`, {
     method: 'POST', body: JSON.stringify({ operation_id: operationID }),
   }),
   latestImport: (id: number, offset = 0) => {
     const params = new URLSearchParams({ limit: '100', offset: String(offset) })
-    return adminReq<any>(`/api/admin/nodes/${id}/imports/latest?${params}`)
+    return adminReq<ScanResult>(`/api/admin/nodes/${id}/imports/latest?${params}`)
   },
   nodeLinks: () => adminReq<{ links: AdminNodeLink[] }>('/api/admin/node-links'),
   verifyNodeLink: (id: number, operationID: string, handle: string, password: string) =>
@@ -68,13 +95,13 @@ const adminApi = {
     if (after > 0) params.set('after', String(after))
     if (q) params.set('q', q)
     if (status) params.set('status', status)
-    return adminReq<{ users: any[]; has_more: boolean; next_cursor: number }>(`/api/admin/users?${params}`)
+    return adminReq<{ users: AdminUser[]; has_more: boolean; next_cursor: number }>(`/api/admin/users?${params}`)
   },
-  recoverUserIdentity: (uuid: string, operationID: string, password: string) => adminReq<any>(`/api/admin/users/${uuid}/identity-recovery`, {
+  recoverUserIdentity: (uuid: string, operationID: string, password: string) => adminReq<IdentityRecoveryResult>(`/api/admin/users/${uuid}/identity-recovery`, {
     method: 'POST', body: JSON.stringify({ operation_id: operationID, password }),
   }),
   reportUserDataFault: (uuid: string, operationID: string, expectedHomeNodeID: number, reasonCode: string) =>
-    adminReq<any>(`/api/admin/users/${uuid}/data-faults`, {
+    adminReq<UserDataFaultStatus>(`/api/admin/users/${uuid}/data-faults`, {
       method: 'POST', body: JSON.stringify({
         operation_id: operationID,
         expected_home_node_id: expectedHomeNodeID,
@@ -82,51 +109,40 @@ const adminApi = {
         acknowledge_risk: true,
       }),
     }),
-  userDataFault: (uuid: string) => adminReq<any>(`/api/admin/users/${uuid}/data-fault`),
-  triggerBackup: (id: number) => adminReq<any>(`/api/admin/users/${id}/backup`, { method: 'POST' }),
-  disableUser: (id: number) => adminReq<any>(`/api/admin/users/${id}/disable`, { method: 'POST' }),
+  userDataFault: (uuid: string) => adminReq<UserDataFaultStatus>(`/api/admin/users/${uuid}/data-fault`),
+  triggerBackup: (id: number) => adminReq<{ ok: boolean }>(`/api/admin/users/${id}/backup`, { method: 'POST' }),
+  disableUser: (id: number) => adminReq<{ ok: boolean }>(`/api/admin/users/${id}/disable`, { method: 'POST' }),
   backups: (before = 0, status = '', userID = '') => {
     const params = new URLSearchParams({ limit: '50' })
     if (before > 0) params.set('before', String(before))
     if (status) params.set('status', status)
     if (userID) params.set('user_id', userID)
-    return adminReq<{ backups: any[]; has_more: boolean; next_cursor: number }>(`/api/admin/backups?${params}`)
+    return adminReq<{ backups: AdminBackup[]; has_more: boolean; next_cursor: number }>(`/api/admin/backups?${params}`)
   },
-  abortBackup: (id: number) => adminReq<any>(`/api/admin/backups/${id}/abort`, { method: 'POST' }),
-  protectionAlerts: () => adminReq<{ alerts: any[] }>('/api/admin/alerts/protection?limit=100'),
-  admins: () => adminReq<{ admins: any[] }>('/api/admin/admins'),
-  createAdmin: (username: string, password: string) => adminReq<any>('/api/admin/admins', { method: 'POST', body: JSON.stringify({ username, password }) }),
-  setAdminStatus: (id: number, status: string) => adminReq<any>(`/api/admin/admins/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
-  resetAdminPassword: (id: number, password: string) => adminReq<any>(`/api/admin/admins/${id}/password`, { method: 'PUT', body: JSON.stringify({ password }) }),
+  abortBackup: (id: number) => adminReq<{ ok: boolean }>(`/api/admin/backups/${id}/abort`, { method: 'POST' }),
+  protectionAlerts: () => adminReq<{ alerts: ProtectionAlert[] }>('/api/admin/alerts/protection?limit=100'),
+  admins: () => adminReq<{ admins: AdminRow[] }>('/api/admin/admins'),
+  createAdmin: (username: string, password: string) => adminReq<AdminRow>('/api/admin/admins', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  setAdminStatus: (id: number, status: string) => adminReq<{ ok: boolean }>(`/api/admin/admins/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
+  resetAdminPassword: (id: number, password: string) => adminReq<{ ok: boolean }>(`/api/admin/admins/${id}/password`, { method: 'PUT', body: JSON.stringify({ password }) }),
   audit: (before = 0, actorType = '', action = '', outcome = '') => {
     const params = new URLSearchParams({ limit: '50' })
     if (before > 0) params.set('before', String(before))
     if (actorType) params.set('actor_type', actorType)
     if (action) params.set('action', action)
     if (outcome) params.set('outcome', outcome)
-    return adminReq<{ events: any[]; has_more: boolean; next_cursor: number }>(`/api/admin/audit?${params}`)
+    return adminReq<{ events: AuditEvent[]; has_more: boolean; next_cursor: number }>(`/api/admin/audit?${params}`)
   },
-  aiStatus: () => adminReq<any>('/api/admin/ai/status'),
-  aiAdvisories: (limit = 20) => adminReq<{ advisories: any[] }>(`/api/admin/ai/advisories?limit=${limit}`),
+  aiStatus: () => adminReq<AIStatus>('/api/admin/ai/status'),
+  aiAdvisories: (limit = 20) => adminReq<{ advisories: AIAdvisory[] }>(`/api/admin/ai/advisories?limit=${limit}`),
   aiRequests: (cursor = 0, taskType = '', limit = 20) => {
     const params = new URLSearchParams({ limit: String(limit) })
     if (cursor > 0) params.set('cursor', String(cursor))
     if (taskType) params.set('task_type', taskType)
-    return adminReq<{ requests: any[]; next_cursor: number }>(`/api/admin/ai/requests?${params}`)
+    return adminReq<{ requests: AIRequest[]; next_cursor: number }>(`/api/admin/ai/requests?${params}`)
   },
-  aiAdopt: (requestID: number) => adminReq<{ ok: boolean; deterministic_ref: string; observed_outcome: string }>(
+  aiAdopt: (requestID: number) => adminReq<AIAdoptResult>(
     `/api/admin/ai/advisories/${requestID}/adopt`, { method: 'POST' }),
-}
-
-interface AdminNodeLink {
-  node_id: number
-  node_name: string
-  node_state: string
-  local_handle?: string
-  state: 'unlinked' | 'verified' | 'stale' | 'revoked'
-  permission_version?: number
-  last_verified_at?: string
-  last_error_code?: string
 }
 
 // ---------- 布局 ----------
@@ -188,8 +204,8 @@ export default function AdminPage() {
 
 // ---------- 仪表盘 ----------
 function Overview() {
-  const [data, setData] = useState<any>(null)
-  const [rebuild, setRebuild] = useState<any>(null)
+  const [data, setData] = useState<AdminOverview | null>(null)
+  const [rebuild, setRebuild] = useState<ControllerRebuild | null>(null)
   const [error, setError] = useState('')
   useEffect(() => {
     Promise.all([adminApi.overview(), adminApi.controllerRebuild()])
@@ -229,7 +245,7 @@ function Overview() {
             {rebuild.state === 'succeeded' ? '已完成' : '新登录、选点、注册和备份保持关闭'}；
             节点 {rebuild.reconciled_nodes}/{rebuild.total_nodes}。
           </p>
-          {rebuild.nodes?.map((node: any) => (
+          {rebuild.nodes?.map((node: ControllerRebuildNode) => (
             <div key={node.node_id}>
               {node.node_name}（{node.role}）：<span className="mono">{node.state}</span>
             </div>
@@ -241,7 +257,7 @@ function Overview() {
 }
 
 // 综合状态优先级：已退役 → 维护/排空 → 离线 → 不兼容 → 已满 → 繁忙 → 可用
-function compositeStatus(node: any): { key: string; label: string; color: string } {
+function compositeStatus(node: AdminNodeStatusView): { key: string; label: string; color: string } {
   const operational = node.operational_state
   if (operational === 'decommissioned' || operational === 'retired') return { key: 'retired', label: '已退役', color: 'gray' }
   if (operational === 'maintenance') return { key: 'maintenance', label: '维护', color: 'gray' }
@@ -256,15 +272,16 @@ function compositeStatus(node: any): { key: string; label: string; color: string
 
 // 两层状态显示：综合状态主徽章 + 四个维度小字；离线时容量/兼容性置灰并标注“最后上报/最后检测”。
 export function StatusBadge({ node, healthLabel, reasonLabel }: {
-  node: any
+  node: AdminNodeStatusView
   healthLabel: (value: string) => string
   reasonLabel: (value: string) => string
 }) {
   const status = compositeStatus(node)
   const offline = node.connectivity_state === 'offline'
-  const dimension = (value: string, onlineColor: string, label: string, staleNote?: string) => (
+  const reasonCode = node.capacity_reason_code?.String || node.compatibility_reason_code?.String
+  const dimension = (value: string | undefined, onlineColor: string, label: string, staleNote?: string) => (
     <span className={offline ? 'badge gray' : `badge ${value === 'active' || value === 'open' || value === 'compatible' || value === 'online' ? onlineColor : value === 'busy' || value === 'maintenance' || value === 'draining' || value === 'degraded' ? 'yellow' : value === 'full' || value === 'incompatible' || value === 'offline' || value === 'failed' || value === 'retired' || value === 'decommissioned' ? 'red' : 'gray'}`}>
-      {label}：{healthLabel(value)}{staleNote || ''}
+      {label}：{healthLabel(value as string)}{staleNote || ''}
     </span>
   )
   return (
@@ -278,8 +295,8 @@ export function StatusBadge({ node, healthLabel, reasonLabel }: {
         {dimension(node.capacity_state, 'green', '容量', offline ? '（最后上报）' : '')}
         {dimension(node.compatibility_state, 'green', '兼容', offline ? '（最后检测）' : '')}
       </div>
-      {(node.capacity_reason_code?.String || node.compatibility_reason_code?.String) && (
-        <div style={{ fontSize: 11 }}>{reasonLabel(node.capacity_reason_code?.String || node.compatibility_reason_code?.String)}</div>
+      {(reasonCode) && (
+        <div style={{ fontSize: 11 }}>{reasonLabel(reasonCode)}</div>
       )}
     </div>
   )
@@ -287,16 +304,16 @@ export function StatusBadge({ node, healthLabel, reasonLabel }: {
 
 // ---------- 节点管理 ----------
 function NodesAdmin() {
-  const [nodes, setNodes] = useState<any[]>([])
-  const [retirements, setRetirements] = useState<Record<number, any>>({})
-  const [compatibilityIncidents, setCompatibilityIncidents] = useState<Record<number, any>>({})
+  const [nodes, setNodes] = useState<AdminNode[]>([])
+  const [retirements, setRetirements] = useState<Record<number, NodeRetirement>>({})
+  const [compatibilityIncidents, setCompatibilityIncidents] = useState<Record<number, CompatibilityIncident>>({})
   const [nodeLinks, setNodeLinks] = useState<AdminNodeLink[]>([])
-  const [tokenInfo, setTokenInfo] = useState<any>(null)
-  const [scanResult, setScanResult] = useState<any>(null)
+  const [tokenInfo, setTokenInfo] = useState<RegisterToken | null>(null)
+  const [scanResult, setScanResult] = useState<ScanResult | null>(null)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [scanningNode, setScanningNode] = useState<number>(0)
-  const [linkNode, setLinkNode] = useState<any>(null)
+  const [linkNode, setLinkNode] = useState<AdminNode | null>(null)
   const [linkHandle, setLinkHandle] = useState('')
   const [linkPassword, setLinkPassword] = useState('')
   const [linkingNode, setLinkingNode] = useState<number>(0)
@@ -307,11 +324,11 @@ function NodesAdmin() {
   const [showWizard, setShowWizard] = useState(false)
   const [wizard, setWizard] = useState({ name: '', role: 'compute', region: '', base_url: '', expected_disk_quota_bytes: '' })
   const [creatingNode, setCreatingNode] = useState(false)
-  const [quotaNode, setQuotaNode] = useState<any>(null)
+  const [quotaNode, setQuotaNode] = useState<AdminNode | null>(null)
   const [quotaValue, setQuotaValue] = useState('')
   const [quotaSaving, setQuotaSaving] = useState(false)
 
-  const openQuotaEditor = (node: any) => {
+  const openQuotaEditor = (node: AdminNode) => {
     setQuotaNode(node)
     setQuotaValue(node.expected_disk_quota_bytes > 0 ? String(node.expected_disk_quota_bytes) : '')
     setError('')
@@ -376,21 +393,21 @@ function NodesAdmin() {
     .then(async ([nodeData, linkData]) => {
       setNodes(nodeData.nodes ?? [])
       setNodeLinks(linkData.links || [])
-      const tracked = (nodeData.nodes ?? []).filter((node: any) =>
+      const tracked = (nodeData.nodes ?? []).filter((node: AdminNode) =>
         ['draining', 'retiring', 'decommissioned'].includes(node.operational_state))
-      const results = await Promise.allSettled(tracked.map((node: any) => adminApi.retirement(node.id)))
-      const progress: Record<number, any> = {}
-      tracked.forEach((node: any, index: number) => {
+      const results = await Promise.allSettled(tracked.map((node: AdminNode) => adminApi.retirement(node.id)))
+      const progress: Record<number, NodeRetirement> = {}
+      tracked.forEach((node: AdminNode, index: number) => {
         const result = results[index]
         if (result.status === 'fulfilled') progress[node.id] = result.value
       })
       setRetirements(progress)
-      const compatibilityTracked = (nodeData.nodes ?? []).filter((node: any) => node.compatibility_state !== 'compatible')
+      const compatibilityTracked = (nodeData.nodes ?? []).filter((node: AdminNode) => node.compatibility_state !== 'compatible')
       const compatibilityResults = await Promise.allSettled(
-        compatibilityTracked.map((node: any) => adminApi.compatibilityIncident(node.id)),
+        compatibilityTracked.map((node: AdminNode) => adminApi.compatibilityIncident(node.id)),
       )
-      const compatibilityProgress: Record<number, any> = {}
-      compatibilityTracked.forEach((node: any, index: number) => {
+      const compatibilityProgress: Record<number, CompatibilityIncident> = {}
+      compatibilityTracked.forEach((node: AdminNode, index: number) => {
         const result = compatibilityResults[index]
         if (result.status === 'fulfilled') compatibilityProgress[node.id] = result.value
       })
@@ -404,7 +421,7 @@ function NodesAdmin() {
   }, [])
 
   const nodeLink = (nodeID: number) => nodeLinks.find(link => link.node_id === nodeID)
-  const beginNodeLink = (node: any) => {
+  const beginNodeLink = (node: AdminNode) => {
     const current = nodeLink(node.id)
     setError('')
     setMessage('')
@@ -444,7 +461,7 @@ function NodesAdmin() {
       setLinkingNode(0)
     }
   }
-  const revokeNodeLink = async (node: any) => {
+  const revokeNodeLink = async (node: AdminNode) => {
     if (!window.confirm(`撤销 ${node.name} 的管理员账号关联及未使用跳转票据？`)) return
     setError('')
     setMessage('')
@@ -457,7 +474,7 @@ function NodesAdmin() {
       setError(err instanceof Error ? err.message : '撤销节点管理员关联失败')
     }
   }
-  const enterNodeAdmin = async (node: any) => {
+  const enterNodeAdmin = async (node: AdminNode) => {
     const operationID = handoffOperations.current[node.id] || crypto.randomUUID()
     handoffOperations.current[node.id] = operationID
     setError('')
@@ -475,7 +492,7 @@ function NodesAdmin() {
     }
   }
 
-  const toggle = async (n: any, field: 'allow_register' | 'is_backup_target') => {
+  const toggle = async (n: AdminNode, field: 'allow_register' | 'is_backup_target') => {
     setError('')
     try {
       await adminApi.updateNode(n.id, { ...n, [field]: !n[field] })
@@ -484,7 +501,7 @@ function NodesAdmin() {
       setError(err instanceof Error ? err.message : '节点配置更新失败')
     }
   }
-  const toggleMaintenance = async (n: any) => {
+  const toggleMaintenance = async (n: AdminNode) => {
     setError('')
     try {
       await adminApi.transitionNode(n.id, n.operational_state === 'maintenance' ? 'active' : 'maintenance', 'administrator_maintenance')
@@ -493,7 +510,7 @@ function NodesAdmin() {
       setError(err instanceof Error ? err.message : '运营状态更新失败')
     }
   }
-  const transitionLifecycle = async (n: any, state: string) => {
+  const transitionLifecycle = async (n: AdminNode, state: string) => {
     const destructive = state === 'failed' || state === 'retired'
     if (destructive && !window.confirm(
       state === 'retired'
@@ -526,8 +543,8 @@ function NodesAdmin() {
       const res = await adminApi.scanExisting(id, operationID)
       delete scanOperations.current[id]
       setScanResult(res)
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '扫描既有账号失败')
     } finally {
       setScanningNode(0)
     }
@@ -537,8 +554,8 @@ function NodesAdmin() {
     setError('')
     try {
       setScanResult(await adminApi.latestImport(id))
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '读取导入库存失败')
     }
   }
 
@@ -548,8 +565,8 @@ function NodesAdmin() {
     setError('')
     try {
       setScanResult(await adminApi.latestImport(nodeID, offset))
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '读取导入库存失败')
     }
   }
 
@@ -584,9 +601,9 @@ function NodesAdmin() {
     node_reconnected: '节点重连后复核', fingerprint_changed: '版本/插件/配置指纹变化',
     upgrade_verifying: '升级后稳定性复核中',
   } as Record<string, string>)[value] || value
-  const metric = (value: any) => Math.round(value?.Float64 ?? value ?? 0)
-  const bytes = (value: any) => {
-    const raw = value?.Int64 ?? value ?? 0
+  const metric = (value: NullFloat64 | undefined) => Math.round(value?.Float64 ?? 0)
+  const bytes = (value: NullInt64 | number | null | undefined) => {
+    const raw = typeof value === 'number' ? value : (value?.Int64 ?? 0)
     return raw > 0 ? `${(raw / 1073741824).toFixed(1)}GB` : '-'
   }
 
@@ -634,7 +651,7 @@ function NodesAdmin() {
               {scanResult.batch.source === 'directory_fallback' && (
                 <div>当前为目录回退扫描，不含可靠身份事实，所有候选均禁止自动合并。</div>
               )}
-              {(scanResult.candidates || []).map((candidate: any, index: number) => (
+              {(scanResult.candidates || []).map((candidate: ScanCandidate, index: number) => (
                 <div key={`${candidate.local_handle}-${index}`} className="mono">
                   {candidate.local_handle} ({(candidate.size_bytes / 1048576).toFixed(1)}MB) ·
                   {' '}{importStateLabel(candidate.resolution_state)}
@@ -657,7 +674,7 @@ function NodesAdmin() {
                     className="btn-sm"
                     type="button"
                     disabled={!scanResult.has_more}
-                    onClick={() => viewImportPage(scanResult.next_candidate_offset)}
+                    onClick={() => viewImportPage(scanResult.next_candidate_offset ?? 0)}
                   >下一页</button>
                 </div>
               )}
@@ -781,7 +798,7 @@ function NodesAdmin() {
                 )}
               </td>
               <td style={{ fontSize: 12 }}>{n.online_users} / {n.task_queue_depth}</td>
-              <td style={{ fontSize: 12 }}>{n.tavern_version?.String ?? n.tavern_version ?? '-'}</td>
+              <td style={{ fontSize: 12 }}>{String(n.tavern_version?.String ?? n.tavern_version ?? '-')}</td>
               <td style={{ whiteSpace: 'nowrap' }}>
                 <button className="btn-sm" onClick={() => toggle(n, 'allow_register')}>
                   {n.allow_register ? '关注册' : '开注册'}
@@ -809,7 +826,7 @@ function NodesAdmin() {
                 {n.role === 'compute' && <>
                   <div style={{ marginTop: 6, fontSize: 12 }}>
                     原生后台：{link?.state === 'verified'
-                      ? `${link.local_handle}（已验证）`
+                      ? `${link?.local_handle}（已验证）`
                       : link?.state === 'stale' ? '权限已失效，需重新验证'
                         : link?.state === 'revoked' ? '已撤销' : '未关联'}
                   </div>
@@ -834,7 +851,7 @@ function NodesAdmin() {
 
 // ---------- 用户管理 ----------
 function UsersAdmin() {
-  const [users, setUsers] = useState<any[]>([])
+  const [users, setUsers] = useState<AdminUser[]>([])
   const [query, setQuery] = useState('')
   const [queryDraft, setQueryDraft] = useState('')
   const [status, setStatus] = useState('')
@@ -845,14 +862,14 @@ function UsersAdmin() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
-  const [recoveryUser, setRecoveryUser] = useState<any>(null)
+  const [recoveryUser, setRecoveryUser] = useState<AdminUser | null>(null)
   const [recoveryPassword, setRecoveryPassword] = useState('')
   const [recovering, setRecovering] = useState(false)
   const recoveryOperations = useRef<Record<string, string>>({})
-  const [faultUser, setFaultUser] = useState<any>(null)
+  const [faultUser, setFaultUser] = useState<AdminUser | null>(null)
   const [faultReason, setFaultReason] = useState('authoritative_integrity_mismatch')
   const [faultAcknowledged, setFaultAcknowledged] = useState(false)
-  const [faultStatus, setFaultStatus] = useState<any>(null)
+  const [faultStatus, setFaultStatus] = useState<UserDataFaultStatus | null>(null)
   const [reportingFault, setReportingFault] = useState(false)
   const faultOperations = useRef<Record<string, string>>({})
   const load = (pageCursor = cursor, pageQuery = query, pageStatus = status) => {
@@ -884,8 +901,8 @@ function UsersAdmin() {
     load(previous)
   }
 
-  const userUUID = (user: any) => user.UUID ?? user.uuid
-  const beginRecovery = (user: any) => {
+  const userUUID = (user: AdminUser): string => user.UUID ?? user.uuid
+  const beginRecovery = (user: AdminUser) => {
     setError('')
     setMessage('')
     setRecoveryUser(user)
@@ -922,10 +939,10 @@ function UsersAdmin() {
     }
   }
 
-  const homeNodeID = (user: any) => Number(
+  const homeNodeID = (user: AdminUser | null | undefined): number => Number(
     user?.HomeNodeID?.Int64 ?? user?.home_node_id?.Int64 ?? user?.home_node_id ?? 0,
   )
-  const beginDataFault = (user: any) => {
+  const beginDataFault = (user: AdminUser) => {
     if (homeNodeID(user) <= 0) {
       setError('该用户没有可核对的权威家节点，不能提交数据故障。')
       return
@@ -1073,7 +1090,7 @@ function UsersAdmin() {
               <td>{u.Username ?? u.username}</td>
               <td>{u.DisplayName ?? u.display_name}</td>
               <td>{u.AuthProvider ?? u.auth_provider}</td>
-              <td>{(u.HomeNodeID?.Int64 ?? u.home_node_id?.Int64 ?? u.home_node_id) || '-'}</td>
+              <td>{Number(u.HomeNodeID?.Int64 ?? u.home_node_id?.Int64 ?? u.home_node_id ?? 0) || '-'}</td>
               <td><span className={`badge ${(u.Status ?? u.status) === 'active' ? 'green' : 'red'}`}>{u.Status ?? u.status}</span></td>
               <td style={{ whiteSpace: 'nowrap' }}>
                 <button className="btn-sm primary" onClick={() => adminApi.triggerBackup(u.ID ?? u.id).then(() => load())}>备份</button>{' '}
@@ -1099,7 +1116,7 @@ function UsersAdmin() {
 }
 
 // ---------- 备份任务 ----------
-export type AdminBackupJobView = Record<string, any>
+export type AdminBackupJobView = AdminBackup
 
 export function backupWorkflowState(job: AdminBackupJobView): string {
   return String(job.workflow_state ?? job.WorkflowState ?? '')
@@ -1175,7 +1192,7 @@ export function BackupJobRow({
       <td>{job.Trigger ?? job.trigger}</td>
       <td><span className={backupStatusBadge(status)}>{status}</span></td>
       <td><span className={backupPhaseBadge(workflowState)}>{backupWorkflowStateLabel(workflowState)}</span></td>
-      <td style={{ fontSize: 12 }}>{((job.Bytes?.Int64 ?? job.bytes ?? 0) / 1048576).toFixed(1)}MB</td>
+      <td style={{ fontSize: 12 }}>{((job.Bytes?.Int64 ?? job.bytes?.Int64 ?? 0) / 1048576).toFixed(1)}MB</td>
       <td style={{ fontSize: 12 }}>
         <div>{retryFacts}</div>
         <div>{backupCleanupLabel(cleanupState)}</div>
@@ -1195,7 +1212,7 @@ export function BackupJobRow({
 }
 
 export function BackupsAdmin() {
-  const [jobs, setJobs] = useState<any[]>([])
+  const [jobs, setJobs] = useState<AdminBackup[]>([])
   const [error, setError] = useState('')
   const [status, setStatus] = useState('')
   const [userID, setUserID] = useState('')
@@ -1241,8 +1258,8 @@ export function BackupsAdmin() {
     try {
       await adminApi.abortBackup(id)
       await load()
-    } catch (err: any) {
-      setError(err?.message || '中止备份失败')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '中止备份失败')
     } finally {
       setAbortingJobs(current => {
         const next = new Set(current)
@@ -1286,7 +1303,7 @@ export function BackupsAdmin() {
 }
 
 function ProtectionAlertsAdmin() {
-  const [alerts, setAlerts] = useState<any[]>([])
+  const [alerts, setAlerts] = useState<ProtectionAlert[]>([])
   const [error, setError] = useState('')
   const load = () => adminApi.protectionAlerts()
     .then(data => { setAlerts(data.alerts ?? []); setError('') })
@@ -1322,7 +1339,7 @@ function ProtectionAlertsAdmin() {
 
 
 function AuditAdmin() {
-  const [events, setEvents] = useState<any[]>([])
+  const [events, setEvents] = useState<AuditEvent[]>([])
   const [cursor, setCursor] = useState(0)
   const [cursorHistory, setCursorHistory] = useState<number[]>([])
   const [nextCursor, setNextCursor] = useState(0)
@@ -1425,7 +1442,7 @@ function AuditAdmin() {
 }
 
 function AdminsAdmin() {
-  const [admins, setAdmins] = useState<any[]>([])
+  const [admins, setAdmins] = useState<AdminRow[]>([])
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -1449,7 +1466,7 @@ function AdminsAdmin() {
     }
   }
 
-  const toggle = async (admin: any) => {
+  const toggle = async (admin: AdminRow) => {
     setError('')
     try {
       await adminApi.setAdminStatus(admin.id, admin.status === 'active' ? 'disabled' : 'active')
@@ -1459,7 +1476,7 @@ function AdminsAdmin() {
     }
   }
 
-  const resetPassword = async (admin: any) => {
+  const resetPassword = async (admin: AdminRow) => {
     const next = window.prompt(`为 ${admin.username} 设置至少 12 位新密码`)
     if (!next) return
     setError('')
@@ -1506,9 +1523,9 @@ function AdminsAdmin() {
 
 // ---------- AI 监管 ----------
 function AISupervisionAdmin() {
-  const [status, setStatus] = useState<any>(null)
-  const [advisories, setAdvisories] = useState<any[]>([])
-  const [requests, setRequests] = useState<any[]>([])
+  const [status, setStatus] = useState<AIStatus | null>(null)
+  const [advisories, setAdvisories] = useState<AIAdvisory[]>([])
+  const [requests, setRequests] = useState<AIRequest[]>([])
   const [cursor, setCursor] = useState(0)
   const [nextCursor, setNextCursor] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -1573,7 +1590,7 @@ function AISupervisionAdmin() {
           {status?.enabled && (<span>供应商：<span className="mono" style={{ fontSize: 12 }}>{status?.provider || '-'}</span></span>)}
           {status?.enabled && (<span>模型：<span className="mono" style={{ fontSize: 12 }}>{status?.model || '-'}</span></span>)}
           {status?.enabled && status?.mode === 'auto_low_risk' && (<span>自动采纳门槛：<span className="mono" style={{ fontSize: 12 }}>{Math.round((status?.auto_adopt_min_confidence ?? 0) * 100)}%</span></span>)}
-          {(status?.auto_adopted_24h > 0 || status?.accepted_24h > 0) && (
+          {((status?.auto_adopted_24h ?? 0) > 0 || (status?.accepted_24h ?? 0) > 0) && (
             <span>近 24h：自动采纳 {status?.auto_adopted_24h ?? 0} 条，人工采纳 {status?.accepted_24h ?? 0} 条</span>
           )}
           {status?.task_counts && Object.entries(status.task_counts).length > 0 && (

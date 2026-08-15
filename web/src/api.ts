@@ -164,7 +164,7 @@ export interface ConflictResolutionDecision {
 
 export interface ApiError extends Error {
   status?: number
-  data?: any
+  data?: unknown
 }
 
 export interface ConflictResolutionStatus {
@@ -192,10 +192,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   })
   if (!resp.ok) {
     let msg = `请求失败 (${resp.status})`
-    let data: any
+    let data: unknown
     try {
       data = await resp.json()
-      if (data.error) msg = data.error
+      if (data && typeof data === 'object' && 'error' in data &&
+          typeof (data as { error: unknown }).error === 'string') {
+        msg = (data as { error: string }).error
+      }
     } catch { /* ignore */ }
     const err = new Error(msg) as ApiError
     err.status = resp.status
