@@ -1,8 +1,36 @@
 # 验证记录
 
+## 2026-08-15 第二批：决策④采纳链路、Round 60 真实 pg_dump 端到端与收尾
+
+> 本批接续独立审查修复批次（上批建议级 8/10 与 AI 决策④为遗留项），全部由真实工具链验证后逐组提交推送。
+
+### 已知未做项全部闭环
+
+- **AI 决策④ auto_low_risk 分级采纳链路（681b8b1，上批最大遗留）**：`internal/ai` Supervisor.WithAdopter 仅在 auto_low_risk 模式、非弃权、confidence≥配置下限（默认 0.8，钳制 [0.5,1)）、validator 白名单判定可逆（EXPLAIN_ALERT/RECOMMEND_NODE_ORDER/RECOMMEND_BACKUP_TARGET_ORDER）且不要求人工确认（灾难/冲突/导入/恢复任务族结构性排除）时调用确定性执行器；shadow/advisory 模式保持零效果（模式门测试）。迁移 0048 新增 `ai_adoption_effects`（效果随 advisory 15 分钟过期、按 (request, kind) 幂等），outcome decision 枚举扩展 `auto_adopted`。Controller 执行器（ai_adoption.go）对当前 Store 状态复查全部硬门：排序建议必须恰好覆盖当前全部合格节点（部分/陈旧排序失败关闭），告警说明重新跑 secret scan 且只注解被引用的告警；消费端（注册页排序 pickBackupTarget/pickStorageRepairTarget、管理告警视图）只在确定性分层内作次级偏好，永远不能晋升不合格节点或隐藏合格节点。管理端 POST /api/admin/ai/advisories/{id}/adopt 复用同一执行器与门禁（人工采纳 accepted/admin 审计行）；AI 面板新增采纳按钮与自动/人工采纳计数。真实 PG：排序硬门（完整/部分/陈旧）、告警说明合并+secret 拒绝、supervisor 模式/置信度门（3 个新测试）。
+- **Round 60 / M3 总控灾备真实 pg_dump 端到端（9cf3cc7）**：新真实 PG 测试发现并修复 `ClaimControllerDisasterBackup` 两个生产缺陷——RETURNING 子句把时间列 cast 成 ::text 却扫描 sql.NullTime（每次认领必失败）、返回 run 不携带 OperationID（后续 Progress/Complete 全部 UUID 校验失败）。`TestControllerDisasterBackupRunsRealPgDumpEndToEnd` 对一次性真实数据库（48 个迁移全量应用）运行生产执行器、调用测试运行时自带的真实 pg_dump.exe、经真实 HTTP 传输路径流式 tar.zst 到 loopback 接收器、经真实命令 harness 执行 durable receive_controller_backup，并校验归档包含迁移 schema、种子审计行与 Controller 配置；capability bearer 与 X-Archive-Sha256 端到端核对。无 DSN 或 pg_dump 时显式 SKIP。
+- **建议 #8（bd28ae6）**：`web/src/adminTypes.ts` 新增 27 个 DTO interface（对照 Go 后端 json tag 逐一核对：store.Node 的 Null* 对象、AdminBackupJob 内嵌字段导出名、4e2367b 后 AI 端点 snake_case、JSONB detail 为 unknown）；Admin.tsx 39 处 any 清零，api.ts ApiError.data 收窄为 unknown。纯类型加固，diff 复核确认无字段改名等行为变化；tsc -b + vitest 16/16。
+- **建议 #10（9cf3cc7）**：产品决策收口——RecordNodeClientLatency 对零行更新返回 ErrNodeNotFound，端点映射 404；不按用户会话限权（Round 20 要求对列表中每个候选节点上报实测延迟），决策理由已写入提交信息与本记录。
+- **AI 管理端响应线格式（4e2367b）**：store AIAdvisoryRequest 与 ListRecentAIAdvisories 原无 json tag，管理 HTTP 序列化为 Go 导出名而 React AI 页读 snake_case（全部渲染 undefined/Invalid Date）；新命名类型 AIAdvisorySummary 固定 snake_case 线格式，digest/observation JSON 不上线，空列表返回 []。回归测试固定线键名。
+- **本批新发现并修复**：`ListControllerDisasterBackupsPage` 空结果 nil→JSON null（D4 契约残留，aabed0c，含 [] 序列化回归测试）；无调用者的死代码 `ListBackupJobs` 删除（aabed0c）；熔断 half-open 注释与实现不符（per provider+model+task 键的同类探测 vs"低敏探测"，6288828 修正注释如实描述）；4dd65b1 修复独立对账完成断言的审计行轮询。
+
+### 验证证据（本批全部实际执行，PASS/SKIP 计数逐项确认）
+
+- `go build ./... && go vet ./...`：通过（0 告警）。
+- `go test -short -count=1 ./...`：7 个包全绿。
+- **真实 PostgreSQL 17.10**（`STCONTROL_TEST_POSTGRES_DSN=postgres://postgres:postgres@127.0.0.1:55432/postgres?sslmode=disable`，WSLENV 转发，-v 逐项确认）：`go test -count=1 -run 'TestPostgres|TestController' ./internal/store/ ./internal/controller/` → **44 PASS / 0 SKIP / 0 FAIL**（store 30.2s / controller 71.6s；基线 39 + 决策④ 3 + pg_dump e2e 1 + 采纳 HTTP 1）。48 个迁移（0001–0048 连续）在隔离 schema 全部应用。
+- 前端：`npx tsc -b` 通过；`npx vitest run` 16/16。
+- Sillytarven-online：5 个 stcontrol 测试文件 `node --test` **28/28**（含 D3 回归）。
+- 本批每段新增生产 SQL（ai_adoption 五个方法、ClaimControllerDisasterBackup RETURNING、ListControllerDisasterBackupsPage）均有真实 PG 用例或 e2e 触达；sqlmock 绿灯不作为 SQL 类修复验收依据。
+
+### 仍未做项与原因（收尾口径）
+
+- 跨机 TLS/NAT、断电/磁盘满双进程矩阵、被动双主竞争、1k 并发真实 HTTP 压测、真实浏览器 E2E、80% 覆盖率门禁、-race：属 Linux 服务器迁移后的验收矩阵（开发goal 明示"复杂测试留待迁移 Linux 服务器后执行"），本机 cgo/环境不可执行，不冒充完成。
+- R16 候选合并浏览器 UI、R17 多管理员并发修改/票据混淆浏览器矩阵、R20 组件/E2E 测试：保持矩阵"部分"尾巴，理由同上。
+- AI Phase 6B 冲突正文级预览（preview_eligible 用户逐案授权通道）：按 §7.7 设计默认不启用，属后续可选能力。
+
 ## 2026-08-15：独立审查修复批次（B1–B2 / D1–D7 / I1–I5 / 建议级）
 
-> 依据 E:/dshtest/AI_REVIEW_REPORT.md 的全面独立审查，本轮修复全部阻断级、缺陷级、不一致级问题与建议级 1–9、11 项。建议级第 10 项（节点延迟上报按用户会话节点限权，低风险）未做，见文末。
+> 依据 E:/dshtest/Sillytarvennew/AI_REVIEW_REPORT.md 的全面独立审查，本轮修复全部阻断级、缺陷级、不一致级问题与建议级 1–9、11 项。建议级第 10 项（节点延迟上报按用户会话节点限权，低风险）未做，见文末。（注：本条原把审查报告路径误写为 E:/dshtest/AI_REVIEW_REPORT.md，实际位于工作区 Sillytarvennew 根目录，第二批复核时更正。）
 
 ### 阻断级（真实 PostgreSQL 必错路径）
 
@@ -48,10 +76,10 @@
 - Sillytarven-online：5 个 stcontrol 测试文件 `node --test` 28/28（27 基线 + D3 回归 1）。
 - 方法论固化：本轮新增的每段生产 SQL（B1 三段 UPDATE、B2 释放 UPDATE、D6 聚合查询、#4 清扫 UPDATE）均有真实 PG 用例触达，sqlmock 绿灯不作为 SQL 类修复的验收依据。
 
-### 未做项与原因
+### 未做项与原因（第一批；两项均已在第二批闭环，见下方"2026-08-15 第二批"）
 
-- 建议级 8（Admin.tsx adminApi 去 any）：纯类型加固，涉及 30+ 个端点返回形状定义，工作量与回归面大而收益为编译期防护；留待前端专项。
-- 建议级 10（节点延迟上报限权）：已认证 + 数值钳制下风险低，改动需会话→节点归属查询；审查同样标注"低风险，可留"。
+- 建议级 8（Admin.tsx adminApi 去 any）：第一批未做；第二批 bd28ae6 以新增 web/src/adminTypes.ts（27 个 DTO interface）全部落地，Admin.tsx 39 处 any 清零，api.ts 错误解析同步收窄为 unknown。
+- 建议级 10（节点延迟上报限权）：第一批未做；第二批 9cf3cc7 以产品决策收口——不按用户会话限权（Round 20 节点选择 UX 要求对列表中每个候选节点上报实测延迟），但未知 node_id 现返回 ErrNodeNotFound→404，不再是静默 no-op。
 
 ## 2026-08-08：保守灾难模式与恢复排空
 
