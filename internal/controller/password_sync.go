@@ -101,14 +101,18 @@ func (s *Server) deliverPasswordRemovals(
 			continue
 		}
 		_, err = s.runAgentCommand(ctx, node, "set_password", protocol.SetPasswordRequest{
-			Handle: removal.LocalHandle, Remove: true,
+			Handle: removal.LocalHandle, Version: removal.Version, Remove: true,
 		}, 45*time.Second)
 		if err != nil {
-			_ = s.Store.MarkPasswordRemovalError(ctx, removal.GlobalUserID, removal.NodeID, time.Now().UTC())
+			_ = s.Store.MarkPasswordRemovalError(
+				ctx, removal.GlobalUserID, removal.NodeID, removal.Version, time.Now().UTC(),
+			)
 			pending++
 			continue
 		}
-		if err := s.Store.ActivatePasswordRemoval(ctx, removal.GlobalUserID, removal.NodeID, time.Now().UTC()); err != nil {
+		if err := s.Store.ActivatePasswordRemoval(
+			ctx, removal.GlobalUserID, removal.NodeID, removal.Version, time.Now().UTC(),
+		); err != nil {
 			pending++
 			continue
 		}

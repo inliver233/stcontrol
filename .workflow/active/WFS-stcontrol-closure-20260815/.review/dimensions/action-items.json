@@ -1,0 +1,140 @@
+[
+  {
+    "dimension": "action-items",
+    "review_id": "review-20260815-acceptance",
+    "analysis_timestamp": "2026-08-15T15:33:14.6249405+08:00",
+    "cli_tool_used": "codex",
+    "model": "gpt-5-codex",
+    "analysis_duration_ms": 1470000,
+    "summary": {
+      "total_findings": 3,
+      "critical": 0,
+      "high": 3,
+      "medium": 0,
+      "low": 0,
+      "files_analyzed": 14,
+      "lines_reviewed": 1120
+    },
+    "findings": [
+      {
+        "id": "act-001-9b7e2a1c",
+        "title": "Admin handoff state survives later user handoff and disables managed writer fencing despite R04/R05 being marked complete",
+        "severity": "high",
+        "category": "acceptance-criteria",
+        "description": "The Online adapter stores `request.session.stcontrolAdmin` during admin handoff, never clears it during later user handoff, and `stcontrolRequestTracker` exits early whenever that admin marker exists. A browser session that performs admin handoff first and user handoff second can continue user writes without the managed lease, stale-writer, or idle-session fencing that `docs/requirements-traceability.md` declares closed for R04 and R05.",
+        "file": "E:\\Sillytarvennew\\Sillytarven-online\\src\\stcontrol.js",
+        "line": 932,
+        "snippet": "if (request.session?.stcontrolAdmin) return next();",
+        "recommendation": "Clear `stcontrolAdmin` before completing a user handoff, clear any stale managed user envelope before completing an admin handoff, and add a regression that reuses one cookie across admin -> user handoff and proves `stale_writer_session` / lease fencing still applies.",
+        "references": [
+          "E:\\Sillytarvennew\\Sillytarven-online\\src\\endpoints\\stcontrol.js:446",
+          "E:\\Sillytarvennew\\Sillytarven-online\\tests\\stcontrol-routes.node.test.mjs:291",
+          "E:\\Sillytarvennew\\stcontrol\\docs\\requirements-traceability.md:22",
+          "E:\\Sillytarvennew\\stcontrol\\docs\\requirements-traceability.md:23"
+        ],
+        "impact": "Current code leaves a confirmed write-path bypass in the shipped Online adapter while the acceptance matrix records R04 and R05 as completed, so the closure claim is false and cross-node single-writer guarantees are not actually enforced for mixed admin/user sessions.",
+        "metadata": {
+          "requirement_ids": [
+            "R04",
+            "R05"
+          ],
+          "verified_by": "manual source audit",
+          "missing_test": "no mixed admin->user cookie reuse regression exists in the Online suites"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": [
+          "act-002-3d8c1f0b"
+        ]
+      },
+      {
+        "id": "act-002-3d8c1f0b",
+        "title": "Managed browser cookies are auto-promoted to independent mode without forced re-login on the request path",
+        "severity": "high",
+        "category": "requirement-coverage",
+        "description": "When the adapter enters independent mode, `stcontrolRequestTracker` calls `canUseNativeLogin(handle)` for any non-independent session envelope and rewrites the in-memory envelope to `independent` on an arbitrary request. That bypasses the explicit `/api/users/login` password flow and takeover-confirmation path that `users-public.js` and the disaster-login tests use as the intended disaster-mode gate.",
+        "file": "E:\\Sillytarvennew\\Sillytarven-online\\src\\stcontrol.js",
+        "line": 945,
+        "snippet": "if (state.mode === STCONTROL_MODES.INDEPENDENT && envelope.loginMode !== STCONTROL_MODES.INDEPENDENT) {",
+        "recommendation": "Fail closed when an old managed envelope appears during `independent` or `independent-draining`, and only create `INDEPENDENT` session envelopes from a successful `/api/users/login` request that has just passed password and takeover checks. Add a tracker-level regression that starts with a managed cookie, flips the adapter to independent mode, and verifies the next write is rejected until the user logs in again.",
+        "references": [
+          "E:\\Sillytarvennew\\Sillytarven-online\\src\\stcontrol.js:623",
+          "E:\\Sillytarvennew\\Sillytarven-online\\src\\endpoints\\users-public.js:114",
+          "E:\\Sillytarvennew\\Sillytarven-online\\tests\\stcontrol-adapter.node.test.mjs:762",
+          "E:\\Sillytarvennew\\Sillytarven-online\\tests\\stcontrol-disaster-login.node.test.mjs:123",
+          "E:\\Sillytarvennew\\stcontrol\\docs\\requirements-traceability.md:20"
+        ],
+        "impact": "Existing managed browser sessions can survive a controller outage and become disaster-write sessions without a fresh password login, which leaves R02 and the disaster-mode acceptance path materially weaker than the requirement matrix claims.",
+        "metadata": {
+          "requirement_ids": [
+            "R02",
+            "R13"
+          ],
+          "verified_by": "manual source audit",
+          "missing_test": "current outage test only checks state mutation and never exercises request-tracker conversion"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": [
+          "act-001-9b7e2a1c"
+        ]
+      },
+      {
+        "id": "act-003-7ac4d2ef",
+        "title": "Acceptance closure is still blocked because the 80% gate is unmet and the real process/cross-repo suites are optional skips",
+        "severity": "high",
+        "category": "deployment-readiness",
+        "description": "The current acceptance artifact still states that combined cross-platform coverage is 66.7% and cannot justify '上线完成'. At the same time, the real PostgreSQL process acceptance test and the Go<->Online cross-repository adapter test both skip in short mode and whenever DSN / Node / fixtures are unavailable, so a default green `go test ./...` does not satisfy the review state's target `all_confirmed_requirements_closed_and_basic_tests_green`.",
+        "file": "E:\\Sillytarvennew\\stcontrol\\docs\\requirements-traceability.md",
+        "line": 44,
+        "snippet": "总覆盖率仍远低于最终 80% 门禁，不能据此宣称上线完成。",
+        "recommendation": "Promote the DSN-backed PostgreSQL + process + cross-repo suites into required acceptance commands/CI jobs instead of opt-in skips, publish one reproducible acceptance entrypoint that runs them, and keep P3 / release closure open until the documented 80% gate is actually reached or formally revised.",
+        "references": [
+          "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\.workflow\\active\\WFS-stcontrol-closure-20260815\\.review\\review-state.json:1",
+          "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\internal\\agent\\process_e2e_test.go:43",
+          "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\internal\\agent\\tavern_crossrepo_e2e_test.go:23",
+          "E:\\Sillytarvennew\\实现报告.md:60",
+          "E:\\Sillytarvennew\\实现报告.md:336"
+        ],
+        "impact": "The repository still lacks an enforced acceptance harness for the very tests that exercise real PostgreSQL, process restarts, and cross-repository adapter behavior, so the requested P0->P3 acceptance closure is not currently auditable or releasable.",
+        "metadata": {
+          "requirement_ids": [
+            "P3",
+            "Round 76"
+          ],
+          "verified_by": "current acceptance artifacts + test source audit",
+          "missing_test": "real acceptance suites are not part of the default mandatory green path"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": []
+      }
+    ],
+    "cross_references": [
+      {
+        "finding_id": "act-001-9b7e2a1c",
+        "related_dimensions": [
+          "security",
+          "architecture"
+        ],
+        "reason": "Mixed admin/user session state contaminates the request-path trust boundary and invalidates the documented single-writer/session-fencing design."
+      },
+      {
+        "finding_id": "act-002-3d8c1f0b",
+        "related_dimensions": [
+          "security",
+          "best-practices"
+        ],
+        "reason": "Independent-mode request conversion weakens the intended re-authentication boundary and leaves outage behavior inconsistent with the public login flow."
+      },
+      {
+        "finding_id": "act-003-7ac4d2ef",
+        "related_dimensions": [
+          "quality",
+          "maintainability"
+        ],
+        "reason": "Acceptance evidence is not enforced by the default test path, so deployment readiness and regression confidence remain overstated."
+      }
+    ]
+  }
+]

@@ -1,0 +1,10 @@
+{
+  "fix_session_id": "fix-20260815-1620",
+  "source": "../../fix-export-20260815162000.json",
+  "created_at": "2026-08-15T16:20:00+08:00",
+  "phase": "execution",
+  "max_iterations_per_finding": 3,
+  "batch_size": 5,
+  "status": "active",
+  "current_stage": "P1 verified; checkpoint commit and push in progress"
+}

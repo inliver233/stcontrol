@@ -1,5 +1,23 @@
 # 验证记录
 
+## 2026-08-15：flash P1 复审阻断项闭环
+
+- 以最新 35 条 confirmed 缺陷和两项目 HEAD 重新审计后，原 2 个 WIP critical SQL bug（legacy handle/username 与 storage repair interval）已在当前 flash 基线闭环；本批继续修复身份/世代、独立模式、数据故障释放及冲突恢复中的交叉竞态。
+- OAuth 登录 state 现在同时绑定 host-only 浏览器 cookie；R14 removal 从 Controller 协议、0049 安全升级、待发查询到 Online adapter 的 `remove:true/version` 形成完整合同，避免旧 intent 覆盖重绑或改密材料。
+- Controller rebuild 以 0050 的 `deferred/ready_with_deferred` 区分离线待对账与全量成功；promotion、recovery heartbeat、stale sweep、handoff/registration/command selection 均增加 active-generation fence，旧凭据重连不会发布 online 或续租用户活动。
+- Online 独立模式 admission 改为 envelope + durable session + ownership/epoch/generation 的原子证明；managed/draining/independent 转换关闭遗留会话绕租约路径，用户 heartbeat 正式装载并与管理员专页隔离。
+- 0051 与 Controller/Agent/Online 共同实现 durable data-fault release：resolved 未释放仍视作 open、generation-fenced enqueue、exact receipt、failed/expired delivery 安全换号重排、单槽也公平的 freeze/release 调度，以及 fault-scoped durable release tombstone。R06 另新增 15 秒排空超时的可注入直接测试。
+- Conflict 页面在刷新、404、网络与 5xx 下保留 operation 并继续轮询，只对明确终态停止；恢复/冲突最终发布点仍复查活动写租约。
+
+### 本批实际执行证据
+
+- `node --test tests/stcontrol-adapter.node.test.mjs tests/stcontrol-agent-auth.node.test.mjs tests/stcontrol-disaster-login.node.test.mjs tests/stcontrol-heartbeat.node.test.mjs tests/stcontrol-native-entry-guards.node.test.mjs tests/stcontrol-routes.node.test.mjs`：44/44 通过。
+- `go test ./...`：通过。默认 C 盘 TEMP 仅余约 1.6 GiB 时，3 个真实磁盘余量测试按设计返回 `insufficient snapshot disk capacity`；把 TEMP/TMP 指向项目内 E 盘临时目录后同一全量命令通过。
+- `go vet ./...`、`go build ./...`：通过。
+- stcontrol web `npm test`：2 files、19/19 通过；`npm run build`：通过。
+- Online 修改文件定向 ESLint 通过；`public/scripts/user.js` 的 23 条 lint 错误在 `HEAD` 原文件同样存在，且均不位于本批新增行，因此作为既有基线债务记录、不在本批扩大范围。
+- PostgreSQL 专属升级/并发/ACK 崩溃/世代 rollover 用例已加入且可编译；本机未设置 `STCONTROL_TEST_POSTGRES_DSN`，本轮明确 skip，留待 Linux 服务器真实 PostgreSQL 阶段执行。
+
 ## 2026-08-15 第二批：决策④采纳链路、Round 60 真实 pg_dump 端到端与收尾
 
 > 本批接续独立审查修复批次（上批建议级 8/10 与 AI 决策④为遗留项），全部由真实工具链验证后逐组提交推送。

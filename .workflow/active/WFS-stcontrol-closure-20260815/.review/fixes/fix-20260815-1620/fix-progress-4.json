@@ -1,0 +1,19 @@
+{
+  "group_id": "G4",
+  "status": "completed",
+  "attempt": 1,
+  "findings_total": 1,
+  "findings_fixed": 1,
+  "phase": "verified",
+  "tests": [
+    "go test ./internal/agent",
+    "go test ./internal/store",
+    "go test ./internal/controller",
+    "go test ./internal/protocol",
+    "go test ./..."
+  ],
+  "notes": [
+    "Exact operation/generation/scope receipts, durable terminal redelivery and fair freeze/release scheduling are closed across Store, Controller, Agent and Online.",
+    "PostgreSQL crash/concurrency cases compile but skip without STCONTROL_TEST_POSTGRES_DSN."
+  ]
+}

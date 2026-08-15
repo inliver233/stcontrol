@@ -61,7 +61,7 @@ func TestCreateLoginHandoffCommitsLeaseAndTicketTogether(t *testing.T) {
 		WithArgs(p.OperationID, p.UserID, p.RequestedNodeID, p.SessionID, "acquired",
 			p.RequestedNodeID, p.SessionID, int64(1), now).
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectQuery(`SELECT base_url FROM nodes`).
+	mock.ExpectQuery(`(?s)SELECT base_url FROM nodes.*controller_generation=\(SELECT generation FROM controller_epochs WHERE state='active'\)`).
 		WithArgs(p.RequestedNodeID, false).
 		WillReturnRows(sqlmock.NewRows([]string{"base_url"}).AddRow("https://node.example"))
 	mock.ExpectExec(`INSERT INTO control_tickets`).

@@ -66,6 +66,8 @@ func TestBindPasswordIdentityUpdatesNormalizedAndLegacyVerifier(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE node_accounts`).WithArgs(int64(70), "node-hash", "node-salt", now).
 		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(`UPDATE node_account_password_removals`).WithArgs(int64(70), now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	if err := st.BindPasswordIdentity(
 		context.Background(), 7, 70, "bcrypt-hash", "node-hash", "node-salt", now,

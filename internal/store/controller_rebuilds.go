@@ -115,7 +115,8 @@ func controllerRebuildAllowsOldCredentialLocked(
 		  FROM controller_rebuild_operations rebuild
 		  JOIN controller_rebuild_nodes item ON item.rebuild_id=rebuild.id
 		  JOIN agent_credentials credential ON credential.node_id=item.node_id
-		  WHERE rebuild.generation=$1 AND rebuild.state='reconciling'
+		  WHERE rebuild.generation=$1
+		    AND rebuild.state IN ('reconciling','ready_with_deferred')
 		    AND item.node_id=$2 AND item.state<>'reconciled'
 		    AND item.previous_credential_generation=$3
 		    AND credential.controller_generation=$3
@@ -138,6 +139,7 @@ func markControllerRebuildHeartbeatLocked(
 		    WHEN item.state='reconciled' THEN item.state
 		    WHEN $3=$2 AND $4='managed' AND $5='managed' THEN 'reconciled'
 		    WHEN $3=$2 THEN 'draining'
+		    WHEN item.state='deferred' THEN item.state
 		    WHEN item.state='rotation_pending' THEN item.state
 		    ELSE 'heartbeat_verified' END,
 		  authenticated_generation=$3,last_heartbeat_at=$6,
@@ -151,7 +153,7 @@ func markControllerRebuildHeartbeatLocked(
 		  updated_at=$6
 		FROM controller_rebuild_operations rebuild
 		WHERE rebuild.id=item.rebuild_id AND rebuild.generation=$2
-		  AND rebuild.state='reconciling' AND item.node_id=$1
+		  AND rebuild.state IN ('reconciling','ready_with_deferred') AND item.node_id=$1
 		RETURNING rebuild.id::text`,
 		nodeID, activeGeneration, authenticatedGeneration, reportedMode, desiredMode, now).
 		Scan(&rebuildID)
@@ -172,12 +174,12 @@ func markControllerRebuildRotationPendingLocked(
 ) error {
 	_, err := tx.ExecContext(ctx, `
 		UPDATE controller_rebuild_nodes item SET
-		  state=CASE WHEN item.state IN ('reconciled','draining','credential_activated')
+		  state=CASE WHEN item.state IN ('reconciled','draining','credential_activated','deferred')
 		    THEN item.state ELSE 'rotation_pending' END,
 		  credential_version=$3,updated_at=$4
 		FROM controller_rebuild_operations rebuild
 		WHERE rebuild.id=item.rebuild_id AND rebuild.generation=$2
-		  AND rebuild.state='reconciling' AND item.node_id=$1`,
+		  AND rebuild.state IN ('reconciling','ready_with_deferred') AND item.node_id=$1`,
 		nodeID, generation, credentialVersion, now)
 	return err
 }
@@ -191,18 +193,16 @@ func markControllerRebuildCredentialActivatedLocked(
 	var rebuildID string
 	err := tx.QueryRowContext(ctx, `
 		UPDATE controller_rebuild_nodes item SET
-		  state=CASE WHEN node.control_mode='managed'
-		    AND node.desired_control_mode='managed'
-		    THEN 'reconciled' ELSE 'draining' END,
+		  state=CASE WHEN node.connectivity_state='online'
+		    THEN 'credential_activated' ELSE 'deferred' END,
 		  authenticated_generation=$2,credential_version=$3,
 		  credential_activated_at=COALESCE(item.credential_activated_at,$4),
-		  reconciled_at=CASE WHEN node.control_mode='managed'
-		    AND node.desired_control_mode='managed'
-		    THEN COALESCE(item.reconciled_at,$4) ELSE NULL END,
+		  reconciled_at=NULL,
 		  updated_at=$4
 		FROM controller_rebuild_operations rebuild,nodes node
 		WHERE rebuild.id=item.rebuild_id AND rebuild.generation=$2
-		  AND rebuild.state='reconciling' AND item.node_id=$1 AND node.id=item.node_id
+		  AND rebuild.state IN ('reconciling','ready_with_deferred')
+		  AND item.node_id=$1 AND node.id=item.node_id
 		RETURNING rebuild.id::text`, nodeID, generation, credentialVersion, now).
 		Scan(&rebuildID)
 	if err == sql.ErrNoRows {
@@ -220,12 +220,24 @@ func finishControllerRebuildIfReadyLocked(
 	rebuildID string,
 	now time.Time,
 ) error {
-	var total, reconciled int
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE controller_rebuild_nodes item
+		SET state='deferred', updated_at=$2
+		FROM nodes node
+		WHERE item.rebuild_id=$1 AND item.node_id=node.id
+		  AND item.state NOT IN ('deferred','reconciled')
+		  AND item.last_heartbeat_at IS NOT NULL
+		  AND node.connectivity_state<>'online'`,
+		rebuildID, now); err != nil {
+		return err
+	}
+	var total, reconciled, ready int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT count(*)::int,
-		  count(*) FILTER (WHERE state='reconciled')::int
+		  count(*) FILTER (WHERE state='reconciled')::int,
+		  count(*) FILTER (WHERE state IN ('reconciled','deferred'))::int
 		FROM controller_rebuild_nodes WHERE rebuild_id=$1`, rebuildID).
-		Scan(&total, &reconciled); err != nil {
+		Scan(&total, &reconciled, &ready); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -234,14 +246,24 @@ func finishControllerRebuildIfReadyLocked(
 		rebuildID, total, reconciled, now); err != nil {
 		return err
 	}
-	if total == 0 || reconciled != total {
-		return nil
+	if total != reconciled {
+		state := "reconciling"
+		if ready == total {
+			state = "ready_with_deferred"
+		}
+		_, err := tx.ExecContext(ctx, `
+			UPDATE controller_rebuild_operations
+			SET state=$2,completed_at=NULL,updated_at=$3
+			WHERE id=$1 AND state IN ('reconciling','ready_with_deferred')`,
+			rebuildID, state, now)
+		return err
 	}
 	var operationID string
 	var generation int64
 	err := tx.QueryRowContext(ctx, `
 		UPDATE controller_rebuild_operations SET state='succeeded',completed_at=$2,
-		  updated_at=$2 WHERE id=$1 AND state='reconciling'
+		  updated_at=$2
+		WHERE id=$1 AND state IN ('reconciling','ready_with_deferred')
 		RETURNING operation_id::text,generation`, rebuildID, now).
 		Scan(&operationID, &generation)
 	if err == sql.ErrNoRows {

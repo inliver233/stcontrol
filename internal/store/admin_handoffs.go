@@ -76,6 +76,7 @@ func (s *Store) CreateAdminHandoff(ctx context.Context, p CreateAdminHandoffPara
 		  AND link.revoked_at IS NULL AND link.last_verified_at>$3
 		  AND node.id=link.node_id AND node.role='compute'
 		  AND node.connectivity_state='online' AND node.operational_state='active'
+		  AND node.controller_generation=epoch.generation
 		  AND node.compatibility_state='compatible' AND node.base_url<>''
 		FOR SHARE OF epoch,admin,link,node`, p.AdminID, p.NodeID, p.Now.Add(-2*time.Minute)).Scan(
 		&handoff.ControllerGeneration, &handoff.NodeBaseURL, &handoff.LocalHandle, &handoff.PermissionVersion)

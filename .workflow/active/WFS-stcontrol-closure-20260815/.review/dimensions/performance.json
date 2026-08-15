@@ -1,0 +1,127 @@
+[
+  {
+    "dimension": "performance",
+    "review_id": "review-20260815-acceptance",
+    "analysis_timestamp": "2026-08-15T09:20:00Z",
+    "cli_tool_used": "codex",
+    "model": "gpt-5",
+    "analysis_duration_ms": 2940000,
+    "summary": {
+      "total_findings": 3,
+      "critical": 0,
+      "high": 2,
+      "medium": 1,
+      "low": 0,
+      "files_analyzed": 9,
+      "lines_reviewed": 2280
+    },
+    "findings": [
+      {
+        "id": "perf-001-6a1c2b9d",
+        "title": "Every managed request and heartbeat is serialized behind one global queue and synchronous state-file fsync",
+        "severity": "high",
+        "category": "blocking-operation",
+        "description": "The adapter keeps one process-wide `stateQueue` promise chain and every `mutateState()` call ends with `persistState()`, which uses synchronous `mkdirSync` plus `writeFileAtomicSync`. `stcontrolRequestTracker()` awaits that mutation before the request is admitted, then schedules another queued mutation on `finish`/`close`; login and `/api/users/heartbeat` use the same path. This makes all stcontrol-tracked requests contend on one synchronous disk-backed critical section instead of per-session state.",
+        "file": "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js",
+        "line": 340,
+        "snippet": "let stateQueue = Promise.resolve(); ... async function mutateState(mutator) { const run = stateQueue.then(async () => { const state = loadStateSync(); const result = await mutator(state); persistState(state); return result; }); ... }",
+        "recommendation": "Remove synchronous disk I/O from the request hot path. Keep request accounting in memory or in a per-session/per-user lock, batch durable snapshots asynchronously, and avoid a single global queue for unrelated users. At minimum, `/api/users/heartbeat` and request in-flight counters should not require a process-wide fsync before `next()` runs.",
+        "references": [
+          "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:63",
+          "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:277",
+          "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:340",
+          "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:930",
+          "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:980",
+          "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:1005",
+          "E:/Sillytarvennew/Sillytarven-online/src/endpoints/users-public.js:242",
+          "E:/Sillytarvennew/Sillytarven-online/public/scripts/user-heartbeat.js:11",
+          "E:/Sillytarvennew/Sillytarven-online/public/scripts/user-heartbeat.js:61",
+          "E:/Sillytarvennew/Sillytarven-online/public/scripts/user-heartbeat.js:196"
+        ],
+        "impact": "This creates head-of-line blocking across unrelated users. At the default 2 minute foreground heartbeat, 1,000 active managed pages already generate a steady stream of queued fsync-backed mutations before counting normal reads and writes, and any slow disk flush delays all other tracked sessions because they share the same global queue.",
+        "metadata": {
+          "subsystem": "online-adapter-session-tracking",
+          "discovery_source": "bash-scan"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": [
+          "arch-001-7d2a4c9e"
+        ]
+      },
+      {
+        "id": "perf-002-31de8f4a",
+        "title": "Controller disaster backup retries never get re-claimed after a transient failure",
+        "severity": "high",
+        "category": "resource-usage",
+        "description": "The reconciler only calls `executeControllerBackup()` when `ScheduleControllerDisasterBackup()` returns a brand-new run. But `ScheduleControllerDisasterBackup()` treats any row in `retry_wait` as already covered and returns nil, while `FailControllerDisasterBackup()` moves transient failures into `retry_wait` and there is no other caller that claims existing runs. A failed backup therefore consumes the scheduler slot indefinitely instead of being retried after backoff.",
+        "file": "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/controller_backup.go",
+        "line": 78,
+        "snippet": "run, err := s.Store.ScheduleControllerDisasterBackup(...); if err != nil || run == nil { return }; if err := s.executeControllerBackup(ctx, run); err != nil { return }",
+        "recommendation": "Split scheduling from execution. On each reconciler pass, first claim any existing `scheduled` or due `retry_wait` run whose lease is absent/expired, then schedule a new run only when no runnable backup exists. The claim query also needs a due-time/lease-expiry predicate so retry backoff and worker restart recovery are actually honored.",
+        "references": [
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/controller_backup.go:66",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/controller_backup.go:78",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/controller_backup.go:87",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/controller_disaster_backups.go:103",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/controller_disaster_backups.go:111",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/controller_disaster_backups.go:145",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/controller_disaster_backups.go:152",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/controller_disaster_backups.go:272",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/controller_disaster_backups.go:287"
+        ],
+        "impact": "One transient pg_dump, target-prepare, transfer, or publish failure can stall controller own-state backups indefinitely, because the scheduler never reaches the existing `retry_wait` row again and also refuses to create a replacement run while that row exists. Backup throughput drops to zero until manual cleanup changes the database state.",
+        "metadata": {
+          "subsystem": "controller-backup-scheduler",
+          "discovery_source": "bash-scan"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": [
+          "arch-003-c8e9137b"
+        ]
+      },
+      {
+        "id": "perf-003-a54e27c1",
+        "title": "Controller backup hashing reads the entire archive into memory before upload",
+        "severity": "medium",
+        "category": "memory-leak",
+        "description": "After building the backup archive on disk, the controller computes its digest with `os.ReadFile()` and `sha256.Sum256(data)`, which materializes the full tar.zst in RAM. The transfer path then opens and streams the same file again. Because the shared snapshot limit is 100 GiB, a full pg_dump-style controller backup can turn one backup pass into a very large one-shot memory spike and heavy GC pressure.",
+        "file": "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/controller_backup.go",
+        "line": 252,
+        "snippet": "func controllerFileSHA256(path string) (string, error) { data, err := os.ReadFile(path); if err != nil { return \"\", err }; sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]), nil }",
+        "recommendation": "Hash the archive as a stream, either while writing the tar.zst or by reopening it with `io.Copy(hash, file)` instead of `os.ReadFile`. That keeps memory bounded regardless of backup size and lets backup concurrency scale without full-archive heap copies.",
+        "references": [
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/controller_backup.go:154",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/controller_backup.go:252",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/controller_backup.go:269",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/agent/snapshot.go:36"
+        ],
+        "impact": "Large controller backups pay for the archive three times: write to disk, full-file read into RAM for hashing, then upload streaming. That needlessly inflates peak RSS during backup windows and reduces how safely the system can run pg_dump backups alongside other controller work.",
+        "metadata": {
+          "subsystem": "controller-backup-archive-transfer",
+          "discovery_source": "bash-scan"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": []
+      }
+    ],
+    "cross_references": [
+      {
+        "finding_id": "perf-001-6a1c2b9d",
+        "related_dimensions": [
+          "architecture"
+        ],
+        "reason": "The same global serialized session-state path also creates the lease-admission race already flagged in architecture."
+      },
+      {
+        "finding_id": "perf-002-31de8f4a",
+        "related_dimensions": [
+          "architecture"
+        ],
+        "reason": "The stalled retry path is the concrete scheduler consequence of the recovery/scheduling boundary issue in controller backup orchestration."
+      }
+    ]
+  }
+]

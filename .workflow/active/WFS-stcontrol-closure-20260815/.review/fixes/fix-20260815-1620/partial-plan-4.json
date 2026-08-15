@@ -1,0 +1,45 @@
+{
+  "batch_id": 4,
+  "groups": [
+    {
+      "group_id": "G1",
+      "name": "durable-data-fault-release",
+      "finding_ids": ["FIX-DATA-FAULT-RELEASE"],
+      "strategy": "serial-cross-repository",
+      "depends_on": ["batch-1", "batch-2"],
+      "owned_files": [
+        "internal/store/user_data_faults.go",
+        "internal/controller/protection.go",
+        "internal/protocol/protocol.go",
+        "internal/agent/commands.go",
+        "internal/store/migrations/0051_user_data_fault_release.sql",
+        "Sillytarven-online/src/stcontrol.js",
+        "Sillytarven-online/src/endpoints/stcontrol.js"
+      ],
+      "risk": "high",
+      "tests": [
+        "go test ./internal/store ./internal/controller ./internal/agent ./internal/protocol",
+        "node --test tests/stcontrol-adapter.node.test.mjs tests/stcontrol-routes.node.test.mjs"
+      ]
+    },
+    {
+      "group_id": "G2",
+      "name": "drain-timeout-contract-test",
+      "finding_ids": ["FIX-R06-DRAIN-TEST"],
+      "strategy": "serial-after-G1",
+      "depends_on": ["G1"],
+      "owned_files": ["Sillytarven-online/tests/stcontrol-routes.node.test.mjs"],
+      "risk": "medium",
+      "tests": ["node --test tests/stcontrol-routes.node.test.mjs"]
+    }
+  ],
+  "timeline": [
+    {"stage": 1, "groups": ["G1"], "mode": "serial"},
+    {"stage": 2, "groups": ["G2"], "mode": "serial"}
+  ],
+  "metadata": {
+    "findings_count": 2,
+    "groups_count": 2,
+    "created_at": "2026-08-15T16:22:00+08:00"
+  }
+}

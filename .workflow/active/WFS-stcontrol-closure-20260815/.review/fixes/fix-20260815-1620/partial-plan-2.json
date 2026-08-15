@@ -1,0 +1,123 @@
+{
+  "batch_id": 2,
+  "groups": [
+    {
+      "group_id": "G1",
+      "name": "oauth-state-browser-binding",
+      "finding_ids": ["FIX-OAUTH-STATE-BINDING"],
+      "strategy": "parallel-controller-oauth-only",
+      "owned_files": [
+        "internal/controller/oauth.go",
+        "internal/controller/oauth_http_test.go",
+        "internal/controller/oauth_http_postgres_integration_test.go"
+      ],
+      "migration": null,
+      "risk": "medium",
+      "tests": [
+        "go test ./internal/controller -run 'TestControllerOAuthHTTPStatePendingLoginAndIdentityBinding|TestExchangeLinuxDoUsesBoundedInjectableClient|TestExchangeLinuxDoRejectsProviderErrorAndInsecureURL|TestExchangeDiscordChecksConfiguredGuildMembership'"
+      ]
+    },
+    {
+      "group_id": "G2",
+      "name": "password-removal-version-fence",
+      "finding_ids": ["FIX-R14-PASSWORD-REMOVAL"],
+      "strategy": "serial-cross-repository-contract-first",
+      "owned_files": [
+        "internal/store/identities.go",
+        "internal/store/password_convergence.go",
+        "internal/store/password_convergence_test.go",
+        "internal/store/models.go",
+        "internal/controller/password_sync.go",
+        "internal/controller/password_sync_postgres_integration_test.go",
+        "internal/protocol/protocol.go",
+        "internal/store/migrations/0049_password_removal_version.sql",
+        "Sillytarven-online/src/endpoints/stcontrol.js",
+        "Sillytarven-online/tests/stcontrol-adapter.node.test.mjs",
+        "Sillytarven-online/tests/stcontrol-routes.node.test.mjs"
+      ],
+      "migration": "0049_password_removal_version.sql",
+      "cross_repo_dependencies": [
+        "stcontrol -> internal/protocol/protocol.go:SetPasswordRequest must carry an exact fenced removal version alongside Remove=true.",
+        "Sillytarven-online -> POST /api/stcontrol/internal/users/password must reject stale rollback versions and clear local password+salt only for the exact fenced removal."
+      ],
+      "risk": "high",
+      "tests": [
+        "go test ./internal/store ./internal/controller -run 'TestControllerPasswordChangeStagesAndResumesEveryNode|TestPasswordFallbackHashAcceptsPreviousWhileSyncIncomplete|TestPasswordFallbackHashDropsAfterNodeConvergence|TestListPendingPasswordRemovals|TestActivatePasswordRemovalAndMarkError'",
+        "node --test tests/stcontrol-adapter.node.test.mjs tests/stcontrol-routes.node.test.mjs"
+      ]
+    },
+    {
+      "group_id": "G3",
+      "name": "controller-rebuild-offline-deferral",
+      "finding_ids": ["FIX-REBUILD-OFFLINE"],
+      "strategy": "serial-after-G2-shared-migration-sequence",
+      "depends_on": ["G2"],
+      "owned_files": [
+        "internal/store/leadership.go",
+        "internal/store/leadership_test.go",
+        "internal/store/controller_rebuilds.go",
+        "internal/store/controller_rebuilds_test.go",
+        "internal/store/control_modes.go",
+        "internal/store/control_modes_test.go",
+        "internal/controller/admin_controller_rebuild_test.go",
+        "internal/store/migrations/0050_controller_rebuild_deferred.sql"
+      ],
+      "migration": "0050_controller_rebuild_deferred.sql",
+      "risk": "high",
+      "tests": [
+        "go test ./internal/store ./internal/controller -run 'TestPromoteControllerEpochFencesBrowserCredentials|TestGetLatestControllerRebuildReturnsBoundedNodeProgress|TestControllerRebuildAllowsOldCredentialForHeartbeatOnly|TestControlPlaneReadinessIgnoresOfflineNodes|TestControlPlaneReadinessRequiresActiveGenerationAndManagedNodes|TestAdminControllerRebuildReportsNotRequiredBeforePromotion'"
+      ]
+    },
+    {
+      "group_id": "G4",
+      "name": "compatibility-third-heartbeat-window",
+      "finding_ids": ["FIX-COMPAT-THIRD-HEARTBEAT"],
+      "strategy": "parallel-store-compatibility-only",
+      "owned_files": [
+        "internal/store/node_compatibility.go",
+        "internal/store/node_compatibility_test.go"
+      ],
+      "migration": null,
+      "risk": "medium",
+      "tests": [
+        "go test ./internal/store -run 'TestDecideNodeCompatibilityIncidentInitialAndUpgradeIsolation|TestDecideNodeCompatibilityIncidentRequiresDistinctStableObservations|TestGetNodeCompatibilityIncidentStatus'"
+      ]
+    }
+  ],
+  "timeline": [
+    {
+      "stage": 1,
+      "groups": ["G1", "G2", "G4"],
+      "mode": "parallel"
+    },
+    {
+      "stage": 2,
+      "groups": ["G3"],
+      "mode": "serial"
+    },
+    {
+      "stage": 3,
+      "groups": ["G1", "G2", "G3", "G4"],
+      "mode": "integrate-and-regression-check"
+    }
+  ],
+  "metadata": {
+    "findings_count": 4,
+    "groups_count": 4,
+    "migration_sequence": [
+      "0049_password_removal_version.sql",
+      "0050_controller_rebuild_deferred.sql"
+    ],
+    "baseline_migrations_reviewed": [
+      "0005_durable_oauth_flows.sql",
+      "0032_node_compatibility_incidents.sql",
+      "0034_controller_rebuilds.sql",
+      "0042_password_convergence_fallback.sql"
+    ],
+    "cross_repo_endpoint_dependencies": [
+      "FIX-R14-PASSWORD-REMOVAL depends on Sillytarven-online POST /api/stcontrol/internal/users/password adopting the exact version-fenced remove-password contract."
+    ],
+    "planning_basis": "OAuth state binding is isolated to controller OAuth flow/tests. Compatibility heartbeat remains isolated to node_compatibility logic/tests. Password removal must land before rebuild deferral because batch 2 needs deterministic migration numbering (0049 then 0050) and R14 changes the only cross-repository endpoint contract in this batch. Rebuild deferral stays after R14 because current readiness and rebuild completion still count only state='reconciled', so deferred-node semantics need a final integration pass against control_modes and rebuild progress.",
+    "created_at": "2026-08-15T16:00:16.1229881+08:00"
+  }
+}

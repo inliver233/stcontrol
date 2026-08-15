@@ -51,7 +51,8 @@ func TestPromoteControllerEpochFencesBrowserCredentials(t *testing.T) {
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO controller_rebuild_nodes`).WithArgs(rebuildID, now).
 		WillReturnResult(sqlmock.NewResult(0, 2))
-	mock.ExpectExec(`UPDATE nodes SET controller_generation=0`).WithArgs(rebuildID).
+	mock.ExpectExec(`(?s)UPDATE nodes SET controller_generation=0,status='offline',connectivity_state='offline'.*capacity_reason_code='controller_generation_promoted'.*connectivity_state='online' AND controller_generation<>\$3`).
+		WithArgs(rebuildID, now, int64(5)).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec(`UPDATE controller_rebuild_operations rebuild SET`).WithArgs(rebuildID, now).
 		WillReturnResult(sqlmock.NewResult(0, 1))

@@ -1,0 +1,32 @@
+[
+  {
+    "batch_id": 1,
+    "name": "online-session-core",
+    "strategy": "serial-within-batch",
+    "finding_ids": ["FIX-ONLINE-ATOMIC", "FIX-ONLINE-INDEPENDENT", "FIX-ONLINE-HANDOFF", "FIX-ONLINE-PERSISTENCE", "FIX-HEARTBEAT-ENTRY"]
+  },
+  {
+    "batch_id": 2,
+    "name": "identity-and-controller-rebuild",
+    "strategy": "parallel-files-then-integrate",
+    "finding_ids": ["FIX-OAUTH-STATE-BINDING", "FIX-R14-PASSWORD-REMOVAL", "FIX-REBUILD-OFFLINE", "FIX-COMPAT-THIRD-HEARTBEAT"]
+  },
+  {
+    "batch_id": 3,
+    "name": "backup-repair-and-rate-limits",
+    "strategy": "parallel-files-then-integrate",
+    "finding_ids": ["FIX-OFFLINE-BACKUP-ASYNC", "FIX-CONTROLLER-BACKUP-RETRY", "FIX-RECOVERY-STORE-BARRIER", "FIX-R21-AGENT-LIMITS"]
+  },
+  {
+    "batch_id": 4,
+    "name": "cross-repository-release-and-contract-tests",
+    "strategy": "serial-after-batches-1-and-2",
+    "finding_ids": ["FIX-DATA-FAULT-RELEASE", "FIX-R06-DRAIN-TEST"]
+  },
+  {
+    "batch_id": 5,
+    "name": "p3-closure-and-regressions",
+    "strategy": "serial-final",
+    "finding_ids": ["FIX-P3-ACCEPTANCE", "VERIFY-PRIOR-P1-P2", "VERIFY-ONLINE-THREE", "DEFER-AI-SUPERVISION"]
+  }
+]

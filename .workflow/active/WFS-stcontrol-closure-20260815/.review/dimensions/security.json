@@ -1,0 +1,70 @@
+[
+  {
+    "dimension": "security",
+    "review_id": "review-20260815-acceptance",
+    "analysis_timestamp": "2026-08-15T07:34:00Z",
+    "cli_tool_used": "codex",
+    "model": "gpt-5.4",
+    "analysis_duration_ms": 610000,
+    "summary": {
+      "total_findings": 2,
+      "critical": 0,
+      "high": 2,
+      "medium": 0,
+      "low": 0,
+      "files_analyzed": 12,
+      "lines_reviewed": 2710
+    },
+    "findings": [
+      {
+        "id": "sec-001-6e8c19a4",
+        "title": "Mixed admin and user handoffs bypass user write fencing",
+        "severity": "high",
+        "category": "authorization",
+        "description": "An admin handoff persists stcontrolAdmin in the browser session, a later user handoff does not clear it, and the request tracker skips every user fence whenever that marker exists.",
+        "file": "E:/Sillytarvennew/Sillytarven-online/src/endpoints/stcontrol.js",
+        "line": 446,
+        "snippet": "request.session.stcontrolAdmin = { ... }; ... if (kind === 'user') await registerStcontrolSession(...);",
+        "recommendation": "Make handoff roles mutually exclusive: end and clear the user envelope before an admin handoff, clear stcontrolAdmin before a user handoff, and add a mixed-handoff regression test.",
+        "references": [],
+        "impact": "A mixed-role browser session can issue user writes without stale-writer lease checks, snapshot/data-fault gates, or independent reconciliation fencing.",
+        "metadata": {
+          "secondary_file": "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js",
+          "secondary_line": 932,
+          "confidence": "high"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": ["quality", "action-items"]
+      },
+      {
+        "id": "sec-002-c91a2f7b",
+        "title": "OAuth login state is not bound to the initiating browser",
+        "severity": "high",
+        "category": "authentication",
+        "description": "Login-purpose OAuth state stores only its hash, provider, optional node, and generation; callback redemption proves no browser cookie or pre-auth session binding.",
+        "file": "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/oauth.go",
+        "line": 55,
+        "snippet": "stateHash := sha256.Sum256([]byte(state)); s.Store.CreateOAuthState(...); http.Redirect(...)",
+        "recommendation": "Set a host-only HttpOnly SameSite=Lax callback-scoped cookie at OAuth begin and require a constant-time exact match before consuming login-purpose state; keep the existing session-bound identity-link flow unchanged.",
+        "references": ["OAuth 2.0 Security Best Current Practice - CSRF Protection"],
+        "impact": "A valid callback URL can be completed in a different browser, causing login CSRF, account confusion, or attacker-identity enrollment in the victim session.",
+        "metadata": {
+          "secondary_file": "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/oauth.go",
+          "secondary_line": 70,
+          "confidence": "high"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": []
+      }
+    ],
+    "cross_references": [
+      {
+        "finding_id": "sec-001-6e8c19a4",
+        "related_dimensions": ["quality", "action-items"],
+        "reason": "The same sticky role marker was independently confirmed as a correctness and requirements-coverage defect."
+      }
+    ]
+  }
+]

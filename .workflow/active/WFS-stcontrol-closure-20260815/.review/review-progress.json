@@ -1,0 +1,36 @@
+{
+  "review_id": "review-20260815-acceptance",
+  "last_update": "2026-08-15T16:20:00+08:00",
+  "phase": "complete",
+  "current_iteration": 1,
+  "progress": {
+    "document_baseline": {
+      "total_groups": 3,
+      "completed": 3,
+      "in_progress": 0,
+      "percent_complete": 100
+    },
+    "parallel_review": {
+      "total_dimensions": 7,
+      "completed": 7,
+      "in_progress": 0,
+      "percent_complete": 100
+    },
+    "deep_dive": {
+      "total_findings": 4,
+      "analyzed": 4,
+      "in_progress": 0,
+      "percent_complete": 100
+    }
+  },
+  "agent_status": [],
+  "overall_percent": 100,
+  "completion_time": "2026-08-15T16:20:00+08:00",
+  "final_severity_distribution": {
+    "critical": 1,
+    "high": 16,
+    "medium": 5,
+    "low": 0
+  },
+  "estimated_completion": null
+}

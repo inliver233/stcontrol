@@ -125,7 +125,12 @@ func decideNodeCompatibilityIncident(
 	decision.IncidentState = "verifying"
 	decision.IncidentReason = cursor.IncidentReason
 	decision.IncidentFingerprint = facts.CompatibilityFingerprint
-	decision.CompatibleObservations = cursor.CompatibleObservations + 1
+	nextObservations := cursor.CompatibleObservations + 1
+	if nextObservations >= nodeCompatibilityStableObservations &&
+		facts.ObservedAt.Sub(cursor.VerificationStartedAt.Time) < nodeCompatibilityStableWindow {
+		nextObservations = nodeCompatibilityStableObservations - 1
+	}
+	decision.CompatibleObservations = nextObservations
 	decision.VerificationStartedAt = cursor.VerificationStartedAt
 	if decision.CompatibleObservations >= nodeCompatibilityStableObservations &&
 		facts.ObservedAt.Sub(cursor.VerificationStartedAt.Time) >= nodeCompatibilityStableWindow {

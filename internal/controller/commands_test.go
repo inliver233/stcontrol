@@ -3,9 +3,11 @@ package controller
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"stcontrol/internal/config"
@@ -48,7 +50,7 @@ func TestEnqueueAgentCommandEncryptsDurablePayload(t *testing.T) {
 			AddRow([]byte(ciphertext), int64(1), int64(3)))
 	mock.ExpectQuery(`INSERT INTO agent_commands`).
 		WithArgs(sqlmock.AnyArg(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", int64(12), "set_password",
-			secretFreeJSON{forbidden: "plaintext-password"}, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+			secretFreeJSON{forbidden: "plaintext-password"}, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(0), false).
 		WillReturnRows(sqlmock.NewRows([]string{"controller_generation"}).AddRow(int64(3)))
 	generation, err := server.enqueueAgentCommand(context.Background(), node, "set_password", map[string]string{
 		"password_hash": "plaintext-password",
@@ -58,5 +60,17 @@ func TestEnqueueAgentCommandEncryptsDurablePayload(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRetryableGenerationFencedCommandRejectsNonDataFaultType(t *testing.T) {
+	t.Parallel()
+	server := &Server{}
+	_, err := server.runRetryableAgentCommandWithOperationAtGeneration(
+		context.Background(), &store.Node{ID: 12}, "set_password", struct{}{},
+		"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 3, time.Second,
+	)
+	if !errors.Is(err, store.ErrInvalidAgentCommand) {
+		t.Fatalf("error=%v, want ErrInvalidAgentCommand", err)
 	}
 }

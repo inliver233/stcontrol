@@ -117,6 +117,15 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusBadRequest, "节点控制模式报告无效")
 		return
 	}
+	authenticatedGeneration := currentAgentCredentialGeneration(r)
+	activeGeneration := currentActiveControllerGeneration(r)
+	if heartbeatRequiresImmediateGate(authenticatedGeneration, activeGeneration, modeFact.Mode) {
+		// Close the in-memory admission gate before any durable heartbeat
+		// mutation. Otherwise a recovery/non-managed heartbeat could commit the
+		// database rebuild gate while requireNewOperations still observes a
+		// briefly-open process-local gate.
+		s.setControlPlaneGate(true, "node_reconciliation_required")
+	}
 	transferURL, err := validateAgentTransferURL(req.TransferURL)
 	if err != nil {
 		protocol.WriteError(w, http.StatusBadRequest, "数据面地址无效")
@@ -128,25 +137,38 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		policy.Version = node.RegistrationPolicyVersion
 	}
 	facts := normalizeHeartbeatFacts(req, transferURL, policy, now)
-	if err := s.Store.UpdateNodeHeartbeat(ctx, node.ID, facts, s.nodeCapacityPolicy()); err != nil {
-		protocol.WriteError(w, http.StatusInternalServerError, "更新心跳失败")
-		return
-	}
 	decision, err := s.Store.ReconcileNodeControlModeAuthenticated(
-		ctx, node.ID, modeFact, currentAgentCredentialGeneration(r),
+		ctx, node.ID, modeFact, authenticatedGeneration,
 	)
 	if err != nil {
 		protocol.WriteError(w, http.StatusConflict, "节点控制模式世代冲突")
 		return
 	}
-
-	// 处理用户在线状态 → 供离线备份调度参考
-	leaseConfirmations, err := s.trackUserActivity(ctx, node.ID, facts.TelemetrySource, req.Users, now)
+	recoveryHeartbeat := authenticatedGeneration != decision.ControllerGeneration
+	if recoveryHeartbeat {
+		err = s.Store.UpdateNodeRecoveryHeartbeat(
+			ctx, node.ID, authenticatedGeneration, facts, s.nodeCapacityPolicy(),
+		)
+	} else {
+		err = s.Store.UpdateNodeHeartbeat(
+			ctx, node.ID, authenticatedGeneration, facts, s.nodeCapacityPolicy(),
+		)
+	}
 	if err != nil {
-		protocol.WriteError(w, http.StatusInternalServerError, "更新用户活动租约失败")
+		protocol.WriteError(w, http.StatusConflict, "节点心跳世代冲突")
 		return
 	}
-	if modeFact.Mode != protocol.NodeModeManaged || decision.DesiredMode != protocol.NodeModeManaged {
+
+	// 处理用户在线状态 → 供离线备份调度参考
+	var leaseConfirmations []protocol.ActivityLeaseConfirmation
+	if !recoveryHeartbeat {
+		leaseConfirmations, err = s.trackUserActivity(ctx, node.ID, facts.TelemetrySource, req.Users, now)
+		if err != nil {
+			protocol.WriteError(w, http.StatusInternalServerError, "更新用户活动租约失败")
+			return
+		}
+	}
+	if recoveryHeartbeat || modeFact.Mode != protocol.NodeModeManaged || decision.DesiredMode != protocol.NodeModeManaged {
 		leaseConfirmations = nil
 	}
 	if req.ActivityObservedAt == 0 {
@@ -156,7 +178,7 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		// extended from an observation whose time is unknown.
 		leaseConfirmations = nil
 	}
-	if modeFact.Mode != protocol.NodeModeManaged || decision.DesiredMode != protocol.NodeModeManaged {
+	if recoveryHeartbeat || modeFact.Mode != protocol.NodeModeManaged || decision.DesiredMode != protocol.NodeModeManaged {
 		s.setControlPlaneGate(true, "node_reconciliation_required")
 	} else if blocked, _ := s.controlPlaneGate(); blocked {
 		// Only a database-wide reconciliation may reopen the gate; one managed
@@ -186,6 +208,11 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		ExpectedDiskQuotaBytes:         node.ExpectedDiskQuotaBytes,
 		QuotaPolicyVersion:             node.QuotaPolicyVersion,
 	})
+}
+
+func heartbeatRequiresImmediateGate(authenticatedGeneration, activeGeneration int64, reportedMode string) bool {
+	return authenticatedGeneration <= 0 || activeGeneration <= 0 ||
+		authenticatedGeneration != activeGeneration || reportedMode != protocol.NodeModeManaged
 }
 
 func validateActivityObservation(now time.Time, observedAt int64) error {

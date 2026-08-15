@@ -1,0 +1,118 @@
+[
+  {
+    "dimension": "best-practices",
+    "review_id": "WFS-stcontrol-closure-20260815",
+    "analysis_timestamp": "2026-08-15T07:40:48Z",
+    "cli_tool_used": "codex",
+    "model": "gpt-5",
+    "analysis_duration_ms": 510000,
+    "summary": {
+      "total_findings": 3,
+      "critical": 0,
+      "high": 2,
+      "medium": 1,
+      "low": 0,
+      "files_analyzed": 14,
+      "lines_reviewed": 3400
+    },
+    "findings": [
+      {
+        "id": "bp-001-c49a2f1e",
+        "title": "AI admin pagination uses stale React state and does not page correctly",
+        "severity": "high",
+        "category": "anti-pattern",
+        "description": "AISupervisionAdmin.load() closes over the current cursor, useEffect only runs on mount, and next/previous handlers call setTimeout(load, 0) immediately after setCursor(). The fetch therefore reuses stale state instead of the requested page, and previousPage always resets to cursor 0 rather than the actual previous cursor.",
+        "file": "web/src/pages/Admin.tsx",
+        "line": 1546,
+        "snippet": "adminApi.aiRequests(cursor)...; useEffect(() => { load() }, []); const nextPage = () => { if (nextCursor > 0) { setCursor(nextCursor); setTimeout(load, 0) } }",
+        "recommendation": "Make cursor the single source of truth as the other admin pagers already do: either call load(nextCursor) with an explicit argument and keep cursor history, or fetch from useEffect([cursor]) instead of relying on a stale closure.",
+        "references": [
+          "web/src/pages/Admin.tsx:1546",
+          "web/src/pages/Admin.tsx:1556",
+          "web/src/pages/Admin.tsx:1573"
+        ],
+        "impact": "Admins cannot reliably inspect older AI request records, so the new AI governance panel misreports history and weakens manual review of auto-adopt behavior.",
+        "metadata": {
+          "discovery_source": "bash-scan",
+          "scope": "react-admin-pagination"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": []
+      },
+      {
+        "id": "bp-002-71d8e4ab",
+        "title": "AI advisory validation is not EOF-strict after the first JSON object",
+        "severity": "high",
+        "category": "missing-validation",
+        "description": "ValidateAdvisory() uses json.Decoder with DisallowUnknownFields, but it only performs one Decode call and never verifies that the decoder reached EOF. A provider response that contains one valid advisory followed by extra prose or a second JSON object will still be accepted.",
+        "file": "internal/ai/validator.go",
+        "line": 56,
+        "snippet": "dec := json.NewDecoder(strings.NewReader(trimmed)); dec.DisallowUnknownFields(); if err := dec.Decode(&adv); err != nil { ... }",
+        "recommendation": "Require EOF after the first decode and add a regression test for fenced JSON with trailing text or concatenated objects so the AI gate remains strictly fail-closed.",
+        "references": [
+          "internal/ai/validator.go:56",
+          "internal/ai/validator.go:58",
+          "internal/ai/ai_test.go:70"
+        ],
+        "impact": "This weakens the promised JSON-only trust boundary for the optional AI subsystem: malformed provider output can enter advisory or auto-adopt evaluation instead of being rejected deterministically.",
+        "metadata": {
+          "discovery_source": "bash-scan",
+          "scope": "ai-validator"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": []
+      },
+      {
+        "id": "bp-003-6b2f917c",
+        "title": "Live-check verification script hardcodes an absolute repository path",
+        "severity": "medium",
+        "category": "anti-pattern",
+        "description": "run-live-check.bat changes into E:\\Sillytarvennew\\stcontrol explicitly, while the paired run-live-controller.bat correctly uses %~dp0. In this reviewed worktree the repository lives under E:\\dshtest\\Sillytarvennew\\stcontrol, so the live-check script starts from the wrong directory before touching pg_ctl/psql.",
+        "file": "run-live-check.bat",
+        "line": 2,
+        "snippet": "cd /d E:\\Sillytarvennew\\stcontrol",
+        "recommendation": "Use cd /d %~dp0 and keep the rest of the script relative, matching run-live-controller.bat, so local verification works from any clone or flash worktree path.",
+        "references": [
+          "run-live-check.bat:2",
+          "run-live-controller.bat:7"
+        ],
+        "impact": "The intended live-check gate is non-portable and already broken in the current flash worktree, which can block or mislead operators during controller verification.",
+        "metadata": {
+          "discovery_source": "bash-scan",
+          "scope": "ops-verification-script"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": []
+      }
+    ],
+    "cross_references": [
+      {
+        "finding_id": "bp-001-c49a2f1e",
+        "related_dimensions": [
+          "quality",
+          "action-items"
+        ],
+        "reason": "Broken pagination also blocks the admin-side verification workflow for AI requests."
+      },
+      {
+        "finding_id": "bp-002-71d8e4ab",
+        "related_dimensions": [
+          "security",
+          "quality"
+        ],
+        "reason": "Validator strictness is part of the trust boundary for AI-generated input."
+      },
+      {
+        "finding_id": "bp-003-6b2f917c",
+        "related_dimensions": [
+          "action-items",
+          "maintainability"
+        ],
+        "reason": "The scripted verification path is part of the release/test gate and is currently non-portable."
+      }
+    ]
+  }
+]

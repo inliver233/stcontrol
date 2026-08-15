@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
 
@@ -85,6 +86,7 @@ func TestUserDataFreezeNodeEligibilityIsClosed(t *testing.T) {
 func TestUserDataFaultRetriesAreBoundedAndErrorsAreMachineSafe(t *testing.T) {
 	t.Parallel()
 	if safeUserDataFaultFailureCode("user_data_freeze_failed") != "user_data_freeze_failed" ||
+		safeUserDataFaultFailureCode("user_data_release_failed") != "user_data_release_failed" ||
 		safeUserDataFaultFailureCode("database password leaked") != "agent_command_unavailable" {
 		t.Fatal("failure code allowlist is not closed")
 	}
@@ -141,5 +143,151 @@ func TestUserProtectionActionsRemainClosedUntilNodeFreezeIsConfirmed(t *testing.
 	applyUserDataFaultGate(&resolved, &store.UserDataFaultStatus{State: "resolved"})
 	if !resolved.TakeoverAvailable || resolved.DataFaultState != "" {
 		t.Fatalf("resolved fault still gates protection=%+v", resolved)
+	}
+}
+
+func TestMatchingUserDataReleaseReceiptRequiresExactScope(t *testing.T) {
+	t.Parallel()
+	task := store.UserDataFaultReleaseTask{
+		ID:                   "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		OperationID:          "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		ControllerGeneration: 7, GlobalUserID: 70, Handle: "alice", ActivityEpoch: 9,
+	}
+	ok := &protocol.ReleaseUserDataResponse{
+		OK: true, OperationID: task.OperationID, ControllerGeneration: task.ControllerGeneration,
+		FaultID: task.ID, GlobalUserID: task.GlobalUserID,
+		Handle: task.Handle, ActivityEpoch: task.ActivityEpoch, Released: true,
+	}
+	if !matchingUserDataReleaseReceipt(ok, task) {
+		t.Fatal("exact release receipt was rejected")
+	}
+	if matchingUserDataReleaseReceipt(&protocol.ReleaseUserDataResponse{
+		OK: true, OperationID: task.OperationID, ControllerGeneration: task.ControllerGeneration,
+		FaultID: task.ID, GlobalUserID: task.GlobalUserID,
+		Handle: task.Handle, ActivityEpoch: task.ActivityEpoch, Released: false,
+	}, task) {
+		t.Fatal("unreleased receipt was accepted")
+	}
+	if matchingUserDataReleaseReceipt(&protocol.ReleaseUserDataResponse{
+		OK: true, OperationID: task.OperationID, ControllerGeneration: task.ControllerGeneration,
+		FaultID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", GlobalUserID: task.GlobalUserID,
+		Handle: task.Handle, ActivityEpoch: task.ActivityEpoch, Released: true,
+	}, task) {
+		t.Fatal("mismatched release receipt was accepted")
+	}
+	mismatchedGeneration := *ok
+	mismatchedGeneration.ControllerGeneration++
+	if matchingUserDataReleaseReceipt(&mismatchedGeneration, task) {
+		t.Fatal("rollover release receipt was accepted")
+	}
+	mismatchedOperation := *ok
+	mismatchedOperation.OperationID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	if matchingUserDataReleaseReceipt(&mismatchedOperation, task) {
+		t.Fatal("mismatched operation release receipt was accepted")
+	}
+}
+
+func TestMatchingUserDataReleaseReceiptAcceptsRecoveredRolloverReceiptOnlyAtNewFence(t *testing.T) {
+	t.Parallel()
+	oldTask := store.UserDataFaultReleaseTask{
+		ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", OperationID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		ControllerGeneration: 7, GlobalUserID: 70, Handle: "alice", ActivityEpoch: 9,
+	}
+	newTask := oldTask
+	newTask.OperationID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	newTask.ControllerGeneration = 8
+	// The adapter may prove that the exact fault scope was already released by
+	// the old generation, but it must echo the new claim's operation and fence.
+	recovered := &protocol.ReleaseUserDataResponse{
+		OK: true, Released: true, OperationID: newTask.OperationID,
+		ControllerGeneration: newTask.ControllerGeneration, FaultID: newTask.ID,
+		GlobalUserID: newTask.GlobalUserID, Handle: newTask.Handle,
+		ActivityEpoch: newTask.ActivityEpoch,
+	}
+	if !matchingUserDataReleaseReceipt(recovered, newTask) {
+		t.Fatal("exact recovered rollover receipt was rejected")
+	}
+	if matchingUserDataReleaseReceipt(recovered, oldTask) {
+		t.Fatal("new-generation recovered receipt was accepted by the stale claim")
+	}
+}
+
+func TestMatchingUserDataFreezeReceiptRequiresNestedSuccessAndExactFence(t *testing.T) {
+	t.Parallel()
+	task := store.UserDataFaultTask{
+		ID:                   "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		OperationID:          "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		ControllerGeneration: 7, GlobalUserID: 70, Handle: "alice", ActivityEpoch: 9,
+	}
+	receipt := &protocol.FreezeUserDataResponse{
+		OK: true, OperationID: task.OperationID, ControllerGeneration: task.ControllerGeneration,
+		FaultID: task.ID, GlobalUserID: task.GlobalUserID, Handle: task.Handle,
+		ActivityEpoch: task.ActivityEpoch, Frozen: true, Drained: true,
+	}
+	if !matchingUserDataFreezeReceipt(receipt, task) {
+		t.Fatal("exact freeze receipt was rejected")
+	}
+	for name, mutate := range map[string]func(*protocol.FreezeUserDataResponse){
+		"nested not ok": func(value *protocol.FreezeUserDataResponse) { value.OK = false },
+		"not drained":   func(value *protocol.FreezeUserDataResponse) { value.Drained = false },
+		"operation mismatch": func(value *protocol.FreezeUserDataResponse) {
+			value.OperationID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+		},
+		"generation rollover": func(value *protocol.FreezeUserDataResponse) { value.ControllerGeneration++ },
+	} {
+		changed := *receipt
+		mutate(&changed)
+		if matchingUserDataFreezeReceipt(&changed, task) {
+			t.Errorf("%s receipt was accepted", name)
+		}
+	}
+}
+
+func TestNextUserDataFaultWorkAlternatesFreezeAndReleaseWithoutStarvation(t *testing.T) {
+	t.Parallel()
+	freezeIDs := []string{"freeze-1", "freeze-2", "freeze-3"}
+	releaseIDs := []string{"release-1", "release-2", "release-3"}
+	preferRelease := false
+	var order []string
+	for len(freezeIDs) > 0 || len(releaseIDs) > 0 {
+		kind, id, next := nextUserDataFaultWork(freezeIDs, releaseIDs, preferRelease)
+		order = append(order, kind+":"+id)
+		if kind == "freeze" {
+			freezeIDs = freezeIDs[1:]
+		} else {
+			releaseIDs = releaseIDs[1:]
+		}
+		preferRelease = next
+	}
+	want := []string{
+		"freeze:freeze-1", "release:release-1", "freeze:freeze-2",
+		"release:release-2", "freeze:freeze-3", "release:release-3",
+	}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("order=%v want=%v", order, want)
+	}
+}
+
+func TestNextUserDataFaultWorkSingleSlotCarriesFairnessAcrossCycles(t *testing.T) {
+	t.Parallel()
+	freezeIDs := []string{"freeze-1", "freeze-2"}
+	releaseIDs := []string{"release-1", "release-2"}
+	preferRelease := false
+	var order []string
+	// Each iteration represents a reconciler cycle with exactly one available
+	// worker slot. The returned cursor must survive until the next cycle.
+	for len(freezeIDs) > 0 || len(releaseIDs) > 0 {
+		kind, id, next := nextUserDataFaultWork(freezeIDs, releaseIDs, preferRelease)
+		order = append(order, kind+":"+id)
+		if kind == "freeze" {
+			freezeIDs = freezeIDs[1:]
+		} else {
+			releaseIDs = releaseIDs[1:]
+		}
+		preferRelease = next
+	}
+	want := "freeze:freeze-1,release:release-1,freeze:freeze-2,release:release-2"
+	if got := strings.Join(order, ","); got != want {
+		t.Fatalf("single-slot order=%s want=%s", got, want)
 	}
 }

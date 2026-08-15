@@ -21,21 +21,23 @@ import (
 
 // Server 总控服务。
 type Server struct {
-	Cfg                   *config.ControllerConfig
-	Store                 *store.Store
-	ConfigPath            string // 总控配置文件路径（灾备备份纳入控制面快照）
-	secretKey             []byte // 用户凭据 AES 密钥
-	workflowWorkerID      string
-	snapshotSlots         chan struct{}
-	replicaIntegritySlots chan struct{}
-	replicaCleanupSlots   chan struct{}
-	nodeRetirementSlots   chan struct{}
-	userDataFaultSlots    chan struct{}
-	registrationSlots     chan struct{}
-	passwordSyncMu        sync.Mutex
-	controlPlaneMu        sync.RWMutex
-	newOperationsBlocked  bool
-	controlPlaneReason    string
+	Cfg                      *config.ControllerConfig
+	Store                    *store.Store
+	ConfigPath               string // 总控配置文件路径（灾备备份纳入控制面快照）
+	secretKey                []byte // 用户凭据 AES 密钥
+	workflowWorkerID         string
+	snapshotSlots            chan struct{}
+	replicaIntegritySlots    chan struct{}
+	replicaCleanupSlots      chan struct{}
+	nodeRetirementSlots      chan struct{}
+	userDataFaultSlots       chan struct{}
+	userDataFaultScheduleMu  sync.Mutex
+	userDataFaultReleaseNext bool
+	registrationSlots        chan struct{}
+	passwordSyncMu           sync.Mutex
+	controlPlaneMu           sync.RWMutex
+	newOperationsBlocked     bool
+	controlPlaneReason       string
 
 	// 节点上用户在线状态（离线备份调度用）
 	actMu    sync.Mutex
@@ -77,17 +79,18 @@ func New(cfg *config.ControllerConfig, st *store.Store, secretKey []byte) *Serve
 	workerID, _ := newUUID()
 	dummyPasswordHash, _ := controlcrypto.HashPassword("stcontrol-dummy-password-never-used")
 	return &Server{
-		Cfg:                   cfg,
-		Store:                 st,
-		secretKey:             secretKey,
-		workflowWorkerID:      workerID,
-		snapshotSlots:         make(chan struct{}, 4),
-		replicaIntegritySlots: make(chan struct{}, 2),
-		replicaCleanupSlots:   make(chan struct{}, 2),
-		nodeRetirementSlots:   make(chan struct{}, 2),
-		userDataFaultSlots:    make(chan struct{}, 2),
-		registrationSlots:     make(chan struct{}, 8),
-		activity:              make(map[int64]map[string]protocol.UserStatus),
+		Cfg:                      cfg,
+		Store:                    st,
+		secretKey:                secretKey,
+		workflowWorkerID:         workerID,
+		snapshotSlots:            make(chan struct{}, 4),
+		replicaIntegritySlots:    make(chan struct{}, 2),
+		replicaCleanupSlots:      make(chan struct{}, 2),
+		nodeRetirementSlots:      make(chan struct{}, 2),
+		userDataFaultSlots:       make(chan struct{}, 2),
+		userDataFaultReleaseNext: false,
+		registrationSlots:        make(chan struct{}, 8),
+		activity:                 make(map[int64]map[string]protocol.UserStatus),
 		oauthHTTP: &http.Client{
 			Timeout: 15 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {

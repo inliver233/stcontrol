@@ -1,0 +1,21 @@
+Performance deep scan completed against:
+- E:\Sillytarvennew\stcontrol\.flash-worktree (flash vs origin/main)
+- E:\Sillytarvennew\Sillytarven-online direct stcontrol coupling paths
+
+Confirmed findings written to performance.json:
+1. Global request serialization + synchronous adapter-state persistence on every managed request/heartbeat.
+2. Controller disaster backup retry_wait runs are never re-claimed by the reconciler after transient failure.
+3. Controller backup archive hashing loads the full archive into memory before upload.
+
+Evidence anchors:
+- Sillytarven-online/src/stcontrol.js:63,277-280,340-345,930-1015
+- Sillytarven-online/src/endpoints/users-public.js:242-268
+- Sillytarven-online/public/scripts/user-heartbeat.js:11-12,60-63,192-203
+- stcontrol/internal/controller/controller_backup.go:66-85,154-176,252-270
+- stcontrol/internal/store/controller_disaster_backups.go:103-113,145-154,272-296
+- stcontrol/internal/agent/snapshot.go:36
+
+Explicitly checked and confirmed:
+- controller backup retry/restart path has no other execution entry besides Schedule -> execute -> Claim.
+- retry_wait rows block new scheduling but are not re-claimed on later reconciler passes.
+- no additional N+1 or unbounded-memory finding was reported without direct source proof.

@@ -1,0 +1,153 @@
+[
+  {
+    "finding_id": "act-001-9b7e2a1c",
+    "dimension": "action-items",
+    "iteration": 1,
+    "analysis_timestamp": "2026-08-15T15:51:34+08:00",
+    "cli_tool_used": "codex",
+    "model": "gpt-5",
+    "analysis_duration_ms": 1320000,
+    "original_finding": {
+      "severity": "high",
+      "title": "Admin handoff state survives later user handoff and disables managed writer fencing despite R04/R05 being marked complete",
+      "file": "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js",
+      "line": 932,
+      "description": "A browser session that carries both `request.session.stcontrolAdmin` and a managed user envelope skips `stcontrolRequestTracker()` fencing because the middleware returns early on the admin marker."
+    },
+    "root_cause": {
+      "summary": "The adapter stores admin and user handoff state in two independent session fields and never makes them mutually exclusive. `stcontrolHandoffHandler()` writes `request.session.stcontrolAdmin` for admin handoff and `request.session.stcontrol` for user handoff, but neither branch clears the opposite role. `stcontrolRequestTracker()` then trusts `request.session.stcontrolAdmin` as an unconditional bypass, so any later user write from the same cookie skips stale-writer, lease, quiesce, and data-fault checks.",
+      "evidence": [
+        "src/endpoints/stcontrol.js:441-450 stores `request.session.stcontrolAdmin` for admin handoff and does not clear `request.session.stcontrol` first.",
+        "src/endpoints/stcontrol.js:476-478 stores the managed user envelope via `registerStcontrolSession()` and does not clear any existing `request.session.stcontrolAdmin`.",
+        "src/stcontrol.js:930-979 returns immediately when `request.session?.stcontrolAdmin` exists, before any stale-session, gate, or lease validation runs.",
+        "tests/stcontrol-routes.node.test.mjs:221-235 proves user handoff populates `sharedSession.stcontrol`.",
+        "tests/stcontrol-routes.node.test.mjs:327-339 proves admin handoff populates `sharedSession.stcontrolAdmin`.",
+        "No existing route or adapter test reuses one cookie across admin->user or user->admin transitions and then exercises a fenced write path."
+      ],
+      "state_contamination_paths": [
+        {
+          "name": "admin_to_user",
+          "sequence": [
+            "Admin handoff stores `request.session.stcontrolAdmin` at src/endpoints/stcontrol.js:446-450.",
+            "Later user handoff stores a managed `request.session.stcontrol` at src/endpoints/stcontrol.js:478 without deleting the admin marker.",
+            "Subsequent authenticated writes hit src/stcontrol.js:932 and bypass all managed-user fencing because the admin marker still exists."
+          ]
+        },
+        {
+          "name": "user_to_admin",
+          "sequence": [
+            "User handoff stores a managed `request.session.stcontrol` envelope at src/stcontrol.js:865-870 and durable session/lease state at src/stcontrol.js:873-893.",
+            "Later admin handoff stores `request.session.stcontrolAdmin` at src/endpoints/stcontrol.js:446-450 without retiring the managed user envelope.",
+            "The same cookie now carries both role markers, and later user writes still bypass src/stcontrol.js:932 because admin state wins unconditionally."
+          ]
+        }
+      ],
+      "boundary_assessment": {
+        "logout": [
+          "src/endpoints/users-public.js:219-235 calls `noteStcontrolLogout(request)` and then sets `request.session = null`, so an explicit logout clears both role markers only because the entire cookie-backed session is discarded.",
+          "src/stcontrol.js:901-912 tombstones only the current `request.session.stcontrol.sessionId`; it does not independently clear `stcontrolAdmin`, so without the route-level `request.session = null` the mixed-role state would persist."
+        ],
+        "heartbeat": [
+          "src/server-main.js:347 mounts `/api/users` public routes before `requireLoginMiddleware` at src/server-main.js:393 and before `setupPrivateEndpoints(app)` installs `stcontrolRequestTracker` at src/server-startup.js:154-161.",
+          "src/endpoints/users-public.js:242-268 therefore handles `/api/users/heartbeat` on the public router path. It calls `noteStcontrolPageHeartbeat()` at line 255, but that helper only checks for a durable session tombstone and ignores lease freshness (`src/stcontrol.js:915-927`).",
+          "Direct read-only reproduction on August 15, 2026 showed `stcontrolRequestTracker()` returns `409 stale_writer_session` for a stale managed heartbeat request without `stcontrolAdmin`, but the same request continues when the admin marker is present; `noteStcontrolPageHeartbeat()` returns `true` in both cases because it does not validate the lease."
+        ]
+      }
+    },
+    "remediation_plan": {
+      "strategy": "Make admin and user handoff state mutually exclusive at the handoff boundary, so the request tracker sees exactly one role for a given browser session. Keep the fix scoped to the handoff/logout edge and add one mixed-cookie regression on the real fenced write path.",
+      "steps": [
+        {
+          "order": 1,
+          "change": "Before completing a successful user handoff, delete any stale `request.session.stcontrolAdmin` marker so the next authenticated request must pass managed-user fencing.",
+          "files": [
+            "src/endpoints/stcontrol.js"
+          ]
+        },
+        {
+          "order": 2,
+          "change": "Before completing a successful admin handoff, retire any existing managed user envelope: call `noteStcontrolLogout(request)` when `request.session.stcontrol?.sessionId` exists, then delete `request.session.stcontrol` before setting `request.session.stcontrolAdmin`.",
+          "files": [
+            "src/endpoints/stcontrol.js",
+            "src/stcontrol.js"
+          ]
+        },
+        {
+          "order": 3,
+          "change": "Add a route regression that reuses one `sharedSession` cookie across admin->user and user->admin handoffs and asserts the session object never retains both `stcontrolAdmin` and `stcontrol` after a successful handoff.",
+          "files": [
+            "tests/stcontrol-routes.node.test.mjs"
+          ]
+        },
+        {
+          "order": 4,
+          "change": "Add a write-path regression that seeds a stale or missing managed lease, reuses the mixed cookie, and proves a POST routed through `stcontrolRequestTracker()` returns `409 stale_writer_session` once handoff mutual exclusion is enforced.",
+          "files": [
+            "tests/stcontrol-adapter.node.test.mjs"
+          ]
+        },
+        {
+          "order": 5,
+          "change": "Add one logout boundary assertion proving explicit `/api/users/logout` clears the entire session and tombstones only the exact durable session id. Treat heartbeat ordering as an adjacent follow-up: either document that it is intentionally public and not a lease fence, or move/equate its lease check separately.",
+          "files": [
+            "tests/stcontrol-routes.node.test.mjs",
+            "tests/stcontrol-adapter.node.test.mjs",
+            "src/endpoints/users-public.js",
+            "src/server-main.js"
+          ]
+        }
+      ],
+      "minimal_fix_scope": "The minimum patch needed to close act-001 is role-exclusivity during handoff plus two regressions: one mixed-cookie session-shape test and one fenced write test. Heartbeat routing can be tracked separately unless acceptance explicitly requires heartbeat itself to prove lease freshness."
+    },
+    "impact_assessment": {
+      "correctness": [
+        "The finding is real for both admin->user and user->admin cookie reuse. Once `stcontrolAdmin` remains in the session, all later authenticated user writes skip the exact stale-writer and lease checks that R04/R05 rely on.",
+        "The issue persists until explicit logout because no successful handoff path clears the opposite role marker."
+      ],
+      "logout_and_heartbeat_boundary": [
+        "Logout is the only current cleanup path that definitely removes the contaminated cookie because it nulls the whole session object.",
+        "Heartbeat does not mitigate the bug. It does not clear `stcontrolAdmin`, and because it lives on the public router path it should not be treated as evidence that managed lease fencing is active."
+      ],
+      "existing_test_coverage": [
+        "tests/stcontrol-routes.node.test.mjs:221-235 covers user handoff in isolation.",
+        "tests/stcontrol-routes.node.test.mjs:327-339 covers admin handoff in isolation.",
+        "tests/stcontrol-adapter.node.test.mjs:347-373 covers stale managed writes without an admin marker and correctly expects `stale_writer_session`.",
+        "tests/stcontrol-native-entry-guards.node.test.mjs:81-100 covers which public/native account routes are exposed, but it does not exercise mixed-role session state."
+      ],
+      "missing_regressions": [
+        "No existing test reuses one cookie for admin->user or user->admin handoff and then POSTs through `stcontrolRequestTracker()`.",
+        "No existing test captures the logout boundary for mixed-role cleanup.",
+        "No existing acceptance test documents that `/api/users/heartbeat` is mounted before the private tracker and therefore is not itself a managed-lease fence."
+      ],
+      "validation_status": {
+        "baseline_tests_run": [
+          "node --test tests/stcontrol-routes.node.test.mjs",
+          "node --test tests/stcontrol-adapter.node.test.mjs",
+          "node --test tests/stcontrol-native-entry-guards.node.test.mjs"
+        ],
+        "result": "pass",
+        "details": "All 25 baseline tests passed on August 15, 2026. Existing coverage proves the isolated handoff and stale-writer behaviors, but it leaves the mixed-cookie contamination path untested. Read-only inline reproduction also confirmed `stcontrolRequestTracker()` blocks a stale managed heartbeat/write request without `stcontrolAdmin` and allows it to continue when the admin marker is present."
+      }
+    },
+    "reassessed_severity": {
+      "severity": "high",
+      "justification": "The bug is reachable with ordinary browser cookie reuse, invalidates the intended single-writer/session-fence behavior for real user writes, and directly contradicts the acceptance claim that R04/R05 are already closed. It is not merely cosmetic state drift."
+    },
+    "confidence_score": 0.98,
+    "cross_references": [
+      "sec-001-6e8c19a4",
+      "qua-001-8f1c2d3a",
+      "act-002-3d8c1f0b",
+      "E:/Sillytarvennew/Sillytarven-online/src/endpoints/stcontrol.js:441-478",
+      "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:865-893",
+      "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:901-979",
+      "E:/Sillytarvennew/Sillytarven-online/src/endpoints/users-public.js:219-268",
+      "E:/Sillytarvennew/Sillytarven-online/src/server-main.js:347-419",
+      "E:/Sillytarvennew/Sillytarven-online/src/server-startup.js:154-161",
+      "E:/Sillytarvennew/Sillytarven-online/tests/stcontrol-routes.node.test.mjs:221-235",
+      "E:/Sillytarvennew/Sillytarven-online/tests/stcontrol-routes.node.test.mjs:327-339",
+      "E:/Sillytarvennew/Sillytarven-online/tests/stcontrol-adapter.node.test.mjs:347-373",
+      "E:/Sillytarvennew/Sillytarven-online/tests/stcontrol-native-entry-guards.node.test.mjs:81-100"
+    ]
+  }
+]

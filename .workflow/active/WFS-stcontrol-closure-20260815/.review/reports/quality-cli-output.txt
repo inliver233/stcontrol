@@ -1,0 +1,58 @@
+QUALITY REVIEW RAW NOTES
+Timestamp: 2026-08-15T07:32:34Z
+Review ID: review-20260815-acceptance
+Scope:
+- stcontrol flash vs origin/main changed files
+- directly coupled Sillytarven-online stcontrol adapter/session code
+
+Analyzed files:
+- internal/controller/controller_backup.go
+- internal/controller/controller_backup_test.go
+- internal/controller/ai_phase_tasks.go
+- internal/controller/ai_phase_tasks_test.go
+- internal/store/storage_repair.go
+- internal/store/storage_repair_test.go
+- internal/agent/runtime_state.go
+- Sillytarven-online/src/endpoints/stcontrol.js
+- Sillytarven-online/src/stcontrol.js
+- Sillytarven-online/tests/stcontrol-routes.node.test.mjs
+
+Findings:
+1. HIGH
+   File: E:\Sillytarvennew\Sillytarven-online\src\endpoints\stcontrol.js:446
+   Title: Split admin/user session envelopes let stale admin state bypass managed-user fences
+   Evidence:
+   - admin handoff writes request.session.stcontrolAdmin at lines 446-450
+   - user handoff only calls registerStcontrolSession at line 478
+   - stcontrolRequestTracker returns early on request.session.stcontrolAdmin at src/stcontrol.js:932
+   Impact:
+   - same browser session can persist incompatible handoff state and skip managed-user write fencing
+
+2. HIGH
+   File: E:\Sillytarvennew\stcontrol\.flash-worktree\internal\controller\controller_backup.go:72
+   Title: Controller disaster backup reconciliation drops background failures before they become observable
+   Evidence:
+   - reconcileControllerBackupOnce returns on reconcile/schedule/execute errors with no log or metric
+   - only some executeControllerBackup branches call fail(...)
+   - unit tests cover defaults/gates, not negative background paths
+   Impact:
+   - backup loop can stop progressing without operator-visible evidence
+
+3. MEDIUM
+   File: E:\Sillytarvennew\stcontrol\.flash-worktree\internal\controller\ai_phase_tasks.go:24
+   Title: AI phase observation builders are copy-pasted and already drifted once
+   Evidence:
+   - D5 regression comment documents missing candidate_catalog broke validation
+   - six enqueue functions repeat observation/redaction/marshal/dedup logic
+   - enqueueAnomalyAttribution still has unused evidenceCatalog local
+   Impact:
+   - phase-by-phase schema drift will recur and failures appear as missing advisories
+
+4. MEDIUM
+   File: E:\Sillytarvennew\stcontrol\.flash-worktree\internal\store\storage_repair.go:238
+   Title: Storage repair claim logic is too large for branch-level reasoning and its tests mostly snapshot SQL text
+   Evidence:
+   - one 260-line function mixes intent claim, writer-fence validation, target selection, workflow creation, replica updates, and audit emission
+   - tests mostly use sqlmock regexes over SQL text rather than isolated invariants
+   Impact:
+   - regressions in one branch are difficult to localize and easy to hide behind broad transaction behavior

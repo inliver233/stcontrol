@@ -103,7 +103,7 @@ func TestIndependentDrainingCommandAllowlistIsClosed(t *testing.T) {
 	t.Parallel()
 	for _, commandType := range []string{
 		"start_snapshot", "start_relay_receive", "complete_independent_sync", "capture_conflict_evidence",
-		"publish_conflict_resolution", "verify_replica_integrity", "verify_replica_integrity_v2", "freeze_user_data",
+		"publish_conflict_resolution", "verify_replica_integrity", "verify_replica_integrity_v2", "freeze_user_data", "release_user_data",
 	} {
 		if !independentReconciliationCommand(commandType) {
 			t.Errorf("reconciliation command %q was rejected", commandType)
@@ -507,13 +507,33 @@ func TestPasswordRemovalCommandForwardsRemoveFlagWithoutHashMaterial(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Removal intents carry handle + Remove=true and no password material.
-	command := encryptedTestCommand(t, a.Cfg.AgentPSK, "set_password", []byte(`{"handle":"alice","remove":true}`))
+	// Removal intents carry a strictly increasing version but no password material.
+	command := encryptedTestCommand(t, a.Cfg.AgentPSK, "set_password", []byte(`{"handle":"alice","remove":true,"version":7}`))
 	command.OperationID = operationID
 	succeeded, result := a.executeCommand(context.Background(), command)
-	if !succeeded || !adapterRequest.Remove || adapterRequest.Handle != "alice" ||
+	if !succeeded || !adapterRequest.Remove || adapterRequest.Handle != "alice" || adapterRequest.Version != 7 ||
 		adapterRequest.OperationID != operationID {
 		t.Fatalf("succeeded=%v request=%+v result=%s", succeeded, adapterRequest, result)
+	}
+}
+
+func TestPasswordRemovalCommandRejectsMissingVersion(t *testing.T) {
+	t.Parallel()
+	a, err := New(&config.AgentConfig{
+		AgentPSK: "agent-secret", NodeID: 12, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := encryptedTestCommand(t, a.Cfg.AgentPSK, "set_password", []byte(`{"handle":"alice","remove":true}`))
+	command.OperationID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	succeeded, result := a.executeCommand(context.Background(), command)
+	var summary safeCommandResult
+	if err := json.Unmarshal(result, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if succeeded || summary.Code != "invalid_command_payload" {
+		t.Fatalf("succeeded=%v code=%q result=%s", succeeded, summary.Code, result)
 	}
 }
 

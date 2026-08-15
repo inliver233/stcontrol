@@ -1,0 +1,156 @@
+[
+  {
+    "finding_id": "arch-001-7d2a4c9e",
+    "dimension": "architecture",
+    "iteration": 1,
+    "analysis_timestamp": "2026-08-15T16:27:00+08:00",
+    "cli_tool_used": "codex",
+    "model": "gpt-5",
+    "analysis_duration_ms": 1080000,
+    "original_finding": {
+      "severity": "critical",
+      "title": "Managed write-lease validation is split from the state mutation that admits the request",
+      "file": "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js",
+      "line": 973,
+      "description": "stcontrolRequestTracker authorizes a managed write from a pre-mutateState snapshot, then records the request as in flight in a later serialized mutation."
+    },
+    "root_cause": {
+      "summary": "The adapter performs session tombstone checks, outage/draining mode checks, user write-gate checks, and managed-lease checks against a stale read snapshot before entering the serialized state mutation. mutateState then admits the request without revalidating those invariants on the current state, so a concurrent revoker can invalidate the writer fence and the request still crosses it once.",
+      "evidence": [
+        "src/stcontrol.js:934-978 loads a snapshot, cleans/persists expired entries, promotes mode in memory, and checks gate plus lease before entering mutateState.",
+        "src/stcontrol.js:980-1000 increments inFlightWrites/inFlightReads and may create a durable session record, but never rechecks loggedOutAt, current mode, current gate, or current lease.",
+        "src/stcontrol.js:826-847 can revoke or shrink leases in applyStcontrolActivityLeaseConfirmations inside mutateState after the request-side lease check has already passed.",
+        "src/stcontrol.js:500-547 clears all managed leases on the managed->independent flip, but request admission still trusts the earlier managed snapshot.",
+        "src/stcontrol.js:901-912 marks a session logged out and deletes its exact lease in mutateState, yet a concurrent request can still reuse that session object and increment inFlightWrites before next().",
+        "src/stcontrol.js:1060-1150 establishes snapshot/data-fault write gates in mutateState, but stcontrolRequestTracker checks state.gates[handle] only before the queue boundary."
+      ],
+      "dependency_graph": {
+        "request_path": [
+          "HTTP request -> stcontrolRequestTracker -> loadStateSync snapshot",
+          "snapshot checks -> ensureSessionEnvelope / mode promotion / gate check / lease check",
+          "await mutateState -> increment in-flight counters -> next()"
+        ],
+        "concurrent_revokers": [
+          "applyStcontrolActivityLeaseConfirmations",
+          "applyStcontrolMode",
+          "noteStcontrolLogout",
+          "setUserWriteGate / establishSnapshotWriteGate / establishUserDataFaultGate"
+        ],
+        "missing_atomic_boundary": "The allow/deny decision and the in-flight admission record are split across two different state observations."
+      },
+      "race_windows": [
+        {
+          "name": "lease-confirmation refresh",
+          "sequence": [
+            "Request snapshot sees a valid managed lease and passes src/stcontrol.js:973-978.",
+            "Agent heartbeat applies a newer confirmation snapshot and deletes the handle from state.leases at src/stcontrol.js:832-838.",
+            "Original request enters mutateState at src/stcontrol.js:980 and still increments inFlightWrites, admitting one stale managed write."
+          ]
+        },
+        {
+          "name": "mode flip to independent or draining",
+          "sequence": [
+            "Request snapshot still sees mode=managed and skips independent/draining failover logic.",
+            "Controller outage handling flips state.mode and clears state.leases in applyStcontrolMode at src/stcontrol.js:518-525.",
+            "Original request enters mutateState and proceeds as a managed writer even though Round 28 requires failover to close the managed fence before independent ownership is re-established."
+          ]
+        },
+        {
+          "name": "logout or write-gate race",
+          "sequence": [
+            "Request snapshot sees no loggedOutAt tombstone and no state.gates[handle].",
+            "A concurrent logout or snapshot/data-fault freeze updates state inside mutateState.",
+            "Original request still increments counters on the same session object and calls next(), so one post-logout or post-freeze mutation can escape."
+          ]
+        }
+      ]
+    },
+    "remediation_plan": {
+      "strategy": "Keep async ownership/quorum lookups outside the serialized section, but move every local authorization predicate that can change inside the queue. The queued mutation must revalidate current session existence/tombstone, current mode, current gate, and current lease before it records the request as in flight and before the HTTP handler is allowed to continue.",
+      "steps": [
+        {
+          "order": 1,
+          "change": "Extract an admission helper around mutateState that returns a structured allow/deny result instead of mutating and unconditionally falling through to next().",
+          "files": [
+            "src/stcontrol.js"
+          ]
+        },
+        {
+          "order": 2,
+          "change": "Inside that helper, rerun cleanExpiredSessions/cleanExpiredSnapshotGates and recheck: stale durable session, loggedOutAt, hadSessionEnvelope-without-session, current mode transition, current gate, and exact managed lease match before incrementing inFlight counters.",
+          "files": [
+            "src/stcontrol.js"
+          ]
+        },
+        {
+          "order": 3,
+          "change": "If the pre-queue snapshot said managed but the queued state now says independent or draining, fail closed and return a retry/relogin response instead of attempting canUseNativeLogin inside the queue. The next request can enter the normal independent ownership path.",
+          "files": [
+            "src/stcontrol.js"
+          ]
+        },
+        {
+          "order": 4,
+          "change": "Keep the independent-write pendingSyncUsers marker in the same successful admission transaction so the first disaster-mode write remains crash durable.",
+          "files": [
+            "src/stcontrol.js"
+          ]
+        },
+        {
+          "order": 5,
+          "change": "Add regression tests that deliberately interleave request admission with lease revocation, mode flip, logout, and write-gate establishment, and assert next() is not called once the queued recheck observes the revoke.",
+          "files": [
+            "tests/stcontrol-adapter.node.test.mjs"
+          ]
+        }
+      ],
+      "minimal_fix_scope": "A minimal correctness patch touches only request admission and its tests. It does not need a state schema migration, and it can preserve the existing durable mutateState behavior before any later performance optimization."
+    },
+    "impact_assessment": {
+      "correctness": [
+        "The finding remains a direct single-writer fence violation: one stale managed mutation can pass after the system has already decided that this node no longer owns the write.",
+        "Round 28 requires already authenticated users to remain usable during controller loss, but only after the node has durably switched to independent-mode rules. This race allows a managed-path write to sneak through after the failover decision and before independent ownership proof."
+      ],
+      "existing_test_coverage": [
+        "tests/stcontrol-adapter.node.test.mjs:316-374 proves already-stale managed pages are read-only once the durable lease/session state is already revoked.",
+        "tests/stcontrol-adapter.node.test.mjs:384-472 proves lease snapshots revoke omitted writers and fence writes at the exact deadline once the revocation is durably visible before the request starts.",
+        "tests/stcontrol-adapter.node.test.mjs:548-625 proves snapshot gates block ordinary writes when the gate already exists before admission.",
+        "tests/stcontrol-adapter.node.test.mjs:762-799 proves outage mode clears managed leases, but it does not interleave that mode flip with an already admitted request."
+      ],
+      "missing_regressions": [
+        "No test currently pauses stcontrolRequestTracker between src/stcontrol.js:973-978 and src/stcontrol.js:980-1000 to simulate a concurrent revoke.",
+        "No test proves a concurrent logout tombstone or write gate can stop next() after the request-side snapshot has already passed."
+      ],
+      "performance": {
+        "expected_effect": "Negligible on top of the current design because mutateState already serializes and durably persists each admission. The fix adds only a second local predicate evaluation inside the existing critical section.",
+        "follow_on_note": "A later optimization can separate serialization from persistence, but that is orthogonal and already captured by perf-001-6a1c2b9d."
+      },
+      "validation_status": {
+        "baseline_tests_run": [
+          "node --test tests/stcontrol-adapter.node.test.mjs"
+        ],
+        "result": "pass",
+        "details": "14/14 existing adapter tests passed on August 15, 2026, confirming the race is presently an uncovered correctness gap rather than an already failing baseline test."
+      }
+    },
+    "reassessed_severity": {
+      "severity": "critical",
+      "justification": "The bug is reachable on the main write admission path, directly violates the intended single-writer invariant, and is specifically exposed during outage, recovery, logout, and snapshot-freeze transitions when the fence matters most."
+    },
+    "confidence_score": 0.99,
+    "cross_references": [
+      "arch-002-b54f1e2a",
+      "perf-001-6a1c2b9d",
+      "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:500-547",
+      "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:826-847",
+      "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:901-912",
+      "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:930-1015",
+      "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:1060-1150",
+      "E:/Sillytarvennew/Sillytarven-online/tests/stcontrol-adapter.node.test.mjs:316-374",
+      "E:/Sillytarvennew/Sillytarven-online/tests/stcontrol-adapter.node.test.mjs:384-472",
+      "E:/Sillytarvennew/Sillytarven-online/tests/stcontrol-adapter.node.test.mjs:548-625",
+      "E:/Sillytarvennew/Sillytarven-online/tests/stcontrol-adapter.node.test.mjs:762-799",
+      "E:/Sillytarvennew/.workflow/.analysis/ANL-多节点云酒馆总控方案复盘优化-2026-08-07/discussion.md:895-922"
+    ]
+  }
+]

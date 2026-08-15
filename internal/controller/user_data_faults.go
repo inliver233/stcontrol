@@ -151,10 +151,49 @@ func (s *Server) reconcileUserDataFaults(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	for _, id := range ids {
-		if !s.startUserDataFault(ctx, id) {
+	releaseIDs, err := s.Store.ListSchedulableUserDataFaultReleaseIDs(ctx, 100)
+	if err != nil {
+		return
+	}
+	s.userDataFaultScheduleMu.Lock()
+	defer s.userDataFaultScheduleMu.Unlock()
+	preferRelease := s.userDataFaultReleaseNext
+	for len(ids) > 0 || len(releaseIDs) > 0 {
+		kind, id, nextPreference := nextUserDataFaultWork(ids, releaseIDs, preferRelease)
+		started := false
+		if kind == "freeze" {
+			started = s.startUserDataFault(ctx, id)
+		} else {
+			started = s.startUserDataFaultRelease(ctx, id)
+		}
+		if !started {
 			return
 		}
+		if kind == "freeze" {
+			ids = ids[1:]
+		} else {
+			releaseIDs = releaseIDs[1:]
+		}
+		preferRelease = nextPreference
+		s.userDataFaultReleaseNext = preferRelease
+	}
+}
+
+func nextUserDataFaultWork(
+	freezeIDs, releaseIDs []string,
+	preferRelease bool,
+) (kind, id string, nextPreference bool) {
+	switch {
+	case len(freezeIDs) > 0 && len(releaseIDs) > 0 && preferRelease:
+		return "release", releaseIDs[0], false
+	case len(freezeIDs) > 0 && len(releaseIDs) > 0:
+		return "freeze", freezeIDs[0], true
+	case len(releaseIDs) > 0:
+		return "release", releaseIDs[0], preferRelease
+	case len(freezeIDs) > 0:
+		return "freeze", freezeIDs[0], preferRelease
+	default:
+		return "", "", preferRelease
 	}
 }
 
@@ -191,6 +230,24 @@ func (s *Server) runUserDataFaultOnce(ctx context.Context, faultID string) {
 	s.claimAndExecuteUserDataFault(ctx, faultID)
 }
 
+func (s *Server) startUserDataFaultRelease(ctx context.Context, faultID string) bool {
+	if s.userDataFaultSlots == nil {
+		return false
+	}
+	select {
+	case s.userDataFaultSlots <- struct{}{}:
+	case <-ctx.Done():
+		return false
+	default:
+		return false
+	}
+	go func() {
+		defer func() { <-s.userDataFaultSlots }()
+		s.claimAndExecuteUserDataFaultRelease(ctx, faultID)
+	}()
+	return true
+}
+
 func (s *Server) claimAndExecuteUserDataFault(ctx context.Context, faultID string) {
 	operationID, err := newUUID()
 	if err != nil {
@@ -206,21 +263,41 @@ func (s *Server) claimAndExecuteUserDataFault(ctx context.Context, faultID strin
 	s.executeUserDataFault(ctx, *task)
 }
 
+func (s *Server) claimAndExecuteUserDataFaultRelease(ctx context.Context, faultID string) {
+	operationID, err := newUUID()
+	if err != nil {
+		return
+	}
+	task, err := s.Store.ClaimUserDataFaultRelease(
+		ctx, faultID, operationID, s.workflowWorkerID,
+		time.Now().UTC(), userDataFaultLeaseTTL,
+	)
+	if err != nil || task == nil {
+		return
+	}
+	s.executeUserDataFaultRelease(ctx, *task)
+}
+
 func (s *Server) executeUserDataFault(ctx context.Context, task store.UserDataFaultTask) {
 	node, err := s.Store.GetNodeByID(ctx, task.NodeID)
 	if err != nil || !nodeAcceptsUserDataFreeze(node) {
 		s.retryUserDataFault(ctx, task, "agent_unavailable")
 		return
 	}
-	_, err = s.runAgentCommandWithOperation(
+	result, err := s.runRetryableAgentCommandWithOperationAtGeneration(
 		ctx, node, "freeze_user_data", protocol.FreezeUserDataRequest{
-			OperationID: task.OperationID, FaultID: task.ID,
+			OperationID: task.OperationID, ControllerGeneration: task.ControllerGeneration,
+			FaultID:      task.ID,
 			GlobalUserID: task.GlobalUserID, Handle: task.Handle,
 			ActivityEpoch: task.ActivityEpoch,
-		}, task.OperationID, userDataFaultCommandTTL,
+		}, task.OperationID, task.ControllerGeneration, userDataFaultCommandTTL,
 	)
 	if err != nil {
 		s.retryUserDataFault(ctx, task, safeUserDataFaultFailureCode(agentCommandErrorCode(err)))
+		return
+	}
+	if !matchingUserDataFreezeReceipt(result.UserDataFreeze, task) {
+		s.retryUserDataFault(ctx, task, "receipt_mismatch")
 		return
 	}
 	if _, err := s.Store.ReconcileProtectionStates(
@@ -234,6 +311,35 @@ func (s *Server) executeUserDataFault(ctx context.Context, task store.UserDataFa
 	)
 }
 
+func (s *Server) executeUserDataFaultRelease(ctx context.Context, task store.UserDataFaultReleaseTask) {
+	node, err := s.Store.GetNodeByID(ctx, task.NodeID)
+	if err != nil || !nodeAcceptsUserDataFreeze(node) {
+		s.retryUserDataFaultRelease(ctx, task, "agent_unavailable")
+		return
+	}
+	result, err := s.runRetryableAgentCommandWithOperationAtGeneration(
+		ctx, node, "release_user_data", protocol.ReleaseUserDataRequest{
+			OperationID: task.OperationID, ControllerGeneration: task.ControllerGeneration,
+			FaultID:      task.ID,
+			GlobalUserID: task.GlobalUserID, Handle: task.Handle,
+			ActivityEpoch: task.ActivityEpoch,
+		}, task.OperationID, task.ControllerGeneration, userDataFaultCommandTTL,
+	)
+	if err != nil {
+		s.retryUserDataFaultRelease(ctx, task, safeUserDataFaultFailureCode(agentCommandErrorCode(err)))
+		return
+	}
+	if !matchingUserDataReleaseReceipt(result.UserDataRelease, task) {
+		s.retryUserDataFaultRelease(ctx, task, "receipt_mismatch")
+		return
+	}
+	if err := s.Store.CompleteUserDataFaultRelease(
+		ctx, task.ID, task.OperationID, s.workflowWorkerID, time.Now().UTC(),
+	); err != nil {
+		return
+	}
+}
+
 func (s *Server) retryUserDataFault(
 	ctx context.Context,
 	task store.UserDataFaultTask,
@@ -243,6 +349,39 @@ func (s *Server) retryUserDataFault(
 		ctx, task.ID, task.OperationID, s.workflowWorkerID, code,
 		time.Now().UTC(), userDataFaultRetryDelay(task.Attempt),
 	)
+}
+
+func (s *Server) retryUserDataFaultRelease(
+	ctx context.Context,
+	task store.UserDataFaultReleaseTask,
+	code string,
+) {
+	_ = s.Store.RetryUserDataFaultRelease(
+		ctx, task.ID, task.OperationID, s.workflowWorkerID, code,
+		time.Now().UTC(), userDataFaultRetryDelay(task.Attempt),
+	)
+}
+
+func matchingUserDataReleaseReceipt(
+	receipt *protocol.ReleaseUserDataResponse,
+	task store.UserDataFaultReleaseTask,
+) bool {
+	return receipt != nil && receipt.OK && receipt.Released &&
+		receipt.OperationID == task.OperationID &&
+		receipt.ControllerGeneration == task.ControllerGeneration && receipt.FaultID == task.ID &&
+		receipt.GlobalUserID == task.GlobalUserID && receipt.Handle == task.Handle &&
+		receipt.ActivityEpoch == task.ActivityEpoch
+}
+
+func matchingUserDataFreezeReceipt(
+	receipt *protocol.FreezeUserDataResponse,
+	task store.UserDataFaultTask,
+) bool {
+	return receipt != nil && receipt.OK && receipt.Frozen && receipt.Drained &&
+		receipt.OperationID == task.OperationID &&
+		receipt.ControllerGeneration == task.ControllerGeneration && receipt.FaultID == task.ID &&
+		receipt.GlobalUserID == task.GlobalUserID && receipt.Handle == task.Handle &&
+		receipt.ActivityEpoch == task.ActivityEpoch
 }
 
 func nodeAcceptsUserDataFreeze(node *store.Node) bool {
@@ -255,7 +394,7 @@ func nodeAcceptsUserDataFreeze(node *store.Node) bool {
 
 func safeUserDataFaultFailureCode(code string) string {
 	switch code {
-	case "invalid_command_payload", "user_data_freeze_failed":
+	case "invalid_command_payload", "user_data_freeze_failed", "user_data_release_failed":
 		return code
 	default:
 		return "agent_command_unavailable"

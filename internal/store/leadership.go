@@ -118,7 +118,7 @@ func (s *Store) PromoteControllerEpoch(ctx context.Context, source string, now t
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE controller_rebuild_operations SET state='failed',
 		  error_code='superseded_by_generation',completed_at=$1,updated_at=$1
-		WHERE state='reconciling'`, now); err != nil {
+		WHERE state IN ('reconciling','ready_with_deferred')`, now); err != nil {
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -133,7 +133,9 @@ func (s *Store) PromoteControllerEpoch(ctx context.Context, source string, now t
 		INSERT INTO controller_rebuild_nodes (
 		  rebuild_id,node_id,previous_credential_generation,state,updated_at
 		)
-		SELECT $1,node.id,credential.controller_generation,'awaiting_heartbeat',$2
+		SELECT $1,node.id,credential.controller_generation,
+		  CASE WHEN node.connectivity_state='online' THEN 'awaiting_heartbeat' ELSE 'deferred' END,
+		  $2
 		FROM nodes node
 		JOIN LATERAL (
 		  SELECT controller_generation FROM agent_credentials
@@ -147,20 +149,32 @@ func (s *Store) PromoteControllerEpoch(ctx context.Context, source string, now t
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE nodes SET controller_generation=0
+		UPDATE nodes SET controller_generation=0,status='offline',connectivity_state='offline',
+		  capacity_state='unknown',capacity_reason_code='controller_generation_promoted',
+		  capacity_pressure_since=NULL,capacity_recovery_since=NULL,
+		  capacity_cooldown_until=NULL,capacity_changed_at=$2
 		WHERE id IN (
 		  SELECT node_id FROM controller_rebuild_nodes WHERE rebuild_id=$1
-		)`, rebuildID); err != nil {
+		) OR (connectivity_state='online' AND controller_generation<>$3)`,
+		rebuildID, now, next); err != nil {
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE controller_rebuild_operations rebuild SET
 		  total_nodes=progress.total_nodes,
-		  state=CASE WHEN progress.total_nodes=0 THEN 'succeeded' ELSE 'reconciling' END,
-		  completed_at=CASE WHEN progress.total_nodes=0 THEN $2::timestamptz ELSE NULL END,
+		  reconciled_nodes=progress.reconciled_nodes,
+		  state=CASE
+		    WHEN progress.total_nodes=progress.reconciled_nodes THEN 'succeeded'
+		    WHEN progress.total_nodes=progress.ready_nodes THEN 'ready_with_deferred'
+		    ELSE 'reconciling' END,
+		  completed_at=CASE WHEN progress.total_nodes=progress.reconciled_nodes
+		    THEN $2::timestamptz ELSE NULL END,
 		  updated_at=$2::timestamptz
 		FROM (
-		  SELECT count(*)::int AS total_nodes FROM controller_rebuild_nodes
+		  SELECT count(*)::int AS total_nodes,
+		    count(*) FILTER (WHERE state='reconciled')::int AS reconciled_nodes,
+		    count(*) FILTER (WHERE state IN ('reconciled','deferred'))::int AS ready_nodes
+		  FROM controller_rebuild_nodes
 		  WHERE rebuild_id=$1
 		) progress WHERE rebuild.id=$1`, rebuildID, now); err != nil {
 		return 0, err

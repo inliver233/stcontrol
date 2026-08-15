@@ -124,6 +124,7 @@ func (s *Store) CreateLoginHandoff(ctx context.Context, p CreateLoginHandoffPara
 	if err := tx.QueryRowContext(ctx, `
 		SELECT base_url FROM nodes
 		WHERE id=$1 AND role='compute' AND status='online' AND connectivity_state='online'
+		  AND controller_generation=(SELECT generation FROM controller_epochs WHERE state='active')
 		  AND compatibility_state='compatible' AND control_mode='managed'
 		  AND desired_control_mode='managed'
 		  AND (operational_state='active'

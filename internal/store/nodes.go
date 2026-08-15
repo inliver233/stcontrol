@@ -217,11 +217,39 @@ func (s *Store) ListNodes(ctx context.Context) ([]*Node, error) {
 // durable capacity state, and refreshes the independent health dimensions.
 func (s *Store) UpdateNodeHeartbeat(
 	ctx context.Context,
-	id int64,
+	id, authenticatedControllerGeneration int64,
 	facts NodeHeartbeatFacts,
 	capacityPolicy NodeCapacityPolicy,
 ) error {
-	if id <= 0 || !validNodeHeartbeatFacts(facts) || !validNodeCapacityPolicy(capacityPolicy) {
+	return s.updateNodeHeartbeat(
+		ctx, id, authenticatedControllerGeneration, facts, capacityPolicy, true,
+	)
+}
+
+// UpdateNodeRecoveryHeartbeat records bounded telemetry from a credential in
+// the durable rebuild scope without making that node schedulable. A fresh
+// heartbeat authenticated by the active generation is the only path that may
+// publish online connectivity again.
+func (s *Store) UpdateNodeRecoveryHeartbeat(
+	ctx context.Context,
+	id, authenticatedControllerGeneration int64,
+	facts NodeHeartbeatFacts,
+	capacityPolicy NodeCapacityPolicy,
+) error {
+	return s.updateNodeHeartbeat(
+		ctx, id, authenticatedControllerGeneration, facts, capacityPolicy, false,
+	)
+}
+
+func (s *Store) updateNodeHeartbeat(
+	ctx context.Context,
+	id, authenticatedControllerGeneration int64,
+	facts NodeHeartbeatFacts,
+	capacityPolicy NodeCapacityPolicy,
+	publishOnline bool,
+) error {
+	if id <= 0 || authenticatedControllerGeneration <= 0 ||
+		!validNodeHeartbeatFacts(facts) || !validNodeCapacityPolicy(capacityPolicy) {
 		return fmt.Errorf("invalid node heartbeat facts")
 	}
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
@@ -234,19 +262,43 @@ func (s *Store) UpdateNodeHeartbeat(
 	var compatibility nodeCompatibilityCursor
 	var currentFingerprint sql.NullString
 	var compatibilityReportedAt sql.NullTime
+	var nodeControllerGeneration, activeControllerGeneration int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT capacity_state,capacity_reason_code,capacity_pressure_since,
 		  capacity_recovery_since,capacity_changed_at,capacity_cooldown_until,
-		  connectivity_state,compatibility_fingerprint,compatibility_reported_at
-		FROM nodes WHERE id=$1 FOR UPDATE`, id).Scan(
+		  node.connectivity_state,node.compatibility_fingerprint,node.compatibility_reported_at,
+		  node.controller_generation,epoch.generation
+		FROM nodes node
+		JOIN controller_epochs epoch ON epoch.state='active'
+		WHERE node.id=$1 FOR UPDATE OF node,epoch`, id).Scan(
 		&current.State, &currentReason, &current.PressureSince,
 		&current.RecoverySince, &current.ChangedAt, &current.CooldownUntil,
 		&compatibility.ConnectivityState, &currentFingerprint, &compatibilityReportedAt,
+		&nodeControllerGeneration, &activeControllerGeneration,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("node not found")
 		}
 		return err
+	}
+	if publishOnline {
+		if authenticatedControllerGeneration != activeControllerGeneration ||
+			nodeControllerGeneration != activeControllerGeneration {
+			return ErrStaleControllerMode
+		}
+	} else {
+		if authenticatedControllerGeneration >= activeControllerGeneration {
+			return ErrStaleControllerMode
+		}
+		allowed, err := controllerRebuildAllowsOldCredentialLocked(
+			ctx, tx, id, activeControllerGeneration, authenticatedControllerGeneration,
+		)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return ErrStaleControllerMode
+		}
 	}
 	current.Reason = currentReason.String
 	compatibility.HasHistory = compatibilityReportedAt.Valid
@@ -308,8 +360,11 @@ func (s *Store) UpdateNodeHeartbeat(
 	_, err = tx.ExecContext(ctx, `
 	  UPDATE nodes SET cpu_pct=$2,mem_pct=$3,disk_pct=$4,
 	    tavern_version=$5,agent_version=$6,transfer_url=$7,
-	    last_seen_at=$8::timestamptz,status='online',connectivity_state='online',
-	    operational_state=CASE WHEN operational_state='pending' THEN 'active' ELSE operational_state END,
+	    last_seen_at=CASE WHEN $35::boolean THEN $8::timestamptz ELSE last_seen_at END,
+	    status=CASE WHEN $35::boolean THEN 'online' ELSE 'offline' END,
+	    connectivity_state=CASE WHEN $35::boolean THEN 'online' ELSE 'offline' END,
+	    operational_state=CASE WHEN $35::boolean AND operational_state='pending'
+	      THEN 'active' ELSE operational_state END,
 	    allocated_disk_bytes=$9,disk_available_bytes=$10,disk_total_bytes=$11,disk_quota_bytes=$12,
 	    online_users=$13,task_queue_depth=$14,metrics_observed_at=$8::timestamptz,
 	    cpu_window_avg=$15,cpu_window_peak=$16,mem_window_avg=$17,mem_window_peak=$18,
@@ -359,7 +414,8 @@ func (s *Store) UpdateNodeHeartbeat(
 		nullTimeValue(decision.CooldownUntil), effectiveCompatibilityState, facts.CompatibilityFingerprint,
 		effectiveCompatibilityReason,
 		facts.RegistrationPolicy.State, facts.RegistrationPolicy.Version,
-		facts.RegistrationPolicy.ExpiresAt, facts.RegistrationPolicy.ErrorCode, facts.TelemetrySource)
+		facts.RegistrationPolicy.ExpiresAt, facts.RegistrationPolicy.ErrorCode, facts.TelemetrySource,
+		publishOnline)
 	if err != nil {
 		return fmt.Errorf("update node heartbeat facts: %w", err)
 	}
@@ -377,12 +433,26 @@ func (s *Store) UpdateNodeStatus(ctx context.Context, id int64, status string) e
 	} else if status == "offline" {
 		connectivity = "offline"
 	}
-	_, err := s.DB.ExecContext(ctx, `
+	result, err := s.DB.ExecContext(ctx, `
 		UPDATE nodes SET status=$2,connectivity_state=$3,
 		  capacity_state=CASE WHEN $2='online' THEN capacity_state ELSE 'unknown' END,
 		  capacity_reason_code=CASE WHEN $2='online' THEN capacity_reason_code ELSE 'status_changed' END
-		WHERE id=$1`, id, status, connectivity)
-	return err
+		WHERE id=$1 AND ($2<>'online' OR controller_generation=(
+		  SELECT generation FROM controller_epochs WHERE state='active'
+		))`, id, status, connectivity)
+	if err != nil {
+		return err
+	}
+	if status == "online" {
+		updated, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if updated != 1 {
+			return ErrStaleControllerMode
+		}
+	}
+	return nil
 }
 
 // UpdateNodeSettings 更新节点可配置项。
@@ -430,7 +500,6 @@ func (s *Store) UpdateNodeExpectedQuota(
 	return tx.Commit()
 }
 
-
 // RecordNodeClientLatency persists a browser-measured latency sample using a
 // simple EWMA so a few fast/slow probes do not dominate.  The controller does
 // not retain per-user history; the aggregated value is used only for node
@@ -459,19 +528,62 @@ func (s *Store) RecordNodeClientLatency(ctx context.Context, nodeID, latencyMS i
 	}
 	return nil
 }
+
 // MarkStaleNodesOffline 把超过 timeout 未心跳的节点标记为 offline。
 func (s *Store) MarkStaleNodesOffline(ctx context.Context, timeout time.Duration) error {
 	if timeout <= 0 {
 		return fmt.Errorf("invalid node heartbeat timeout")
 	}
 	now := time.Now().UTC()
-	_, err := s.DB.ExecContext(ctx, `
+	cutoff := now.Add(-timeout)
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
 	  UPDATE nodes SET status='offline',connectivity_state='offline',capacity_state='unknown',
 	    capacity_reason_code='heartbeat_stale',capacity_pressure_since=NULL,
 	    capacity_recovery_since=NULL,capacity_cooldown_until=NULL,capacity_changed_at=$2
 	  WHERE connectivity_state='online' AND last_seen_at < $1`,
-		now.Add(-timeout), now)
-	return err
+		cutoff, now); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		UPDATE controller_rebuild_nodes item
+		SET state='deferred',updated_at=$2
+		FROM controller_rebuild_operations rebuild,controller_epochs epoch,nodes node
+		WHERE item.rebuild_id=rebuild.id AND item.node_id=node.id
+		  AND epoch.state='active' AND rebuild.generation=epoch.generation
+		  AND rebuild.state IN ('reconciling','ready_with_deferred')
+		  AND item.state NOT IN ('deferred','reconciled')
+		  AND node.connectivity_state<>'online'
+		  AND COALESCE(node.last_seen_at,rebuild.started_at)<$1
+		RETURNING rebuild.id::text`, cutoff, now)
+	if err != nil {
+		return err
+	}
+	rebuildIDs := make(map[string]struct{})
+	for rows.Next() {
+		var rebuildID string
+		if err := rows.Scan(&rebuildID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		rebuildIDs[rebuildID] = struct{}{}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for rebuildID := range rebuildIDs {
+		if err := finishControllerRebuildIfReadyLocked(ctx, tx, rebuildID, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) CleanupNodeMetricSamples(ctx context.Context, before time.Time) (int64, error) {

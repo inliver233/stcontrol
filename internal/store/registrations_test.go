@@ -34,7 +34,7 @@ func TestCreateRegistrationWorkflowReservesHandleUnderFreshSelectedNodePolicy(t 
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "operation_id", "state", "local_handle", "result_user_id", "request_digest",
 		}))
-	mock.ExpectQuery(`SELECT role,status,connectivity_state,operational_state`).WithArgs(int64(12)).
+	mock.ExpectQuery(`(?s)SELECT role,status,connectivity_state,operational_state.*controller_generation=\(SELECT generation FROM controller_epochs WHERE state='active'\)`).WithArgs(int64(12)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"role", "status", "connectivity_state", "operational_state", "compatibility_state",
 			"capacity_state",

@@ -1,0 +1,86 @@
+{
+  "batch_id": 3,
+  "groups": [
+    {
+      "group_id": "G1",
+      "name": "offline-backup-scan-decoupling",
+      "finding_ids": ["FIX-OFFLINE-BACKUP-ASYNC"],
+      "strategy": "parallel-isolated-controller-scheduler",
+      "owned_files": [
+        "internal/controller/backup.go",
+        "internal/controller/backup_test.go"
+      ],
+      "risk": "medium",
+      "tests": [
+        "go test ./internal/controller -run 'TestTriggerUserBackupCannotBypassDurableStorageRepairIntent|TestChooseStorageRepairTargetUsesHealthyPureStorage'",
+        "go test ./internal/controller -run 'TestOfflineBackupSchedulerQueuesDurableWorkWithoutInlineSnapshot'"
+      ]
+    },
+    {
+      "group_id": "G2",
+      "name": "agent-registration-and-node-traffic-limits",
+      "finding_ids": ["FIX-R21-AGENT-LIMITS"],
+      "strategy": "parallel-router-ratelimit-only",
+      "owned_files": [
+        "internal/controller/router.go",
+        "internal/controller/ratelimit.go",
+        "internal/controller/ratelimit_test.go"
+      ],
+      "risk": "high",
+      "tests": [
+        "go test ./internal/controller -run 'TestRateLimitMiddlewareRejectsBurst|TestRouterDoesNotRewriteRemoteAddrWithSpoofableHeaders|TestGlobalRateLimitMountedOnUserAndAdminRoutes'",
+        "go test ./internal/controller -run 'TestAgentRegisterRateLimitedPerSourceIP|TestAuthenticatedAgentRoutesRateLimitedPerNode'"
+      ]
+    },
+    {
+      "group_id": "G3",
+      "name": "controller-backup-retry-and-lease-reclaim",
+      "finding_ids": ["FIX-CONTROLLER-BACKUP-RETRY"],
+      "strategy": "serial-shared-controller-backup-store",
+      "owned_files": [
+        "internal/controller/controller_backup.go",
+        "internal/store/controller_disaster_backups.go",
+        "internal/controller/controller_backup_test.go",
+        "internal/store/controller_disaster_backups_test.go"
+      ],
+      "risk": "high",
+      "tests": [
+        "go test ./internal/store -run 'TestClaimControllerDisasterBackupClaimsScheduledRun|TestFailControllerDisasterBackupMovesToRetryWait|TestFailControllerDisasterBackupMovesToFailedAtMaxAttempts|TestCompleteControllerDisasterBackupPersistsMetadata'",
+        "go test ./internal/controller -run 'TestControllerBackupTransferEndpointRequiresHTTPS|TestControllerBackupReconcilerReclaimsExpiredLeaseAndRotatesAttemptOperation'"
+      ]
+    },
+    {
+      "group_id": "G4",
+      "name": "recovery-readiness-store-barrier",
+      "finding_ids": ["FIX-RECOVERY-STORE-BARRIER"],
+      "strategy": "serial-after-G3-shared-store-gate-recheck",
+      "depends_on": ["G3"],
+      "owned_files": [
+        "internal/store/storage_repair.go",
+        "internal/store/controller_disaster_backups.go",
+        "internal/controller/storage_repair.go",
+        "internal/store/storage_repair_test.go",
+        "internal/store/controller_disaster_backups_test.go",
+        "internal/controller/storage_repair_test.go"
+      ],
+      "risk": "high",
+      "tests": [
+        "go test ./internal/store -run 'TestClaimAndCreateStorageRepairRejectsAWriterThatCameBack|TestReconcileStorageRepairTasksReleasesReservationWithDurableBackoff|TestPostgresStorageRepairTaskTerminalConstraints|TestClaimControllerDisasterBackupRejectsClosedRecoveryGate'",
+        "go test ./internal/controller -run 'TestScheduleStorageRepairsFailsClosedOnDatabaseError|TestScheduleStorageRepairsReportsHealthyWhenNothingIsDue|TestRecoveryBarrierRecheckedInsideRepairAndBackupClaims'"
+      ]
+    }
+  ],
+  "timeline": [
+    {"stage": 1, "groups": ["G1", "G2", "G3"], "mode": "parallel"},
+    {"stage": 2, "groups": ["G4"], "mode": "serial"}
+  ],
+  "metadata": {
+    "findings_count": 4,
+    "groups_count": 4,
+    "shared_store_files": [
+      "internal/store/controller_disaster_backups.go"
+    ],
+    "planning_basis": "Keep router/ratelimit work isolated, let offline backup scheduling proceed independently, and serialize the two findings that both modify controller_disaster_backups store semantics/tests.",
+    "created_at": "2026-08-15T16:31:00+08:00"
+  }
+}

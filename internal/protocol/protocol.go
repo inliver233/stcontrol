@@ -413,17 +413,46 @@ type SetPasswordRequest struct {
 // single authoritative-home data fault. It deliberately contains no path,
 // command line or release credential.
 type FreezeUserDataRequest struct {
-	OperationID   string `json:"operation_id"`
-	FaultID       string `json:"fault_id"`
-	GlobalUserID  int64  `json:"global_user_id"`
-	Handle        string `json:"handle"`
-	ActivityEpoch int64  `json:"activity_epoch"`
+	OperationID          string `json:"operation_id"`
+	ControllerGeneration int64  `json:"controller_generation"`
+	FaultID              string `json:"fault_id"`
+	GlobalUserID         int64  `json:"global_user_id"`
+	Handle               string `json:"handle"`
+	ActivityEpoch        int64  `json:"activity_epoch"`
 }
 
 type FreezeUserDataResponse struct {
-	OK      bool `json:"ok"`
-	Frozen  bool `json:"frozen"`
-	Drained bool `json:"drained"`
+	OK                   bool   `json:"ok"`
+	OperationID          string `json:"operation_id"`
+	ControllerGeneration int64  `json:"controller_generation"`
+	FaultID              string `json:"fault_id"`
+	GlobalUserID         int64  `json:"global_user_id"`
+	Handle               string `json:"handle"`
+	ActivityEpoch        int64  `json:"activity_epoch"`
+	Frozen               bool   `json:"frozen"`
+	Drained              bool   `json:"drained"`
+}
+
+// ReleaseUserDataRequest is the complete, closed command contract for
+// releasing one previously frozen authoritative-home data fault gate.
+type ReleaseUserDataRequest struct {
+	OperationID          string `json:"operation_id"`
+	ControllerGeneration int64  `json:"controller_generation"`
+	FaultID              string `json:"fault_id"`
+	GlobalUserID         int64  `json:"global_user_id"`
+	Handle               string `json:"handle"`
+	ActivityEpoch        int64  `json:"activity_epoch"`
+}
+
+type ReleaseUserDataResponse struct {
+	OK                   bool   `json:"ok"`
+	OperationID          string `json:"operation_id"`
+	ControllerGeneration int64  `json:"controller_generation"`
+	FaultID              string `json:"fault_id"`
+	GlobalUserID         int64  `json:"global_user_id"`
+	Handle               string `json:"handle"`
+	ActivityEpoch        int64  `json:"activity_epoch"`
+	Released             bool   `json:"released"`
 }
 
 type VerifyLocalUserRequest struct {

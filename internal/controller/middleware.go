@@ -169,6 +169,7 @@ func (s *Server) agentAuthMiddleware(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, ctxKey("stcontrol-agent-credential-generation"), matched.ControllerGeneration)
 		ctx = context.WithValue(ctx, ctxKey("stcontrol-agent-credential-pending"), matched.Pending)
 		ctx = context.WithValue(ctx, ctxKey("stcontrol-agent-psk"), matchedPSK)
+		ctx = context.WithValue(ctx, ctxKey("stcontrol-active-controller-generation"), activeGeneration)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -182,6 +183,11 @@ func currentAgentCredential(r *http.Request) (int64, bool, string) {
 
 func currentAgentCredentialGeneration(r *http.Request) int64 {
 	generation, _ := r.Context().Value(ctxKey("stcontrol-agent-credential-generation")).(int64)
+	return generation
+}
+
+func currentActiveControllerGeneration(r *http.Request) int64 {
+	generation, _ := r.Context().Value(ctxKey("stcontrol-active-controller-generation")).(int64)
 	return generation
 }
 

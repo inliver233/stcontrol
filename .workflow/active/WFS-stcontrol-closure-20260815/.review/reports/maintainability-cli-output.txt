@@ -1,0 +1,70 @@
+Maintainability deep scan
+Timestamp: 2026-08-15T07:38:51Z
+Scope: origin/main..flash in E:\Sillytarvennew\stcontrol\.flash-worktree
+Cross-repo context: E:\Sillytarvennew\Sillytarven-online adapter and adapter tests
+Mode: read-only deep scan
+Tooling: codex + shell structural scan
+
+Schema notes:
+- Root structure: array with a single dimension object
+- Required top-level fields used: dimension, review_id, analysis_timestamp, cli_tool_used, model, analysis_duration_ms, summary, findings, cross_references
+- Summary kept flat
+- All findings include snippet, impact, metadata, iteration, status
+
+Files inspected (12 / 7767 lines):
+- internal/protocol/protocol.go
+- Sillytarven-online/src/endpoints/stcontrol.js
+- Sillytarven-online/src/stcontrol.js
+- internal/controller/ai_phase_tasks.go
+- internal/controller/ai_phase_tasks_test.go
+- internal/store/storage_repair.go
+- internal/store/storage_repair_test.go
+- web/src/pages/Admin.tsx
+- internal/store/user_data_faults.go
+- internal/controller/user_data_faults.go
+- Sillytarven-online/tests/stcontrol-routes.node.test.mjs
+- Sillytarven-online/tests/stcontrol-adapter.node.test.mjs
+
+Findings:
+
+1. HIGH `mai-001` Cross-repo protocol contract drift
+   - Go source of truth:
+     - internal/protocol/protocol.go:23 `MaxClockSkew = 60 * time.Second`
+     - internal/protocol/protocol.go:94 `NodeModeManaged/ControllerUnreachable/Independent/IndependentDraining`
+     - internal/protocol/protocol.go:303 `MaxAccountInventoryUsers = 10_000`
+   - Duplicated in adapter/UI:
+     - Sillytarven-online/src/endpoints/stcontrol.js:47 `const MAX_INVENTORY_USERS = 10_000;`
+     - Sillytarven-online/src/endpoints/stcontrol.js:454-459 lease timestamp guardrails use raw `60_000` and `24 * 60 * 60 * 1000`
+     - Sillytarven-online/src/stcontrol.js:48-49 `MAX_ACTIVITY_LEASE_CONFIRMATIONS/MAX_ACTIVITY_LEASE_MS`
+     - web/src/pages/Admin.tsx:1002-1052 reason-code labels/select options
+   - Drift consequence:
+     - Lease or inventory policy changes can be accepted by controller/agent code and rejected by adapter code or hidden in admin UI.
+     - JS tests currently mirror the same literals (`tests/stcontrol-routes.node.test.mjs:130-140`, `:208-210`; `tests/stcontrol-adapter.node.test.mjs:423-468`), so they do not guard against stale contracts.
+
+2. HIGH `mai-002` AI task observation builders are copy-pasted and already drifted once
+   - internal/controller/ai_phase_tasks.go:24-27 contains a comment documenting a prior D5 breakage when `candidate_catalog` was omitted.
+   - internal/controller/ai_phase_tasks.go:59-73 builds `evidenceCatalog` and discards it via `_ = evidenceCatalog`.
+   - Six enqueue functions repeat near-identical redaction/evidence/marshal/dedup logic.
+   - Tests in internal/controller/ai_phase_tasks_test.go validate per-task payloads, but no shared helper enforces one schema path across all task families.
+
+3. HIGH `mai-003` Storage repair scheduler is too large for safe branch-level maintenance
+   - internal/store/storage_repair.go:238-498 bundles task claim, controller epoch check, writer lease validation, target selection, workflow creation, capability publish, replica update, task lease update, and audit write.
+   - storage_repair_test.go relies on large ordered `sqlmock` regexes (`:70-126`, `:191-198`) instead of named invariant tests.
+   - Maintenance consequence:
+     - Reordering one side effect or changing one WHERE clause is likely to affect another fence unexpectedly.
+     - Failures localize poorly because the tests mostly assert SQL shape.
+
+4. MEDIUM `mai-004` Admin console page is a monolith with repeated local state machines
+   - web/src/pages/Admin.tsx is 1599 lines and defines Overview, NodesAdmin, UsersAdmin, BackupsAdmin, ProtectionAlertsAdmin, AuditAdmin, AdminsAdmin, AISupervisionAdmin together.
+   - Duplications:
+     - Quota GiB->bytes parsing at :338-346 and :367-372
+     - Cursor/history/load flows at :875-902 and :1354-1384
+     - Hardcoded reason/task/action dictionaries at :1002-1052 and :1558-1570
+     - Ad-hoc `setTimeout(load, 0)` pagination reload at :1573-1574
+   - Maintenance consequence:
+     - Backend vocabulary changes require hand edits in multiple UI sections and are easy to miss.
+
+Assessment:
+- No critical findings.
+- Highest long-term regression risk is contract drift between Go protocol definitions and JS adapter/UI validators.
+- Highest local code-maintenance risk inside the repo is the storage-repair transaction plus SQL-regex tests.

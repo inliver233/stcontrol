@@ -34,6 +34,10 @@ func TestPostgresNodeCapacityAtFourDigitOnlineScale(t *testing.T) {
 		t.Fatalf("open PostgreSQL capacity store: %v", err)
 	}
 	nodeID := insertIntegrationNode(t, st, "capacity-four-digit")
+	generation, err := st.GetActiveControllerGeneration(ctx)
+	if err != nil {
+		t.Fatalf("load capacity controller generation: %v", err)
+	}
 	if _, err := st.DB.ExecContext(ctx, `
 		UPDATE nodes SET allow_register=true,controller_generation=(
 		  SELECT generation FROM controller_epochs WHERE state='active'
@@ -124,7 +128,7 @@ func TestPostgresNodeCapacityAtFourDigitOnlineScale(t *testing.T) {
 		facts.RegistrationPolicy = NodeRegistrationPolicy{
 			State: "open", Version: 11, ExpiresAt: at.Add(time.Hour), ObservedAt: at,
 		}
-		if err := st.UpdateNodeHeartbeat(ctx, nodeID, facts, policy); err != nil {
+		if err := st.UpdateNodeHeartbeat(ctx, nodeID, generation, facts, policy); err != nil {
 			t.Fatalf("heartbeat at %s: %v", at, err)
 		}
 	}
@@ -154,7 +158,7 @@ func TestPostgresNodeCapacityAtFourDigitOnlineScale(t *testing.T) {
 	equalFacts.RegistrationPolicy = NodeRegistrationPolicy{
 		State: "open", Version: 11, ExpiresAt: t0.Add(time.Hour), ObservedAt: t0.Add(2 * time.Minute),
 	}
-	if err := st.UpdateNodeHeartbeat(ctx, nodeID, equalFacts, policy); err != nil {
+	if err := st.UpdateNodeHeartbeat(ctx, nodeID, generation, equalFacts, policy); err != nil {
 		t.Fatalf("equal heartbeat replay: %v", err)
 	}
 	assertCapacity("full", "cpu_sustained")
@@ -165,7 +169,7 @@ func TestPostgresNodeCapacityAtFourDigitOnlineScale(t *testing.T) {
 	staleFacts := equalFacts
 	staleFacts.ObservedAt = t0.Add(time.Minute)
 	staleFacts.RegistrationPolicy.ObservedAt = staleFacts.ObservedAt
-	if err := st.UpdateNodeHeartbeat(ctx, nodeID, staleFacts, policy); !errors.Is(err, ErrStaleNodeHeartbeat) {
+	if err := st.UpdateNodeHeartbeat(ctx, nodeID, generation, staleFacts, policy); !errors.Is(err, ErrStaleNodeHeartbeat) {
 		t.Fatalf("stale heartbeat error=%v", err)
 	}
 

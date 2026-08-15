@@ -78,3 +78,26 @@ func TestPreviousGenerationCredentialCannotReachCommandEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHeartbeatClosesAdmissionGateBeforeRecoveryMutation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name                         string
+		authenticated, active        int64
+		reportedMode                 string
+		wantImmediateAdmissionClosed bool
+	}{
+		{name: "current managed", authenticated: 6, active: 6, reportedMode: protocol.NodeModeManaged},
+		{name: "previous generation", authenticated: 5, active: 6, reportedMode: protocol.NodeModeManaged, wantImmediateAdmissionClosed: true},
+		{name: "independent", authenticated: 6, active: 6, reportedMode: protocol.NodeModeIndependent, wantImmediateAdmissionClosed: true},
+		{name: "missing active context fails closed", authenticated: 6, reportedMode: protocol.NodeModeManaged, wantImmediateAdmissionClosed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := heartbeatRequiresImmediateGate(
+				test.authenticated, test.active, test.reportedMode,
+			); got != test.wantImmediateAdmissionClosed {
+				t.Fatalf("immediate gate=%v want=%v", got, test.wantImmediateAdmissionClosed)
+			}
+		})
+	}
+}

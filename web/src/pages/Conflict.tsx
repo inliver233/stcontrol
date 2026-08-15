@@ -27,6 +27,33 @@ function formatBytes(value?: number) {
   return `${(value / 1024 / 1024 / 1024).toFixed(1)} GiB`
 }
 
+export function conflictRefreshIntervalMs(state?: ReplicaConflict['inspection_state']): number | null {
+  switch (state) {
+    case 'differences_ready':
+    case 'identical':
+      return null
+    case 'evidence_failed':
+      return 30000
+    default:
+      return 3000
+  }
+}
+
+type ConflictResolutionPollErrorAction = 'redirect_login' | 'stop_with_error' | 'continue_polling'
+
+export function classifyConflictResolutionPollError(err: any): ConflictResolutionPollErrorAction {
+  const statusCode = typeof err?.status === 'number' ? err.status : 0
+  if (statusCode === 401 || statusCode === 403) {
+    return 'redirect_login'
+  }
+  const reported = err?.data?.state as string | undefined
+  if (statusCode >= 400 && statusCode < 500 && reported &&
+    ['resolved', 'succeeded', 'failed', 'cancelled'].includes(reported)) {
+    return 'stop_with_error'
+  }
+  return 'continue_polling'
+}
+
 export default function ConflictPage() {
   const [conflict, setConflict] = useState<ReplicaConflict | null>(null)
   const [differences, setDifferences] = useState<ConflictDifferences | null>(null)
@@ -56,8 +83,9 @@ export default function ConflictPage() {
 
   useEffect(() => {
     void loadConflict()
-	if (conflict?.inspection_state === 'differences_ready' || conflict?.inspection_state === 'identical' || conflict?.inspection_state === 'evidence_failed') return
-    const timer = window.setInterval(() => void loadConflict(), 3000)
+    const intervalMs = conflictRefreshIntervalMs(conflict?.inspection_state)
+    if (intervalMs === null) return
+    const timer = window.setInterval(() => void loadConflict(), intervalMs)
     return () => window.clearInterval(timer)
   }, [conflict?.inspection_state, loadConflict])
 
@@ -77,9 +105,15 @@ export default function ConflictPage() {
     const savedOperation = window.sessionStorage.getItem(key)
     if (!savedOperation) return
     operationID.current = savedOperation
-    void api.conflictResolutionStatus(savedOperation)
-      .then(setResolution)
-      .catch(() => window.sessionStorage.removeItem(key))
+    // Restore a durable in-flight operation immediately and let the regular
+    // bounded poller resolve it. A transient refresh-time 404/network/5xx must
+    // not discard the only browser reference or enable a duplicate submit.
+    setResolution({
+      operation_id: savedOperation,
+      state: 'retrying',
+      base_node_id: 0,
+      base_node_name: '',
+    })
   }, [conflict?.id, resolution])
 
   useEffect(() => {
@@ -101,7 +135,6 @@ export default function ConflictPage() {
   useEffect(() => {
     if (!resolution || resolution.state === 'failed' || resolution.state === 'succeeded') return
     let timer: number | undefined
-    const terminalStates = ['resolved', 'succeeded', 'failed', 'cancelled']
     const poll = () => {
       void api.conflictResolutionStatus(resolution.operation_id)
         .then(status => {
@@ -109,20 +142,20 @@ export default function ConflictPage() {
           // A genuine 200 response reports the resolution as complete.
           if (status.state === 'succeeded') {
             if (timer !== undefined) window.clearInterval(timer)
+            if (conflict?.id) window.sessionStorage.removeItem(`stcontrol_conflict_resolution:${conflict.id}`)
             navigate('/login', { replace: true, state: { message: '冲突处理已完成，请重新登录。' } })
           }
         })
         .catch((err: any) => {
-          const statusCode = typeof err?.status === 'number' ? err.status : 0
+          const action = classifyConflictResolutionPollError(err)
           // Authentication/session loss: leave the page like any other login expiry.
-          if (statusCode === 401 || statusCode === 403) {
+          if (action === 'redirect_login') {
             if (timer !== undefined) window.clearInterval(timer)
             navigate('/login', { replace: true, state: { message: '冲突处理已完成，请重新登录。' } })
             return
           }
-          const reported = err?.data?.state as string | undefined
           // Another 4xx is only terminal when the server says the case is done.
-          if (statusCode >= 400 && statusCode < 500 && reported && terminalStates.includes(reported)) {
+          if (action === 'stop_with_error') {
             if (timer !== undefined) window.clearInterval(timer)
             setError(err?.message || '冲突处理无法继续。')
             return
@@ -132,7 +165,7 @@ export default function ConflictPage() {
     }
     timer = window.setInterval(poll, 2000)
     return () => { if (timer !== undefined) window.clearInterval(timer) }
-  }, [navigate, resolution])
+  }, [conflict?.id, navigate, resolution])
 
   const updateDecision = (path: string, sourceNodeID: number, preserveBoth: boolean) => {
     setDecisions(previous => ({
@@ -219,7 +252,7 @@ export default function ConflictPage() {
           </div>
 
           {conflict.inspection_state === 'capture_required' && <div className="loading">正在逐文件计算摘要并加密汇总，请稍候…</div>}
-          {conflict.inspection_state === 'evidence_failed' && <div className="error-msg">至少一个节点无法生成可信证据。系统保持冻结，不会用不完整结果继续。</div>}
+          {conflict.inspection_state === 'evidence_failed' && <div className="error-msg">至少一个节点暂时无法生成可信证据。系统保持冻结，不会用不完整结果继续；后台会在节点恢复后自动重试并刷新此页状态。</div>}
           {conflict.inspection_state === 'identical' && <div className="success-msg">各来源的文件路径、大小和内容摘要一致，没有检测到文件差异。</div>}
 
           {(conflict.inspection_state === 'differences_ready' || conflict.inspection_state === 'identical') && !resolution && <div className="conflict-resolution-panel">

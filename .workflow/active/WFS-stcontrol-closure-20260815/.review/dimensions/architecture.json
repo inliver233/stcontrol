@@ -1,0 +1,120 @@
+[
+  {
+    "dimension": "architecture",
+    "review_id": "review-20260815-acceptance",
+    "analysis_timestamp": "2026-08-15T08:40:00Z",
+    "cli_tool_used": "codex",
+    "model": "gpt-5",
+    "analysis_duration_ms": 3180000,
+    "summary": {
+      "total_findings": 3,
+      "critical": 1,
+      "high": 2,
+      "medium": 0,
+      "low": 0,
+      "files_analyzed": 18,
+      "lines_reviewed": 4360
+    },
+    "findings": [
+      {
+        "id": "arch-001-7d2a4c9e",
+        "title": "Managed write-lease validation is split from the state mutation that admits the request",
+        "severity": "critical",
+        "category": "separation-of-concerns",
+        "description": "The Online adapter authorizes a managed write against a snapshot loaded before `mutateState()`, then increments in-flight state in a later serialized mutation. A concurrent lease-confirmation refresh, mode flip, or logout can revoke that lease after the read-side check but before the request is admitted, so one stale write can still cross the single-writer fence.",
+        "file": "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js",
+        "line": 973,
+        "snippet": "const lease = state.leases[handle]; if (isWrite && envelope.loginMode === STCONTROL_MODES.MANAGED && (!lease || ...)) { return response.status(409)... } await mutateState(current => { ... current.sessions[envelope.sessionId] = session; });",
+        "recommendation": "Move lease/gate/session validation and the in-flight increment into one `mutateState()` transaction that returns an allow/deny decision. Do not call `next()` unless the same serialized critical section has rechecked the current lease snapshot and recorded the request as in flight.",
+        "references": [
+          "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:973",
+          "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:980"
+        ],
+        "impact": "This breaks the architecture's single-writer invariant during failover and recovery. A revoked or expired controller lease can still admit one more managed mutation, which is exactly the overlap the activity-lease protocol is supposed to prevent.",
+        "metadata": {
+          "subsystem": "session-lease-state-machine",
+          "discovery_source": "bash-scan"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": []
+      },
+      {
+        "id": "arch-002-b54f1e2a",
+        "title": "Managed-to-independent session promotion only updates the browser envelope, not the durable session state",
+        "severity": "high",
+        "category": "pattern-violation",
+        "description": "When the node enters independent mode, the adapter rewrites `request.session.stcontrol` to `independent`, but the persisted session record is reused unchanged inside `mutateState()`. Existing managed sessions therefore remain durably labeled as managed even after takeover, so later draining/reconciliation logic reads the wrong role and misses independent-write bookkeeping.",
+        "file": "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js",
+        "line": 945,
+        "snippet": "if (state.mode === STCONTROL_MODES.INDEPENDENT && envelope.loginMode !== STCONTROL_MODES.INDEPENDENT) { ... envelope.loginMode = STCONTROL_MODES.INDEPENDENT; ... } ... const session = current.sessions[envelope.sessionId] ?? { handle, loginMode: envelope.loginMode, ... };",
+        "recommendation": "Whenever the request envelope is promoted to `independent`, overwrite the durable `current.sessions[sessionId]` role, activity epoch, and controller generation in the same mutation. Add a regression test that starts from a managed session, flips to independent, performs a write, and asserts both `activeIndependentSessions` and `pendingUserSyncs` advance before draining.",
+        "references": [
+          "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:945",
+          "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:982",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/agent/control_mode.go:239",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/agent/control_mode.go:314"
+        ],
+        "impact": "The recovered controller can be told there are zero independent sessions or pending syncs even after the browser has already switched to disaster-write mode. That can reopen managed mode too early, or incorrectly block a legitimate draining session because the agent's durable control-mode view never observed the promotion.",
+        "metadata": {
+          "subsystem": "recovery-draining-state-machine",
+          "discovery_source": "bash-scan"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": []
+      },
+      {
+        "id": "arch-003-c8e9137b",
+        "title": "Recovery gate is process-local and not revalidated inside repair/backup scheduling transactions",
+        "severity": "high",
+        "category": "layering",
+        "description": "The controller checks `checkNewOperations()` before launching storage-repair or controller-backup work, but the subsequent store claim/schedule transactions do not re-assert control-plane readiness. If a heartbeat closes the gate after the in-memory check and before the DB claim completes, the same scheduler tick can still create a new workflow while recovery mode is already supposed to reject new operations.",
+        "file": "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/storage_repair.go",
+        "line": 67,
+        "snippet": "if s.checkNewOperations() != nil { return false } ... execution, err := s.Store.ClaimAndCreateStorageRepair(ctx, params)",
+        "recommendation": "Push the control-plane readiness predicate down into the store claim/schedule transaction, or pass a generation/readiness token that the store revalidates before inserting workflows. Apply the same pattern to controller disaster backup scheduling so the recovery barrier is enforced durably, not only by an in-process flag.",
+        "references": [
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/storage_repair.go:67",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/storage_repair.go:254",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/controller_backup.go:73",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/controller_disaster_backups.go:83"
+        ],
+        "impact": "This weakens the recovery boundary around controller rebuild/repair scheduling. During reconciliation, user-facing APIs may already be fail-closed while background schedulers can still start fresh repair or own-state backup workflows on stale assumptions, increasing state churn exactly when the system is trying to converge.",
+        "metadata": {
+          "subsystem": "control-plane-recovery-boundary",
+          "discovery_source": "bash-scan"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": []
+      }
+    ],
+    "cross_references": [
+      {
+        "finding_id": "arch-001-7d2a4c9e",
+        "related_dimensions": [
+          "security",
+          "action-items"
+        ],
+        "reason": "Single-writer fence violation can reopen stale writes and requirement-closure gaps."
+      },
+      {
+        "finding_id": "arch-002-b54f1e2a",
+        "related_dimensions": [
+          "action-items",
+          "maintainability"
+        ],
+        "reason": "Recovery-state divergence affects requirement closure and is easy to regress without dedicated tests."
+      },
+      {
+        "finding_id": "arch-003-c8e9137b",
+        "related_dimensions": [
+          "action-items",
+          "performance"
+        ],
+        "reason": "Background workflow churn during recovery affects both correctness and scheduler behavior."
+      }
+    ]
+  }
+]

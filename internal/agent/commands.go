@@ -39,6 +39,8 @@ type safeCommandResult struct {
 	ReplicaIntegrity   *protocol.ReplicaIntegrityReceipt   `json:"replica_integrity,omitempty"`
 	ReplicaCleanup     *protocol.DeleteReplicaReceipt      `json:"replica_cleanup,omitempty"`
 	ControllerBackup   *protocol.ControllerBackupReceipt   `json:"controller_backup,omitempty"`
+	UserDataFreeze     *protocol.FreezeUserDataResponse    `json:"user_data_freeze,omitempty"`
+	UserDataRelease    *protocol.ReleaseUserDataResponse   `json:"user_data_release,omitempty"`
 }
 
 // StartCommandLoop maintains the Agent-initiated control channel. It never
@@ -251,12 +253,12 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		return true, marshalSafeResult(safeCommandResult{OK: true, LocalUserID: restored.LocalUserID})
 	case "set_password":
 		var payload protocol.SetPasswordRequest
-		if err := json.Unmarshal(plaintext, &payload); err != nil || payload.Handle == "" {
+		if err := json.Unmarshal(plaintext, &payload); err != nil || payload.Handle == "" || payload.Version <= 0 {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
 		}
-		// Removal intents carry only handle + Remove=true (no hash material).
+		// Removal intents carry handle + Remove=true + a monotonic version (no hash material).
 		// Set intents must carry full password material.
-		if !payload.Remove && (payload.PasswordHash == "" || payload.PasswordSalt == "" || payload.Version <= 0) {
+		if !payload.Remove && (payload.PasswordHash == "" || payload.PasswordSalt == "") {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
 		}
 		payload.OperationID = command.OperationID
@@ -302,15 +304,31 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 	case "freeze_user_data":
 		var payload protocol.FreezeUserDataRequest
 		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "compute" ||
-			!validUUID(command.OperationID) || !validUUID(payload.FaultID) || payload.GlobalUserID <= 0 ||
-			!validHandle(payload.Handle) || payload.ActivityEpoch <= 0 {
+			!validUUID(command.OperationID) || payload.OperationID != command.OperationID ||
+			command.ControllerGeneration <= 0 || payload.ControllerGeneration != command.ControllerGeneration ||
+			!validUUID(payload.FaultID) || payload.GlobalUserID <= 0 || !validHandle(payload.Handle) ||
+			payload.ActivityEpoch <= 0 {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
 		}
-		payload.OperationID = command.OperationID
-		if err := a.freezeUserData(ctx, payload); err != nil {
+		receipt, err := a.freezeUserData(ctx, payload)
+		if err != nil {
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "user_data_freeze_failed"})
 		}
-		return true, marshalSafeResult(safeCommandResult{OK: true})
+		return true, marshalSafeResult(safeCommandResult{OK: true, UserDataFreeze: &receipt})
+	case "release_user_data":
+		var payload protocol.ReleaseUserDataRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "compute" ||
+			!validUUID(command.OperationID) || payload.OperationID != command.OperationID ||
+			command.ControllerGeneration <= 0 || payload.ControllerGeneration != command.ControllerGeneration ||
+			!validUUID(payload.FaultID) || payload.GlobalUserID <= 0 || !validHandle(payload.Handle) ||
+			payload.ActivityEpoch <= 0 {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		receipt, err := a.releaseUserData(ctx, payload)
+		if err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "user_data_release_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, UserDataRelease: &receipt})
 	case "check_node_admin":
 		var payload protocol.CheckNodeAdminRequest
 		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "compute" ||

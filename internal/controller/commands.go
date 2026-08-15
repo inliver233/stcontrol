@@ -44,6 +44,8 @@ type agentCommandSummary struct {
 	ReplicaIntegrity   *protocol.ReplicaIntegrityReceipt   `json:"replica_integrity,omitempty"`
 	ReplicaCleanup     *protocol.DeleteReplicaReceipt      `json:"replica_cleanup,omitempty"`
 	ControllerBackup   *protocol.ControllerBackupReceipt   `json:"controller_backup,omitempty"`
+	UserDataFreeze     *protocol.FreezeUserDataResponse    `json:"user_data_freeze,omitempty"`
+	UserDataRelease    *protocol.ReleaseUserDataResponse   `json:"user_data_release,omitempty"`
 }
 
 type agentCommandError struct {
@@ -209,6 +211,18 @@ func (s *Server) enqueueAgentCommand(
 	payload any,
 	operationID string,
 ) (int64, error) {
+	return s.enqueueAgentCommandAtGeneration(ctx, node, commandType, payload, operationID, 0, false)
+}
+
+func (s *Server) enqueueAgentCommandAtGeneration(
+	ctx context.Context,
+	node *store.Node,
+	commandType string,
+	payload any,
+	operationID string,
+	expectedGeneration int64,
+	requeueRetryableTerminal bool,
+) (int64, error) {
 	if node == nil || commandType == "" || !isUUID(operationID) {
 		return 0, store.ErrInvalidAgentCommand
 	}
@@ -240,6 +254,8 @@ func (s *Server) enqueueAgentCommand(
 		ID: commandID, OperationID: operationID, NodeID: node.ID,
 		CommandType: commandType, EncryptedPayload: envelope, PayloadSHA256: payloadDigest,
 		ExpiresAt: now.Add(agentCommandTTL), Now: now,
+		ExpectedControllerGeneration: expectedGeneration,
+		RequeueRetryableTerminal:     requeueRetryableTerminal,
 	})
 }
 
@@ -289,6 +305,14 @@ func (s *Server) runAgentCommandWithOperation(
 	if _, err := s.enqueueAgentCommand(ctx, node, commandType, payload, operationID); err != nil {
 		return agentCommandSummary{}, err
 	}
+	return s.waitAgentCommandSummary(ctx, operationID, timeout)
+}
+
+func (s *Server) waitAgentCommandSummary(
+	ctx context.Context,
+	operationID string,
+	timeout time.Duration,
+) (agentCommandSummary, error) {
 	result, err := s.waitAgentCommand(ctx, operationID, timeout)
 	if err != nil {
 		return agentCommandSummary{}, err
@@ -301,4 +325,34 @@ func (s *Server) runAgentCommandWithOperation(
 		return summary, &agentCommandError{Code: summary.Code}
 	}
 	return summary, nil
+}
+
+// runRetryableAgentCommandWithOperationAtGeneration prevents a claimed
+// workflow from enqueueing a side effect after controller leadership has
+// rolled over. It also permits a fresh delivery ID after a terminal transport
+// attempt, so callers must use it only for an operation whose remote endpoint
+// is idempotent for the exact operation ID and payload scope.
+func (s *Server) runRetryableAgentCommandWithOperationAtGeneration(
+	ctx context.Context,
+	node *store.Node,
+	commandType string,
+	payload any,
+	operationID string,
+	expectedGeneration int64,
+	timeout time.Duration,
+) (agentCommandSummary, error) {
+	if expectedGeneration <= 0 ||
+		(commandType != "freeze_user_data" && commandType != "release_user_data") {
+		return agentCommandSummary{}, store.ErrInvalidAgentCommand
+	}
+	generation, err := s.enqueueAgentCommandAtGeneration(
+		ctx, node, commandType, payload, operationID, expectedGeneration, true,
+	)
+	if err != nil {
+		return agentCommandSummary{}, err
+	}
+	if generation != expectedGeneration {
+		return agentCommandSummary{}, store.ErrAgentCommandConflict
+	}
+	return s.waitAgentCommandSummary(ctx, operationID, timeout)
 }

@@ -218,6 +218,25 @@ func (s *Store) reconcileNodeControlModeAuthenticated(
 		if !allowed || fact.ControllerGeneration < authenticatedCredentialGeneration {
 			return NodeControlModeDecision{}, ErrStaleControllerMode
 		}
+		// A previous-generation credential is recovery-only. Record that the
+		// durable rebuild saw it so credential rotation can proceed, but do not
+		// publish control-mode facts, independent-session facts, takeovers, or a
+		// current-generation node fence. Those become authoritative only after a
+		// successor credential sends a fresh heartbeat.
+		if err := markControllerRebuildHeartbeatLocked(
+			ctx, tx, nodeID, activeGeneration, authenticatedCredentialGeneration,
+			fact.Mode, currentDesired, fact.ObservedAt,
+		); err != nil {
+			return NodeControlModeDecision{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return NodeControlModeDecision{}, err
+		}
+		return NodeControlModeDecision{
+			ControllerGeneration: activeGeneration,
+			DesiredMode:          currentDesired,
+			ModeGeneration:       currentDesiredGeneration,
+		}, nil
 	}
 	if fact.ModeGeneration < currentModeGeneration ||
 		(fact.ModeGeneration == currentModeGeneration && fact.Mode != currentMode) {
@@ -352,7 +371,8 @@ func (s *Store) IsControlPlaneReady(ctx context.Context) (bool, error) {
 		  AND NOT EXISTS (
 		    SELECT 1 FROM controller_rebuild_operations rebuild
 		    JOIN controller_epochs epoch ON epoch.generation=rebuild.generation
-		    WHERE epoch.state='active' AND rebuild.state<>'succeeded'
+		    WHERE epoch.state='active'
+		      AND rebuild.state NOT IN ('succeeded','ready_with_deferred')
 		  )
 		  AND NOT EXISTS (
 		    SELECT 1 FROM nodes

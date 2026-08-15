@@ -48,10 +48,16 @@ func TestControllerUserDataFaultHTTPFreezesOneUserThroughDurableCommand(t *testi
 			}
 			var request protocol.FreezeUserDataRequest
 			if err := json.Unmarshal(plaintext, &request); err != nil || request.OperationID != lease.OperationID ||
-				request.GlobalUserID != user.GlobalID || request.Handle != user.Username || request.ActivityEpoch != 1 {
+				request.ControllerGeneration != lease.ControllerGeneration || request.GlobalUserID != user.GlobalID ||
+				request.Handle != user.Username || request.ActivityEpoch != 1 {
 				return agentCommandSummary{}, false, fmt.Errorf("invalid data-fault command payload: request=%+v err=%v", request, err)
 			}
-			return agentCommandSummary{OK: true}, true, nil
+			return agentCommandSummary{OK: true, UserDataFreeze: &protocol.FreezeUserDataResponse{
+				OK: true, OperationID: request.OperationID,
+				ControllerGeneration: request.ControllerGeneration, FaultID: request.FaultID,
+				GlobalUserID: request.GlobalUserID, Handle: request.Handle,
+				ActivityEpoch: request.ActivityEpoch, Frozen: true, Drained: true,
+			}}, true, nil
 		},
 	)
 	t.Cleanup(harness.stop)
@@ -164,11 +170,20 @@ func TestControllerUserDataFaultResumesAfterNodeAndWorkerRestart(t *testing.T) {
 
 	harness := newControllerDurableCommandHarness(
 		ctx, st, map[int64]string{node.ID: psk},
-		func(_ int64, lease *store.AgentCommandLease, _ []byte) (agentCommandSummary, bool, error) {
+		func(_ int64, lease *store.AgentCommandLease, plaintext []byte) (agentCommandSummary, bool, error) {
 			if lease.CommandType != "freeze_user_data" {
 				return agentCommandSummary{}, false, fmt.Errorf("unexpected restart command %q", lease.CommandType)
 			}
-			return agentCommandSummary{OK: true}, true, nil
+			var request protocol.FreezeUserDataRequest
+			if err := json.Unmarshal(plaintext, &request); err != nil {
+				return agentCommandSummary{}, false, err
+			}
+			return agentCommandSummary{OK: true, UserDataFreeze: &protocol.FreezeUserDataResponse{
+				OK: true, OperationID: request.OperationID,
+				ControllerGeneration: request.ControllerGeneration, FaultID: request.FaultID,
+				GlobalUserID: request.GlobalUserID, Handle: request.Handle,
+				ActivityEpoch: request.ActivityEpoch, Frozen: true, Drained: true,
+			}}, true, nil
 		},
 	)
 	t.Cleanup(harness.stop)
@@ -203,6 +218,140 @@ func TestControllerUserDataFaultResumesAfterNodeAndWorkerRestart(t *testing.T) {
 	}
 }
 
+func TestControllerUserDataFaultReleaseUsesDurableCommandAndCompletes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Controller user-data-fault PostgreSQL integration is disabled in short mode")
+	}
+	ctx, st, generation, adminID := newControllerRetirementStore(t)
+	secretKey := []byte("0123456789abcdef0123456789abcdef")
+	node := createControllerBackupNode(t, ctx, st, "data-fault-release-home", "compute", false, generation)
+	const psk = "data-fault-release-agent-psk"
+	seedControllerBackupCredential(t, ctx, st, secretKey, node.ID, generation, psk)
+	user := createControllerBackupUser(t, ctx, st, node.ID, "data-fault-release-user")
+	seedControllerFaultAuthoritativeReplica(t, ctx, st, user, node.ID)
+	fault := seedResolvedControllerFaultRelease(t, ctx, st, user, node.ID, adminID, "83200000-0000-4000-8000-000000000001")
+
+	harness := newControllerDurableCommandHarness(
+		ctx, st, map[int64]string{node.ID: psk},
+		func(nodeID int64, lease *store.AgentCommandLease, plaintext []byte) (agentCommandSummary, bool, error) {
+			if nodeID != node.ID || lease.CommandType != "release_user_data" {
+				return agentCommandSummary{}, false, fmt.Errorf("unexpected release command %q on node %d", lease.CommandType, nodeID)
+			}
+			var request protocol.ReleaseUserDataRequest
+			if err := json.Unmarshal(plaintext, &request); err != nil || request.OperationID != lease.OperationID ||
+				request.ControllerGeneration != lease.ControllerGeneration ||
+				request.FaultID != fault.ID || request.GlobalUserID != user.GlobalID ||
+				request.Handle != user.Username || request.ActivityEpoch != 1 {
+				return agentCommandSummary{}, false, fmt.Errorf("invalid release command payload: request=%+v err=%v", request, err)
+			}
+			return agentCommandSummary{
+				OK: true,
+				UserDataRelease: &protocol.ReleaseUserDataResponse{
+					OK: true, OperationID: request.OperationID,
+					ControllerGeneration: request.ControllerGeneration,
+					FaultID:              request.FaultID, GlobalUserID: request.GlobalUserID,
+					Handle: request.Handle, ActivityEpoch: request.ActivityEpoch, Released: true,
+				},
+			}, true, nil
+		},
+	)
+	t.Cleanup(harness.stop)
+	server := New(config.DefaultController(), st, secretKey)
+	server.reconcileUserDataFaults(ctx)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		current, err := st.GetUserDataFaultByID(ctx, fault.ID)
+		if err == nil && current != nil && current.ReleaseState == "released" && current.ReleaseReleasedAt != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			current, _ := st.GetUserDataFaultByID(ctx, fault.ID)
+			t.Fatalf("release did not converge: fault=%+v err=%v", current, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if harness.commandCount("release_user_data") != 1 {
+		t.Fatalf("release command count=%d", harness.commandCount("release_user_data"))
+	}
+	if errs := harness.errors(); len(errs) > 0 {
+		t.Fatalf("release command harness errors: %v", errs)
+	}
+}
+
+func TestControllerUserDataFaultReleaseRetriesAfterNodeAndWorkerRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Controller user-data-fault PostgreSQL integration is disabled in short mode")
+	}
+	ctx, st, generation, adminID := newControllerRetirementStore(t)
+	secretKey := []byte("0123456789abcdef0123456789abcdef")
+	node := createControllerBackupNode(t, ctx, st, "data-fault-release-restart-home", "compute", false, generation)
+	const psk = "data-fault-release-restart-agent-psk"
+	seedControllerBackupCredential(t, ctx, st, secretKey, node.ID, generation, psk)
+	user := createControllerBackupUser(t, ctx, st, node.ID, "data-fault-release-restart-user")
+	seedControllerFaultAuthoritativeReplica(t, ctx, st, user, node.ID)
+	fault := seedResolvedControllerFaultRelease(t, ctx, st, user, node.ID, adminID, "83300000-0000-4000-8000-000000000001")
+
+	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET connectivity_state='offline' WHERE id=$1`, node.ID); err != nil {
+		t.Fatalf("make release node unavailable: %v", err)
+	}
+	first := New(config.DefaultController(), st, secretKey)
+	first.reconcileUserDataFaults(ctx)
+	current, err := st.GetUserDataFaultByID(ctx, fault.ID)
+	if err != nil || current == nil || current.ReleaseState != "retry_wait" ||
+		current.ReleaseErrorCode != "agent_unavailable" || current.ReleaseAttempt != 1 {
+		t.Fatalf("first unavailable release attempt=%+v err=%v", current, err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET connectivity_state='online' WHERE id=$1`, node.ID); err != nil {
+		t.Fatalf("restore release node: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE user_data_faults SET release_next_attempt_at=now()-interval '1 second' WHERE id=$1`, fault.ID); err != nil {
+		t.Fatalf("advance release retry: %v", err)
+	}
+
+	harness := newControllerDurableCommandHarness(
+		ctx, st, map[int64]string{node.ID: psk},
+		func(_ int64, lease *store.AgentCommandLease, plaintext []byte) (agentCommandSummary, bool, error) {
+			if lease.CommandType != "release_user_data" {
+				return agentCommandSummary{}, false, fmt.Errorf("unexpected restart release command %q", lease.CommandType)
+			}
+			var request protocol.ReleaseUserDataRequest
+			if err := json.Unmarshal(plaintext, &request); err != nil {
+				return agentCommandSummary{}, false, err
+			}
+			return agentCommandSummary{
+				OK: true,
+				UserDataRelease: &protocol.ReleaseUserDataResponse{
+					OK: true, OperationID: request.OperationID,
+					ControllerGeneration: request.ControllerGeneration,
+					FaultID:              request.FaultID, GlobalUserID: request.GlobalUserID,
+					Handle: request.Handle, ActivityEpoch: request.ActivityEpoch, Released: true,
+				},
+			}, true, nil
+		},
+	)
+	t.Cleanup(harness.stop)
+	restarted := New(config.DefaultController(), st, secretKey)
+	restarted.reconcileUserDataFaults(ctx)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		current, err = st.GetUserDataFaultByID(ctx, fault.ID)
+		if err == nil && current != nil && current.ReleaseState == "released" && current.ReleaseReleasedAt != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("restarted release did not converge: fault=%+v err=%v", current, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if current.ReleaseAttempt != 2 || harness.commandCount("release_user_data") != 1 {
+		t.Fatalf("resumed release attempt=%d commands=%d", current.ReleaseAttempt, harness.commandCount("release_user_data"))
+	}
+	if errs := harness.errors(); len(errs) > 0 {
+		t.Fatalf("restarted release command harness errors: %v", errs)
+	}
+}
+
 func seedControllerFaultAuthoritativeReplica(
 	t *testing.T,
 	ctx context.Context,
@@ -225,6 +374,46 @@ func seedControllerFaultAuthoritativeReplica(
 		user.GlobalID, nodeID, now); err != nil {
 		t.Fatalf("seed fault authoritative replica: %v", err)
 	}
+}
+
+func seedResolvedControllerFaultRelease(
+	t *testing.T,
+	ctx context.Context,
+	st *store.Store,
+	user *store.User,
+	nodeID int64,
+	adminID int64,
+	operationID string,
+) *store.UserDataFaultStatus {
+	t.Helper()
+	now := time.Now().UTC()
+	digest := sha256.Sum256([]byte("resolved-release:" + operationID))
+	fault, err := st.ReportUserDataFault(ctx, store.ReportUserDataFaultParams{
+		OperationID: operationID, RequestDigest: digest[:],
+		UserUUID: user.UUID, ExpectedHomeNodeID: nodeID,
+		ReasonCode: "user_database_corrupt", AdminID: adminID, Now: now,
+	})
+	if err != nil || fault == nil {
+		t.Fatalf("create resolved release fault: fault=%+v err=%v", fault, err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE user_data_faults SET state='resolved',freeze_operation_id=$2::uuid,
+		  attempt=1,protection_state='takeover_available',error_code=NULL,next_attempt_at=NULL,
+		  frozen_at=$3,resolved_at=$3,resolution_kind='takeover',
+		  resolution_operation_id=$4::uuid,release_state='pending',
+		  release_operation_id=NULL,release_controller_generation=NULL,release_attempt=0,
+		  release_lease_owner=NULL,release_lease_until=NULL,release_next_attempt_at=$3,
+		  release_error_code=NULL,release_released_at=NULL,updated_at=$3
+		WHERE id=$1::uuid`, fault.ID,
+		"84444444-4444-4444-8444-444444444444", now,
+		"85555555-5555-4555-8555-555555555555"); err != nil {
+		t.Fatalf("prepare resolved release fault: %v", err)
+	}
+	updated, err := st.GetUserDataFaultByID(ctx, fault.ID)
+	if err != nil || updated == nil {
+		t.Fatalf("reload resolved release fault: fault=%+v err=%v", updated, err)
+	}
+	return updated
 }
 
 type controllerDurableCommandHandler func(

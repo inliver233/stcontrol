@@ -1,0 +1,156 @@
+[
+  {
+    "id": "FIX-ONLINE-ATOMIC",
+    "severity": "critical",
+    "priority": "P1",
+    "title": "Atomically validate and admit Online requests",
+    "files": ["Sillytarven-online/src/stcontrol.js", "Sillytarven-online/tests/stcontrol-adapter.node.test.mjs"],
+    "acceptance": "Mode, durable session, gate and lease are rechecked in one serialized admission before next(); concurrent revoke/logout/gate/mode tests deny the stale request."
+  },
+  {
+    "id": "FIX-ONLINE-INDEPENDENT",
+    "severity": "high",
+    "priority": "P1",
+    "title": "Close independent envelope ownership and recovery boundaries",
+    "files": ["Sillytarven-online/src/stcontrol.js", "Sillytarven-online/tests/stcontrol-adapter.node.test.mjs", "Sillytarven-online/tests/stcontrol-disaster-login.node.test.mjs"],
+    "acceptance": "No-envelope requests cannot self-create independent authority; proven managed-to-independent promotion updates envelope and durable session together; stale independent sessions cannot write after managed recovery."
+  },
+  {
+    "id": "FIX-ONLINE-HANDOFF",
+    "severity": "high",
+    "priority": "P1",
+    "title": "Make admin and user handoff session roles mutually exclusive",
+    "files": ["Sillytarven-online/src/endpoints/stcontrol.js", "Sillytarven-online/src/stcontrol.js", "Sillytarven-online/tests/stcontrol-routes.node.test.mjs"],
+    "acceptance": "Admin-to-user and user-to-admin reuse of one cookie cannot preserve the opposite role or bypass user fences."
+  },
+  {
+    "id": "FIX-ONLINE-PERSISTENCE",
+    "severity": "high",
+    "priority": "P1",
+    "title": "Remove synchronous full-state writes from ordinary request accounting",
+    "files": ["Sillytarven-online/src/stcontrol.js", "Sillytarven-online/tests/stcontrol-adapter.node.test.mjs"],
+    "acceptance": "Managed admission/finish and heartbeat use serialized runtime mutations without per-event fsync; independent pending-sync evidence persists before next()."
+  },
+  {
+    "id": "FIX-OAUTH-STATE-BINDING",
+    "severity": "high",
+    "priority": "P1",
+    "title": "Bind login OAuth state to the initiating browser",
+    "files": ["internal/controller/oauth.go", "internal/controller/oauth_test.go"],
+    "acceptance": "A callback without the exact host-only HttpOnly SameSite=Lax provider cookie is rejected before state consumption; binding flow remains session-bound."
+  },
+  {
+    "id": "FIX-R14-PASSWORD-REMOVAL",
+    "severity": "high",
+    "priority": "P1",
+    "title": "Make password removal a version-fenced cross-repository command",
+    "files": ["internal/store/identities.go", "internal/store/password_convergence.go", "internal/store/models.go", "internal/controller/password_sync.go", "internal/protocol/protocol.go", "internal/store/migrations/0049_password_removal_version.sql", "Sillytarven-online/src/endpoints/stcontrol.js"],
+    "acceptance": "Removal carries an immutable version, stale removal cannot erase rebound material, Online accepts exact fenced remove and clears local password fields, and tests cover retry/rebind."
+  },
+  {
+    "id": "FIX-REBUILD-OFFLINE",
+    "severity": "high",
+    "priority": "P1",
+    "title": "Defer offline nodes without permanently blocking controller rebuild",
+    "files": ["internal/store/leadership.go", "internal/store/controller_rebuilds.go", "internal/store/control_modes.go", "internal/controller/controller_rebuilds.go", "internal/store/migrations/0050_controller_rebuild_deferred.sql"],
+    "acceptance": "Offline/stale nodes enter a durable deferred state counted ready for global reopening; their old credential can only rejoin through the rebuild reconciliation path later."
+  },
+  {
+    "id": "FIX-COMPAT-THIRD-HEARTBEAT",
+    "severity": "high",
+    "priority": "P1",
+    "title": "Keep early third compatibility heartbeat within the database CHECK",
+    "files": ["internal/store/node_compatibility.go", "internal/store/node_compatibility_test.go"],
+    "acceptance": "A third compatible observation before the minimum window remains verifying with observation count 2; resolution writes count 3 only after time criteria pass."
+  },
+  {
+    "id": "FIX-DATA-FAULT-RELEASE",
+    "severity": "high",
+    "priority": "P1",
+    "title": "Provide durable release for data-fault write gates",
+    "files": ["internal/store/user_data_faults.go", "internal/controller/protection.go", "internal/protocol/protocol.go", "internal/agent/commands.go", "internal/store/migrations/0051_user_data_fault_release.sql", "Sillytarven-online/src/stcontrol.js", "Sillytarven-online/src/endpoints/stcontrol.js"],
+    "depends_on": ["FIX-ONLINE-ATOMIC", "FIX-ONLINE-INDEPENDENT", "FIX-R14-PASSWORD-REMOVAL"],
+    "acceptance": "Recovery creates a durable, retryable, idempotent release command fenced by exact fault/user/handle/epoch facts; Online clears only the matching data-fault gate."
+  },
+  {
+    "id": "FIX-OFFLINE-BACKUP-ASYNC",
+    "severity": "high",
+    "priority": "P2",
+    "title": "Do not block offline-backup scanning on one workflow",
+    "files": ["internal/controller/backup.go", "internal/controller/backup_test.go"],
+    "acceptance": "The scan schedules durable work without executing an up-to-eight-hour snapshot inline; later reconciliation executes it."
+  },
+  {
+    "id": "FIX-CONTROLLER-BACKUP-RETRY",
+    "severity": "high",
+    "priority": "P2",
+    "title": "Reclaim controller backup retries and expired leases",
+    "files": ["internal/controller/controller_backup.go", "internal/store/controller_disaster_backups.go", "internal/controller/controller_backup_test.go", "internal/store/controller_disaster_backups_test.go"],
+    "acceptance": "Due retry_wait and expired running runs are reclaimable after restart, each attempt uses a fresh command identity, all early errors are observable, and archive hashing is streamed."
+  },
+  {
+    "id": "FIX-RECOVERY-STORE-BARRIER",
+    "severity": "high",
+    "priority": "P2",
+    "title": "Revalidate recovery readiness inside repair and backup transactions",
+    "files": ["internal/store/storage_repair.go", "internal/store/controller_disaster_backups.go", "internal/store/storage_repair_test.go", "internal/store/controller_disaster_backups_test.go"],
+    "acceptance": "Scheduling/claiming cannot create new work after an active controller rebuild closes the new-operation gate, even if the process-local check raced."
+  },
+  {
+    "id": "FIX-R21-AGENT-LIMITS",
+    "severity": "high",
+    "priority": "P2",
+    "title": "Rate-limit agent registration and authenticated agent traffic",
+    "files": ["internal/controller/router.go", "internal/controller/ratelimit.go", "internal/controller/ratelimit_test.go"],
+    "acceptance": "Registration is bounded per source IP and signed heartbeat/poll/ack/result traffic is bounded per authenticated node without breaking normal long polling."
+  },
+  {
+    "id": "FIX-HEARTBEAT-ENTRY",
+    "severity": "high",
+    "priority": "P2",
+    "title": "Load the production browser heartbeat entry",
+    "files": ["Sillytarven-online/public/scripts/user.js", "Sillytarven-online/public/scripts/user-heartbeat.js", "Sillytarven-online/tests/stcontrol-native-entry-guards.node.test.mjs"],
+    "acceptance": "The normal browser bundle imports the heartbeat implementation and an admin-only handoff does not generate invalid user telemetry."
+  },
+  {
+    "id": "FIX-R06-DRAIN-TEST",
+    "severity": "high",
+    "priority": "P3",
+    "title": "Directly cover drain wait and timeout release",
+    "files": ["Sillytarven-online/src/endpoints/stcontrol.js", "Sillytarven-online/tests/stcontrol-routes.node.test.mjs"],
+    "acceptance": "Tests hold an in-flight request through the wait loop, observe write_drain_timeout, and prove the snapshot gate is released."
+  },
+  {
+    "id": "FIX-P3-ACCEPTANCE",
+    "severity": "high",
+    "priority": "P3",
+    "title": "Close implementation-report partial gaps and enforce reproducible acceptance",
+    "files": ["internal/**", "web/**", "docs/requirements-traceability.md", "docs/verification-log.md", "run-live-check.bat", ".github/workflows/**"],
+    "depends_on": ["FIX-DATA-FAULT-RELEASE", "FIX-CONTROLLER-BACKUP-RETRY", "FIX-R21-AGENT-LIMITS"],
+    "acceptance": "Re-audit every current partial against later Q&A, add missing cross-platform unit/component/contract tests and a reproducible opt-in Linux/PG acceptance entrypoint, remove absolute-path scripts, and record honest coverage/evidence."
+  },
+  {
+    "id": "VERIFY-PRIOR-P1-P2",
+    "severity": "high",
+    "priority": "P1-P2",
+    "title": "Regression-only verification of already implemented priority items",
+    "files": ["internal/controller/restores.go", "internal/agent/conflict_resolution.go", "web/src/pages/Conflict.tsx", "internal/controller/auth.go", "internal/controller/audit.go", "run-live-controller.bat"],
+    "acceptance": "Restore lease recheck, conflict publish locking, Conflict polling, R22 lockout/audit read side, Round60 baseline and hardcoded-secret removal remain closed; only source defects found during regression become fixes."
+  },
+  {
+    "id": "VERIFY-ONLINE-THREE",
+    "severity": "medium",
+    "priority": "regression",
+    "title": "Regression-only verification of the three pre-landed Online fixes",
+    "files": ["Sillytarven-online/tests/**"],
+    "acceptance": "Chat/group render counts, per-model Free Gemini formats and reset-all username validation remain green and are not reimplemented."
+  },
+  {
+    "id": "DEFER-AI-SUPERVISION",
+    "severity": "high",
+    "priority": "deferred",
+    "title": "AI findings await seven explicit requirement confirmations",
+    "files": ["internal/ai/validator.go", "internal/controller/ai_phase_tasks.go", "web/src/pages/Admin.tsx"],
+    "acceptance": "Do not modify before main-flow acceptance; afterwards ask the seven requirement changes one by one, then implement Phase 0 through 6B."
+  }
+]

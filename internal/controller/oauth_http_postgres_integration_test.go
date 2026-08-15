@@ -138,12 +138,32 @@ func TestControllerOAuthHTTPStatePendingLoginAndIdentityBinding(t *testing.T) {
 	// a callback replay cannot turn a transient provider response into a state
 	// oracle or make another token exchange.
 	failureState := beginOAuthState(t, client, httpServer.URL+"/api/auth/oauth/linuxdo")
+	missingCookieClient := newOAuthClient()
+	failureCalls := providerCalls["POST provider.example/linux/token"]
+	assertControllerHTTPStatus(t, missingCookieClient, http.MethodGet,
+		httpServer.URL+"/api/auth/oauth/linuxdo/callback?code=provider-fail&state="+url.QueryEscape(failureState), nil, false, http.StatusBadRequest)
+	if providerCalls["POST provider.example/linux/token"] != failureCalls {
+		t.Fatal("callback without login-bound OAuth cookie reached provider token exchange")
+	}
+	providerMismatchCalls := providerCalls["POST discord.com/api/oauth2/token"]
+	assertControllerHTTPStatus(t, client, http.MethodGet,
+		httpServer.URL+"/api/auth/oauth/discord/callback?code=provider-fail&state="+url.QueryEscape(failureState), nil, false, http.StatusBadRequest)
+	if providerCalls["POST discord.com/api/oauth2/token"] != providerMismatchCalls {
+		t.Fatal("provider-mismatched OAuth cookie reached provider token exchange")
+	}
+	overrideOAuthStateCookie(t, client, httpServer.URL+"/api/auth/oauth/linuxdo/callback", "linuxdo", "mismatched-state")
+	assertControllerHTTPStatus(t, client, http.MethodGet,
+		httpServer.URL+"/api/auth/oauth/linuxdo/callback?code=provider-fail&state="+url.QueryEscape(failureState), nil, false, http.StatusBadRequest)
+	if providerCalls["POST provider.example/linux/token"] != failureCalls {
+		t.Fatal("callback with mismatched login-bound OAuth cookie reached provider token exchange")
+	}
+	failureState = beginOAuthState(t, client, httpServer.URL+"/api/auth/oauth/linuxdo")
 	status, _, body := controllerHTTPRequest(t, client, http.MethodGet,
 		httpServer.URL+"/api/auth/oauth/linuxdo/callback?code=provider-fail&state="+url.QueryEscape(failureState), nil, false)
 	if status != http.StatusBadGateway {
 		t.Fatalf("provider failure callback: status=%d body=%s", status, body)
 	}
-	failureCalls := providerCalls["POST provider.example/linux/token"]
+	failureCalls = providerCalls["POST provider.example/linux/token"]
 	assertControllerHTTPStatus(t, client, http.MethodGet,
 		httpServer.URL+"/api/auth/oauth/linuxdo/callback?code=provider-fail&state="+url.QueryEscape(failureState), nil, false, http.StatusBadRequest)
 	if providerCalls["POST provider.example/linux/token"] != failureCalls {
@@ -318,4 +338,15 @@ func beginOAuthState(t *testing.T, client *http.Client, target string) string {
 		t.Fatalf("parse OAuth authorization redirect %q: %v", headers.Get("Location"), err)
 	}
 	return authorizationURL.Query().Get("state")
+}
+
+func overrideOAuthStateCookie(t *testing.T, client *http.Client, target, provider, state string) {
+	t.Helper()
+	parsed, err := url.Parse(target)
+	if err != nil {
+		t.Fatalf("parse OAuth state override target %q: %v", target, err)
+	}
+	client.Jar.SetCookies(parsed, []*http.Cookie{{
+		Name: oauthStateCookieName(provider), Value: state, Path: oauthCallbackPath(provider),
+	}})
 }

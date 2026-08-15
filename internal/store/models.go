@@ -69,7 +69,7 @@ type Node struct {
 	QuotaSyncErrorCode           sql.NullString  `json:"quota_sync_error_code"`
 	AllocatedDiskBytes           sql.NullInt64   `json:"allocated_disk_bytes"`
 	ClientLatencyMS              sql.NullInt64   `json:"client_latency_ms"`
-	ClientLatencyObservedAt      sql.NullTime     `json:"client_latency_observed_at"`
+	ClientLatencyObservedAt      sql.NullTime    `json:"client_latency_observed_at"`
 	OnlineUsers                  int             `json:"online_users"`
 	TaskQueueDepth               int             `json:"task_queue_depth"`
 	TelemetrySource              string          `json:"telemetry_source"`
@@ -131,6 +131,7 @@ type PendingPasswordRemoval struct {
 	LegacyUserID int64
 	NodeID       int64
 	LocalHandle  string
+	Version      int64
 }
 
 // Ticket 一次性票据。

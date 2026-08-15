@@ -127,7 +127,7 @@ func TestAdminHandoffIssueAndConsumeUseCurrentAuthorityFacts(t *testing.T) {
 			"operation_id", "jti", "admin_id", "target_node_id", "base_url", "subject",
 			"permission_version", "controller_generation", "expires_at",
 		}))
-	mock.ExpectQuery(`SELECT epoch.generation,node.base_url`).WithArgs(int64(4), int64(12), now.Add(-2*time.Minute)).
+	mock.ExpectQuery(`(?s)SELECT epoch.generation,node.base_url.*node.controller_generation=epoch.generation`).WithArgs(int64(4), int64(12), now.Add(-2*time.Minute)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"generation", "base_url", "local_handle", "permission_version",
 		}).AddRow(int64(8), "https://node-a.example", "node-admin", int64(5)))

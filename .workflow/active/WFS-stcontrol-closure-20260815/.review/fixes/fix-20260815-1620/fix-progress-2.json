@@ -1,0 +1,20 @@
+{
+  "group_id": "G2",
+  "status": "completed",
+  "attempt": 1,
+  "findings_total": 4,
+  "findings_fixed": 4,
+  "phase": "verified",
+  "tests": [
+    "go test ./internal/store",
+    "go test ./internal/controller",
+    "go test ./internal/agent -run Password|ControlMode|DataFault",
+    "go test ./...",
+    "go vet ./...",
+    "go build ./..."
+  ],
+  "notes": [
+    "PostgreSQL-specific upgrade and concurrency cases compile but skip without STCONTROL_TEST_POSTGRES_DSN.",
+    "Final read-only integration review found no Critical or High blocker."
+  ]
+}

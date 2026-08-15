@@ -42,7 +42,7 @@ type adapterSessionResponse struct {
 
 var requiredAdapterCapabilities = []string{
 	"account_inventory_paging", "account_restore", "activity_leases", "activity_ownership", "local_account_proof", "login_handoff", "node_admin_handoff", "node_admin_verify", "password_update", "registration_policy",
-	"snapshot_boundary", "user_data_fault_freeze", "user_provision", "write_gate", "control_mode", "independent_reconciliation",
+	"snapshot_boundary", "user_data_fault_freeze", "user_data_fault_release", "user_provision", "write_gate", "control_mode", "independent_reconciliation",
 }
 
 func (a *Agent) verifyLocalUser(ctx context.Context, req protocol.VerifyLocalUserRequest) (protocol.VerifyLocalUserResponse, error) {
@@ -196,15 +196,38 @@ func (a *Agent) setPassword(ctx context.Context, req *protocol.SetPasswordReques
 	return nil
 }
 
-func (a *Agent) freezeUserData(ctx context.Context, req protocol.FreezeUserDataRequest) error {
+func (a *Agent) freezeUserData(
+	ctx context.Context,
+	req protocol.FreezeUserDataRequest,
+) (protocol.FreezeUserDataResponse, error) {
 	var out protocol.FreezeUserDataResponse
 	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/data-faults/freeze", req, &out); err != nil {
-		return err
+		return protocol.FreezeUserDataResponse{}, err
 	}
-	if !out.OK || !out.Frozen || !out.Drained {
-		return fmt.Errorf("node adapter did not drain the user data fault gate")
+	if !out.OK || !out.Frozen || !out.Drained || out.OperationID != req.OperationID ||
+		out.ControllerGeneration != req.ControllerGeneration || out.FaultID != req.FaultID ||
+		out.GlobalUserID != req.GlobalUserID || out.Handle != req.Handle ||
+		out.ActivityEpoch != req.ActivityEpoch {
+		return protocol.FreezeUserDataResponse{}, fmt.Errorf("node adapter did not confirm the exact user data fault gate")
 	}
-	return nil
+	return out, nil
+}
+
+func (a *Agent) releaseUserData(
+	ctx context.Context,
+	req protocol.ReleaseUserDataRequest,
+) (protocol.ReleaseUserDataResponse, error) {
+	var out protocol.ReleaseUserDataResponse
+	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/data-faults/release", req, &out); err != nil {
+		return protocol.ReleaseUserDataResponse{}, err
+	}
+	if !out.OK || !out.Released || out.OperationID != req.OperationID ||
+		out.ControllerGeneration != req.ControllerGeneration || out.FaultID != req.FaultID ||
+		out.GlobalUserID != req.GlobalUserID || out.Handle != req.Handle ||
+		out.ActivityEpoch != req.ActivityEpoch {
+		return protocol.ReleaseUserDataResponse{}, fmt.Errorf("node adapter rejected user data release")
+	}
+	return out, nil
 }
 
 func (a *Agent) registrationPolicy(ctx context.Context) protocol.RegistrationPolicyReport {

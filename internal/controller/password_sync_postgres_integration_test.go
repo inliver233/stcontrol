@@ -185,6 +185,113 @@ func TestControllerPasswordChangeStagesAndResumesEveryNode(t *testing.T) {
 	}
 }
 
+func TestControllerPasswordRemovalUsesExactVersionAndCancelsStaleOfflineRemoval(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Controller password-removal PostgreSQL integration is disabled in short mode")
+	}
+	ctx, st, generation, _ := newControllerRetirementStore(t)
+	secretKey := []byte("0123456789abcdef0123456789abcdef")
+	online := createControllerBackupNode(t, ctx, st, "password-removal-online", "compute", false, generation)
+	offline := createControllerBackupNode(t, ctx, st, "password-removal-offline", "compute", false, generation)
+	psks := map[int64]string{
+		online.ID:  "password-removal-online-psk",
+		offline.ID: "password-removal-offline-psk",
+	}
+	for nodeID, psk := range psks {
+		seedControllerBackupCredential(t, ctx, st, secretKey, nodeID, generation, psk)
+	}
+	user := createControllerBackupUser(t, ctx, st, online.ID, "password-removal-user")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO node_accounts (user_id,node_id,local_handle,status,updated_at)
+		VALUES ($1,$2,$3,'active',$4)`, user.GlobalID, offline.ID, user.Username, now); err != nil {
+		t.Fatalf("seed offline password-removal account: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO auth_identities (user_id,provider,provider_subject,status,created_at,updated_at)
+		VALUES ($1,'discord',$2,'active',$3,$3)`, user.GlobalID, "password-removal-discord", now); err != nil {
+		t.Fatalf("seed secondary oauth identity: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET connectivity_state='offline' WHERE id=$1`, offline.ID); err != nil {
+		t.Fatalf("make offline password-removal node offline: %v", err)
+	}
+	if err := st.UnbindUserIdentity(ctx, user.ID, user.GlobalID, "password", now); err != nil {
+		t.Fatalf("unbind password identity: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE node_account_password_removals
+		SET updated_at=$2
+		WHERE global_user_id=$1`, user.GlobalID, now.Add(-3*time.Minute)); err != nil {
+		t.Fatalf("age password removals: %v", err)
+	}
+	var removalVersions int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT count(*) FROM node_account_password_removals
+		WHERE global_user_id=$1 AND password_material_version=1 AND state='pending'`, user.GlobalID).
+		Scan(&removalVersions); err != nil || removalVersions != 2 {
+		t.Fatalf("pending removal versions=%d err=%v", removalVersions, err)
+	}
+
+	var removeCalls atomic.Int32
+	harness := newControllerDurableCommandHarness(
+		ctx, st, psks,
+		func(nodeID int64, lease *store.AgentCommandLease, plaintext []byte) (agentCommandSummary, bool, error) {
+			if lease.CommandType != "set_password" {
+				return agentCommandSummary{}, false, fmt.Errorf("unexpected password-removal command %q", lease.CommandType)
+			}
+			var request protocol.SetPasswordRequest
+			if err := json.Unmarshal(plaintext, &request); err != nil ||
+				request.Handle != user.Username || !request.Remove || request.Version != 1 {
+				return agentCommandSummary{}, false, fmt.Errorf(
+					"invalid password-removal payload on node %d: request=%+v err=%v", nodeID, request, err,
+				)
+			}
+			removeCalls.Add(1)
+			return agentCommandSummary{OK: true}, true, nil
+		},
+	)
+	t.Cleanup(harness.stop)
+	server := New(config.DefaultController(), st, secretKey)
+	removals, err := st.ListPendingPasswordRemovals(ctx, 20, time.Now().UTC())
+	if err != nil || len(removals) != 1 || removals[0].NodeID != online.ID || removals[0].Version != 1 {
+		t.Fatalf("load online password removals: removals=%+v err=%v", removals, err)
+	}
+	if synced, pending := server.deliverPasswordRemovals(ctx, removals); synced != 1 || pending != 0 {
+		t.Fatalf("deliver password removals synced=%d pending=%d harness_errors=%v", synced, pending, harness.errors())
+	}
+	if removeCalls.Load() != 1 {
+		t.Fatalf("password removal command count=%d", removeCalls.Load())
+	}
+
+	if err := st.BindPasswordIdentity(
+		ctx, user.ID, user.GlobalID, "rebound-bcrypt-hash", "rebound-node-hash", "rebound-node-salt", now.Add(time.Second),
+	); err != nil {
+		t.Fatalf("rebind password identity: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET connectivity_state='online' WHERE id=$1`, offline.ID); err != nil {
+		t.Fatalf("restore offline password-removal node: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE node_account_password_removals
+		SET updated_at=$2
+		WHERE global_user_id=$1`, user.GlobalID, now.Add(-6*time.Minute)); err != nil {
+		t.Fatalf("re-age password removals after rebind: %v", err)
+	}
+	removals, err = st.ListPendingPasswordRemovals(ctx, 20, time.Now().UTC())
+	if err != nil || len(removals) != 0 {
+		t.Fatalf("stale password removals survived rebind: removals=%+v err=%v", removals, err)
+	}
+	var pendingCount int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT count(*) FROM node_account_password_removals
+		WHERE global_user_id=$1 AND state='pending'`, user.GlobalID).Scan(&pendingCount); err != nil || pendingCount != 0 {
+		t.Fatalf("pending password removals=%d err=%v", pendingCount, err)
+	}
+	if errs := harness.errors(); len(errs) > 0 {
+		t.Fatalf("password-removal durable command harness errors: %v", errs)
+	}
+}
+
 func waitControllerNodeAccountState(
 	t *testing.T,
 	ctx context.Context,

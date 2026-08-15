@@ -1,0 +1,52 @@
+Best-practices deep scan
+Timestamp: 2026-08-15T07:40:48Z
+Review ID: WFS-stcontrol-closure-20260815
+Branch diff: flash vs origin/main
+
+Context gathered
+- Read review-cycle Phase 2 instructions and review-dimension-results schema
+- Inspected git diff/stat for flash...origin/main
+- Spot-checked AI supervision backend, admin React page, migration tests, and direct Sillytarven-online coupling files
+
+Commands used
+- git diff --stat --find-renames origin/main...flash
+- git diff --name-only origin/main...flash
+- rg / Get-Content across:
+  - internal/ai/validator.go
+  - internal/controller/ai_admin.go
+  - internal/controller/ai_supervisor.go
+  - internal/store/ai_advisories.go
+  - web/src/api.ts
+  - web/src/pages/Admin.tsx
+  - run-live-check.bat
+  - run-live-controller.bat
+  - Sillytarven-online/src/endpoints/stcontrol.js
+  - Sillytarven-online/src/endpoints/users-public.js
+  - Sillytarven-online/src/endpoints/users-admin.js
+
+Findings
+
+1) HIGH
+Title: AI admin pagination uses stale React state and does not page correctly
+File: web/src/pages/Admin.tsx:1546
+Snippet: adminApi.aiRequests(cursor)... useEffect(() => { load() }, []) ... setCursor(nextCursor); setTimeout(load, 0)
+Impact: The AI request history panel cannot reliably move across pages, weakening manual review of AI behavior.
+Recommendation: Drive loading from cursor state or pass the target cursor into load(), matching the other admin pagers in the same file.
+
+2) HIGH
+Title: AI advisory validation is not EOF-strict after the first JSON object
+File: internal/ai/validator.go:56
+Snippet: dec := json.NewDecoder(strings.NewReader(trimmed)); dec.DisallowUnknownFields(); if err := dec.Decode(&adv); err != nil { ... }
+Impact: Trailing non-JSON bytes can bypass the intended strict JSON-only acceptance rule for AI output.
+Recommendation: Require EOF after Decode and add regression coverage for trailing text / concatenated objects.
+
+3) MEDIUM
+Title: Live-check verification script hardcodes an absolute repository path
+File: run-live-check.bat:2
+Snippet: cd /d E:\Sillytarvennew\stcontrol
+Impact: The verification script is non-portable and already broken in the current flash worktree path.
+Recommendation: Replace the hardcoded path with %~dp0 and keep all paths relative.
+
+Non-findings noted
+- `internal/store/ai_adoption_postgres_integration_test.go` already covers the new `auto_adopted` decision and `ai_adoption_effects` lifecycle, so no migration-gate issue was raised there.
+- No higher-priority regression was found in the reviewed `Sillytarven-online` stcontrol coupling files during this pass.

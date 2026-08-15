@@ -1,0 +1,52 @@
+{
+  "batch_id": 5,
+  "groups": [
+    {
+      "group_id": "G1",
+      "name": "prior-priority-regression-audit",
+      "finding_ids": ["VERIFY-PRIOR-P1-P2"],
+      "strategy": "read-source-then-targeted-tests",
+      "owned_files": [],
+      "risk": "medium",
+      "tests": ["go test ./...", "npm test -- --runInBand"]
+    },
+    {
+      "group_id": "G2",
+      "name": "online-prelanded-regressions",
+      "finding_ids": ["VERIFY-ONLINE-THREE"],
+      "strategy": "test-only",
+      "owned_files": [],
+      "risk": "low",
+      "tests": ["node --test tests/chat-render-optimizer.node.test.mjs tests/group-chat-paging.node.test.mjs tests/registration-policy.node.test.mjs"]
+    },
+    {
+      "group_id": "G3",
+      "name": "implementation-report-partial-closure",
+      "finding_ids": ["FIX-P3-ACCEPTANCE"],
+      "strategy": "audit-then-file-partitioned-fixes",
+      "depends_on": ["G1", "G2", "batch-4"],
+      "owned_files": ["internal/**", "web/**", "docs/**", "run-live-check.bat", ".github/workflows/**"],
+      "risk": "high",
+      "tests": ["go test ./...", "npm test", "npm run build", "document Linux/PG commands without pretending they ran locally"]
+    },
+    {
+      "group_id": "G4",
+      "name": "ai-supervision-confirmation-gate",
+      "finding_ids": ["DEFER-AI-SUPERVISION"],
+      "strategy": "blocked-by-explicit-user-confirmation",
+      "owned_files": [],
+      "risk": "high",
+      "tests": []
+    }
+  ],
+  "timeline": [
+    {"stage": 1, "groups": ["G1", "G2"], "mode": "parallel"},
+    {"stage": 2, "groups": ["G3"], "mode": "serial"},
+    {"stage": 3, "groups": ["G4"], "mode": "user-confirmation-gate"}
+  ],
+  "metadata": {
+    "findings_count": 4,
+    "groups_count": 4,
+    "created_at": "2026-08-15T16:22:00+08:00"
+  }
+}

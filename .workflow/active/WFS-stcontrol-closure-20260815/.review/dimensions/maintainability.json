@@ -1,0 +1,195 @@
+[
+  {
+    "dimension": "maintainability",
+    "review_id": "review-20260815-acceptance",
+    "analysis_timestamp": "2026-08-15T07:38:51Z",
+    "cli_tool_used": "codex",
+    "model": "gpt-5",
+    "analysis_duration_ms": 2340000,
+    "summary": {
+      "total_findings": 4,
+      "critical": 0,
+      "high": 3,
+      "medium": 1,
+      "low": 0,
+      "files_analyzed": 12,
+      "lines_reviewed": 7767
+    },
+    "findings": [
+      {
+        "id": "mai-001-3f7c91ad",
+        "title": "Protocol invariants are hand-copied across Go, adapter JS, UI, and JS tests",
+        "severity": "high",
+        "category": "technical-debt",
+        "description": "The authoritative protocol limits and enum values live in Go, but the adapter and admin UI re-encode the same ceilings and reason codes with ad-hoc literals. `MaxClockSkew`, inventory limits, lease windows, control-mode strings, and user-data-fault reason codes are duplicated across repositories and mirrored again in JS tests. There is no generated contract artifact or cross-repo compatibility test that treats `internal/protocol/protocol.go` as the single source of truth.",
+        "file": "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/protocol/protocol.go",
+        "line": 23,
+        "snippet": "MaxClockSkew = 60 * time.Second ... MaxAccountInventoryUsers = 10_000 ... NodeModeIndependentDraining = \"independent-draining\"",
+        "recommendation": "Generate a versioned protocol manifest from the Go protocol package and consume it from the adapter/UI, or add a contract test that exercises the JS validators against the exported Go contract. Remove hand-maintained `60_000`, `10_000`, and reason-code maps once one source of truth exists.",
+        "references": [
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/protocol/protocol.go:23",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/protocol/protocol.go:94",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/protocol/protocol.go:303",
+          "E:/Sillytarvennew/Sillytarven-online/src/endpoints/stcontrol.js:47",
+          "E:/Sillytarvennew/Sillytarven-online/src/endpoints/stcontrol.js:454",
+          "E:/Sillytarvennew/Sillytarven-online/src/endpoints/stcontrol.js:627",
+          "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:48",
+          "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js:802",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/user_data_faults.go:22",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/user_data_faults.go:125",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/web/src/pages/Admin.tsx:1002",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/web/src/pages/Admin.tsx:1048",
+          "E:/Sillytarvennew/Sillytarven-online/tests/stcontrol-routes.node.test.mjs:130",
+          "E:/Sillytarvennew/Sillytarven-online/tests/stcontrol-routes.node.test.mjs:208",
+          "E:/Sillytarvennew/Sillytarven-online/tests/stcontrol-adapter.node.test.mjs:423"
+        ],
+        "impact": "A future lease-window, inventory, or reason-code change can make the adapter reject valid controller claims or hide newly valid operator actions even while same-repo tests stay green, because the tests duplicate the same stale literals instead of the Go contract. That is the sort of silent drift that turns recovery-state-machine changes into production-only regressions.",
+        "metadata": {
+          "subsystem": "cross-repo-protocol-contracts",
+          "cross_repo": true,
+          "discovery_source": "bash-scan"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": [
+          "arch-002-b54f1e2a"
+        ]
+      },
+      {
+        "id": "mai-002-8a5d2c6f",
+        "title": "AI observation builders already show copy-paste drift and dead scaffolding",
+        "severity": "high",
+        "category": "dead-code",
+        "description": "The six AI task enqueue functions repeat the same observation-ID, redactor, evidence, marshal, and dedup flow by copy-edit. The file already carries a regression note explaining that omitting `candidate_catalog` broke every ordering advisory, and `enqueueAnomalyAttribution` still builds an `evidenceCatalog` map only to discard it via `_ = evidenceCatalog`. Tests assert each task shape separately, but there is no shared contract helper that forces every phase to evolve together.",
+        "file": "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/ai_phase_tasks.go",
+        "line": 24,
+        "snippet": "// CandidateCatalog must be serialized ... omitting it made every ordering advisory fail with empty_candidates (D5). ... _ = evidenceCatalog",
+        "recommendation": "Extract a common observation-builder helper for redaction, evidence assembly, dedup keys, and JSON marshaling. Replace per-task shape assertions with one table-driven contract suite that verifies required fields for every AI task family.",
+        "references": [
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/ai_phase_tasks.go:24",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/ai_phase_tasks.go:59",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/ai_phase_tasks.go:73",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/ai_phase_tasks.go:125",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/ai_phase_tasks.go:173",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/ai_phase_tasks.go:201",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/ai_phase_tasks.go:241",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/ai_phase_tasks.go:311",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/ai_phase_tasks_test.go:164",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/controller/ai_phase_tasks_test.go:236"
+        ],
+        "impact": "Schema, redaction, or candidate-selection changes are likely to land in only some task families. The resulting failures are subtle: one advisory family silently stops producing valid observations while others keep working, which is difficult to diagnose during incident response because the drift lives in duplicated glue code rather than the AI policy itself.",
+        "metadata": {
+          "subsystem": "ai-supervision-observation-builders",
+          "focus": "copy-paste-drift",
+          "discovery_source": "bash-scan"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": [
+          "qua-003-c4e28ab1"
+        ]
+      },
+      {
+        "id": "mai-003-1b4e7d92",
+        "title": "Storage repair scheduling is a 266-line transaction with regex-oriented tests",
+        "severity": "high",
+        "category": "long-method",
+        "description": "`ClaimAndCreateStorageRepair` claims the task, validates the active controller epoch, rechecks writer leases, picks a target, creates a legacy backup job, seeds the workflow graph, publishes transfer capability state, updates replica metadata, updates the task lease, and writes audit rows in one serializable function. The companion tests mostly verify SQL text with broad regexes and ordered expectations, so they do not isolate individual state-machine invariants such as writer-fence rejection, reservation accounting, or retry semantics.",
+        "file": "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/storage_repair.go",
+        "line": 238,
+        "snippet": "func (s *Store) ClaimAndCreateStorageRepair(...) { ... INSERT INTO workflows ... INSERT INTO snapshot_transfer_capabilities ... UPDATE storage_repair_tasks ... INSERT INTO audit_events ... }",
+        "recommendation": "Split the transaction into internal helpers around intent claim, lease validation, target selection, workflow materialization, and audit persistence. Keep one top-level transaction wrapper, but add invariant-focused tests that assert the meaning of each branch instead of mostly matching SQL envelopes.",
+        "references": [
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/storage_repair.go:238",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/storage_repair.go:337",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/storage_repair.go:400",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/storage_repair.go:462",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/storage_repair.go:479",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/storage_repair_test.go:70",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/storage_repair_test.go:98",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/storage_repair_test.go:104",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/storage_repair_test.go:122",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/internal/store/storage_repair_test.go:191"
+        ],
+        "impact": "A change to one safety fence or side effect can accidentally alter another branch and reopen stale-writer, duplicate-workflow, or reservation-leak behavior. Because the tests primarily assert ordered SQL interactions, maintainers get weak help when they need to modify recovery logic under pressure.",
+        "metadata": {
+          "subsystem": "storage-repair-recovery-workflow",
+          "focus": "testability",
+          "discovery_source": "bash-scan"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": [
+          "arch-003-c8e9137b",
+          "qua-004-a93d54ce"
+        ]
+      },
+      {
+        "id": "mai-004-6ce82f14",
+        "title": "Admin.tsx concentrates eight admin surfaces plus duplicated state helpers in one module",
+        "severity": "medium",
+        "category": "large-class",
+        "description": "The admin console page defines overview, nodes, users, backups, alerts, audit, admins, and AI supervision in one 1.6k-line module. It repeats pagination/load/error flows, duplicates GiB-to-bytes conversion, and hardcodes user-data-fault reasons plus AI task/action labels inline. That is not just a large file: backend feature work now requires touching several unrelated sections and duplicated dictionaries in the same module.",
+        "file": "E:/Sillytarvennew/stcontrol/.flash-worktree/web/src/pages/Admin.tsx",
+        "line": 149,
+        "snippet": "export default function AdminPage() { ... <Route path=\"/nodes\" element={<NodesAdmin />} /> ... } ... function NodesAdmin() { ... } ... function UsersAdmin() { ... } ... function AISupervisionAdmin() { ... }",
+        "recommendation": "Split each admin area into its own module and extract shared hooks/helpers for cursor pagination, async loading, quota conversion, and control-plane label dictionaries. Prefer generated/shared enum label maps for reason codes and AI tasks so UI changes track backend evolution automatically.",
+        "references": [
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/web/src/pages/Admin.tsx:149",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/web/src/pages/Admin.tsx:338",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/web/src/pages/Admin.tsx:367",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/web/src/pages/Admin.tsx:875",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/web/src/pages/Admin.tsx:1002",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/web/src/pages/Admin.tsx:1048",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/web/src/pages/Admin.tsx:1354",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/web/src/pages/Admin.tsx:1558",
+          "E:/Sillytarvennew/stcontrol/.flash-worktree/web/src/pages/Admin.tsx:1573"
+        ],
+        "impact": "Every new audit filter, user-data-fault reason, AI task, or quota policy tweak now encourages copy-paste changes inside one monolith. That makes UI drift more likely during control-plane evolution and raises the cost of adding targeted regression coverage around recovery or admin workflows.",
+        "metadata": {
+          "subsystem": "admin-console",
+          "focus": "module-boundaries",
+          "discovery_source": "bash-scan"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": []
+      }
+    ],
+    "cross_references": [
+      {
+        "finding_id": "mai-001-3f7c91ad",
+        "related_dimensions": [
+          "architecture",
+          "action-items",
+          "best-practices"
+        ],
+        "reason": "Cross-repo contract drift affects adapter/controller integration and leaves requirement closure dependent on manual synchronization."
+      },
+      {
+        "finding_id": "mai-002-8a5d2c6f",
+        "related_dimensions": [
+          "quality",
+          "best-practices"
+        ],
+        "reason": "The copied AI builder pattern is also a duplication/code-smell problem with an already documented regression."
+      },
+      {
+        "finding_id": "mai-003-1b4e7d92",
+        "related_dimensions": [
+          "architecture",
+          "quality"
+        ],
+        "reason": "The long repair transaction couples multiple recovery responsibilities and is already hard to test branch-by-branch."
+      },
+      {
+        "finding_id": "mai-004-6ce82f14",
+        "related_dimensions": [
+          "action-items",
+          "best-practices"
+        ],
+        "reason": "The monolithic admin surface increases the cost of landing backend follow-up work and keeping UI conventions aligned."
+      }
+    ]
+  }
+]

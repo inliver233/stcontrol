@@ -1,0 +1,37 @@
+{
+  "group_id": "G1",
+  "status": "completed",
+  "attempt": 1,
+  "findings_total": 5,
+  "findings_fixed": 5,
+  "phase": "verified",
+  "assigned_agent": "/root/plan_online_batch",
+  "started_at": "2026-08-15T16:40:00+08:00",
+  "last_update": "2026-08-15T16:27:54.8408350+08:00",
+  "current_scope": "Completed G1 session/handoff core fixes in stcontrol adapter, handoff endpoint, and user heartbeat production entry with bounded durability checkpoints and strict durable-session admission.",
+  "files_touched": [
+    "src/stcontrol.js",
+    "src/endpoints/stcontrol.js",
+    "public/scripts/user.js",
+    "public/scripts/user-heartbeat.js",
+    "tests/stcontrol-adapter.node.test.mjs",
+    "tests/stcontrol-agent-auth.node.test.mjs",
+    "tests/stcontrol-heartbeat.node.test.mjs",
+    "tests/stcontrol-routes.node.test.mjs"
+  ],
+  "tests": [
+    {
+      "command": "node --test tests/stcontrol-adapter.node.test.mjs tests/stcontrol-routes.node.test.mjs tests/stcontrol-agent-auth.node.test.mjs tests/stcontrol-heartbeat.node.test.mjs tests/stcontrol-native-entry-guards.node.test.mjs tests/stcontrol-disaster-login.node.test.mjs",
+      "status": "passed",
+      "details": "Final P1 board: 44 tests passed, 0 failed"
+    }
+  ],
+  "completed_work": [
+    "Request admission now fails closed without a durable stcontrol envelope in managed and independent modes; request-path self-issued authority was removed.",
+    "Serialized tracker admission now rechecks durable session handle/mode/generation in-queue, promotes managed durable sessions only after out-of-queue ownership proof with in-queue generation revalidation, and rejects impossible DRAINING branches.",
+    "Managed activity accounting now uses bounded durability checkpoints so heartbeat/request updates stay mostly volatile but persist within the checkpoint window and on cleanup/tombstone boundaries.",
+    "Admin and user handoff now clear the opposite marker, retire prior managed sessions durably, and preserve mixed-cookie regression coverage.",
+    "R14 password version fencing, nonce fail-closed behavior, production heartbeat import, and admin-only telemetry suppression are covered by updated node tests."
+  ],
+  "errors": []
+}

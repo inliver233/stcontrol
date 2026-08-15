@@ -110,18 +110,29 @@ func (s *Store) ClearPasswordFallbackIfConverged(ctx context.Context, globalUser
 func stagePasswordRemovals(ctx context.Context, tx *sql.Tx, globalUserID int64, now time.Time) (int64, error) {
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO node_account_password_removals (
-		  global_user_id, node_id, local_handle, state, created_at, updated_at
+		  global_user_id, node_id, local_handle, password_material_version, state, created_at, updated_at
 		)
-		SELECT user_id, node_id, local_handle, 'pending', $2, $2
+		SELECT user_id, node_id, local_handle, password_material_version, 'pending', $2, $2
 		FROM node_accounts
 		WHERE user_id=$1
 		ON CONFLICT (global_user_id, node_id) DO UPDATE SET
+		  local_handle=EXCLUDED.local_handle,
+		  password_material_version=EXCLUDED.password_material_version,
 		  state='pending', updated_at=EXCLUDED.updated_at`,
 		globalUserID, now)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+func clearPendingPasswordRemovals(ctx context.Context, tx *sql.Tx, globalUserID int64, now time.Time) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE node_account_password_removals
+		SET state='completed', updated_at=$2
+		WHERE global_user_id=$1 AND state='pending'`,
+		globalUserID, now)
+	return err
 }
 
 // ListPendingPasswordRemovals returns durable removal intents that are due for
@@ -136,11 +147,19 @@ func (s *Store) ListPendingPasswordRemovals(ctx context.Context, limit int, now 
 	}
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT global_user.legacy_user_id, removal.global_user_id, removal.node_id,
-		  removal.local_handle
+		  removal.local_handle, removal.password_material_version
 		FROM node_account_password_removals removal
 		JOIN global_users global_user ON global_user.id=removal.global_user_id
-		JOIN nodes node ON node.id=removal.node_id AND node.status='online'
-		WHERE removal.state='pending' AND removal.updated_at<=$2
+		JOIN node_accounts account
+		  ON account.user_id=removal.global_user_id AND account.node_id=removal.node_id
+		  AND account.local_handle=removal.local_handle
+		  AND account.password_material_version=removal.password_material_version
+		  AND account.password_hash IS NULL AND account.password_salt IS NULL
+		JOIN nodes node ON node.id=removal.node_id
+		  AND node.status='online' AND node.connectivity_state='online'
+		  AND node.controller_generation=(SELECT generation FROM controller_epochs WHERE state='active')
+		WHERE removal.state='pending' AND removal.password_material_version>0
+		  AND removal.updated_at<=$2
 		ORDER BY removal.updated_at LIMIT $1`, limit, now.Add(-passwordRemovalBackoff))
 	if err != nil {
 		return nil, err
@@ -150,7 +169,7 @@ func (s *Store) ListPendingPasswordRemovals(ctx context.Context, limit int, now 
 	for rows.Next() {
 		var removal PendingPasswordRemoval
 		if err := rows.Scan(
-			&removal.LegacyUserID, &removal.GlobalUserID, &removal.NodeID, &removal.LocalHandle,
+			&removal.LegacyUserID, &removal.GlobalUserID, &removal.NodeID, &removal.LocalHandle, &removal.Version,
 		); err != nil {
 			return nil, err
 		}
@@ -162,8 +181,8 @@ func (s *Store) ListPendingPasswordRemovals(ctx context.Context, limit int, now 
 // ActivatePasswordRemoval marks a password-removal intent completed after the
 // target node confirms the local password has been removed. It is idempotent:
 // an intent that is already completed is harmless.
-func (s *Store) ActivatePasswordRemoval(ctx context.Context, globalUserID, nodeID int64, now time.Time) error {
-	if globalUserID <= 0 || nodeID <= 0 {
+func (s *Store) ActivatePasswordRemoval(ctx context.Context, globalUserID, nodeID, version int64, now time.Time) error {
+	if globalUserID <= 0 || nodeID <= 0 || version <= 0 {
 		return fmt.Errorf("invalid password removal")
 	}
 	if now.IsZero() {
@@ -171,16 +190,17 @@ func (s *Store) ActivatePasswordRemoval(ctx context.Context, globalUserID, nodeI
 	}
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE node_account_password_removals
-		SET state='completed', attempt=attempt+1, updated_at=$3
-		WHERE global_user_id=$1 AND node_id=$2 AND state='pending'`,
-		globalUserID, nodeID, now)
+		SET state='completed', attempt=attempt+1, updated_at=$4
+		WHERE global_user_id=$1 AND node_id=$2 AND password_material_version=$3
+		  AND state='pending'`,
+		globalUserID, nodeID, version, now)
 	return err
 }
 
 // MarkPasswordRemovalError records a failed delivery attempt so the intent is
 // retried after the worker backoff instead of being dropped.
-func (s *Store) MarkPasswordRemovalError(ctx context.Context, globalUserID, nodeID int64, now time.Time) error {
-	if globalUserID <= 0 || nodeID <= 0 {
+func (s *Store) MarkPasswordRemovalError(ctx context.Context, globalUserID, nodeID, version int64, now time.Time) error {
+	if globalUserID <= 0 || nodeID <= 0 || version <= 0 {
 		return fmt.Errorf("invalid password removal")
 	}
 	if now.IsZero() {
@@ -188,8 +208,9 @@ func (s *Store) MarkPasswordRemovalError(ctx context.Context, globalUserID, node
 	}
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE node_account_password_removals
-		SET attempt=attempt+1, updated_at=$3
-		WHERE global_user_id=$1 AND node_id=$2 AND state='pending'`,
-		globalUserID, nodeID, now)
+		SET attempt=attempt+1, updated_at=$4
+		WHERE global_user_id=$1 AND node_id=$2 AND password_material_version=$3
+		  AND state='pending'`,
+		globalUserID, nodeID, version, now)
 	return err
 }

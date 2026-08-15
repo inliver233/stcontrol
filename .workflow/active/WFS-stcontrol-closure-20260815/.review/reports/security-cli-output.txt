@@ -1,0 +1,16 @@
+Security review notes written on 2026-08-15.
+
+Reviewed:
+- review-state.json
+- docs/requirements-traceability.md
+- docs/verification-log.md
+- docs/ai-supervision-decisions.md
+- internal/controller/oauth.go
+- internal/store/oauth.go
+- Sillytarven-online/src/endpoints/stcontrol.js
+- Sillytarven-online/src/stcontrol.js
+- Sillytarven-online/public/scripts/user-heartbeat.js
+
+Confirmed findings:
+1. High - mixed admin/user handoff state leaves `stcontrolAdmin` set and skips `stcontrolRequestTracker` user fencing.
+2. High - OAuth login state is not browser/session bound and remains redeemable by any browser that presents a valid callback first.

@@ -1,0 +1,73 @@
+{
+  "fix_session_id": "fix-20260815-1620",
+  "strategy": "priority-ordered-hybrid",
+  "groups": [
+    {
+      "group_id": "G1",
+      "name": "P1 Online session and handoff core",
+      "finding_ids": ["FIX-ONLINE-ATOMIC", "FIX-ONLINE-INDEPENDENT", "FIX-ONLINE-HANDOFF", "FIX-ONLINE-PERSISTENCE", "FIX-HEARTBEAT-ENTRY"],
+      "owner_scope": ["Sillytarven-online/src/stcontrol.js", "Sillytarven-online/src/endpoints/stcontrol.js", "Sillytarven-online/public/scripts/user.js", "Sillytarven-online/public/scripts/user-heartbeat.js", "Sillytarven-online/tests/stcontrol-*.node.test.mjs"],
+      "progress_file": "fix-progress-1.json"
+    },
+    {
+      "group_id": "G2",
+      "name": "P1 OAuth, password convergence and rebuild",
+      "finding_ids": ["FIX-OAUTH-STATE-BINDING", "FIX-R14-PASSWORD-REMOVAL", "FIX-REBUILD-OFFLINE", "FIX-COMPAT-THIRD-HEARTBEAT"],
+      "owner_scope": ["internal/controller/oauth*", "internal/controller/password_sync*", "internal/store/identities*", "internal/store/password_convergence*", "internal/store/models.go", "internal/protocol/protocol.go", "internal/store/leadership*", "internal/store/controller_rebuilds*", "internal/store/control_modes*", "internal/store/node_compatibility*", "internal/store/migrations/0049*", "internal/store/migrations/0050*"],
+      "progress_file": "fix-progress-2.json"
+    },
+    {
+      "group_id": "G3",
+      "name": "P1 regression audit for restore, conflict and UI polling",
+      "finding_ids": ["VERIFY-PRIOR-P1-P2"],
+      "owner_scope": ["internal/controller/restores*", "internal/store/restores*", "internal/agent/conflict_resolution*", "internal/store/conflict*", "web/src/pages/Conflict*"],
+      "progress_file": "fix-progress-3.json"
+    },
+    {
+      "group_id": "G4",
+      "name": "P1 durable data-fault release",
+      "finding_ids": ["FIX-DATA-FAULT-RELEASE"],
+      "depends_on": ["G1", "G2"],
+      "progress_file": "fix-progress-4.json"
+    },
+    {
+      "group_id": "G5",
+      "name": "P2 controller/offline backup and transaction barriers",
+      "finding_ids": ["FIX-OFFLINE-BACKUP-ASYNC", "FIX-CONTROLLER-BACKUP-RETRY", "FIX-RECOVERY-STORE-BARRIER"],
+      "depends_on": ["P1-checkpoint"],
+      "progress_file": "fix-progress-5.json"
+    },
+    {
+      "group_id": "G6",
+      "name": "P2 agent HTTP limits and existing security closure",
+      "finding_ids": ["FIX-R21-AGENT-LIMITS", "VERIFY-PRIOR-P1-P2"],
+      "depends_on": ["P1-checkpoint"],
+      "progress_file": "fix-progress-6.json"
+    },
+    {
+      "group_id": "G7",
+      "name": "P3 partials, direct tests and acceptance evidence",
+      "finding_ids": ["FIX-R06-DRAIN-TEST", "FIX-P3-ACCEPTANCE", "VERIFY-ONLINE-THREE"],
+      "depends_on": ["P2-checkpoint"],
+      "progress_file": "fix-progress-7.json"
+    },
+    {
+      "group_id": "G8",
+      "name": "AI supervision explicit confirmation gate",
+      "finding_ids": ["DEFER-AI-SUPERVISION"],
+      "depends_on": ["main-flow-acceptance"],
+      "progress_file": "fix-progress-8.json"
+    }
+  ],
+  "timeline": [
+    {"stage_id": 1, "name": "P1 parallel core", "mode": "parallel", "groups": ["G1", "G2", "G3"]},
+    {"stage_id": 2, "name": "P1 cross-repository release", "mode": "serial", "groups": ["G4"]},
+    {"stage_id": 3, "name": "P1 tests, traceability, commit and push", "mode": "checkpoint", "groups": []},
+    {"stage_id": 4, "name": "P2 parallel implementation", "mode": "parallel", "groups": ["G5", "G6"]},
+    {"stage_id": 5, "name": "P2 tests, traceability, commit and push", "mode": "checkpoint", "groups": []},
+    {"stage_id": 6, "name": "P3 closure", "mode": "file-partitioned", "groups": ["G7"]},
+    {"stage_id": 7, "name": "Main-flow basic acceptance and push", "mode": "checkpoint", "groups": []},
+    {"stage_id": 8, "name": "Seven AI requirement confirmations", "mode": "user-confirmation-gate", "groups": ["G8"]}
+  ],
+  "created_at": "2026-08-15T16:35:00+08:00"
+}

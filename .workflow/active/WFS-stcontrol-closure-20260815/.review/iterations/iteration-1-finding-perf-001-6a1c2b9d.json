@@ -1,0 +1,101 @@
+[
+  {
+    "finding_id": "perf-001-6a1c2b9d",
+    "dimension": "performance",
+    "iteration": 1,
+    "analysis_timestamp": "2026-08-15T16:14:00+08:00",
+    "cli_tool_used": "codex",
+    "model": "gpt-5",
+    "analysis_duration_ms": 420000,
+    "original_finding": {
+      "severity": "high",
+      "title": "Every managed request and heartbeat is serialized behind one global queue and synchronous state-file fsync",
+      "file": "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js",
+      "line": 340
+    },
+    "root_cause": {
+      "summary": "mutateState combines two distinct responsibilities: single-process serialization and durable checkpointing. Every call unconditionally invokes writeFileAtomicSync, even for runtime-only in-flight counters and activity timestamps that are explicitly reset after a process restart.",
+      "evidence": [
+        "src/stcontrol.js:340-348 serializes every mutation on one process-wide queue and always calls persistState.",
+        "src/stcontrol.js:277-280 performs mkdirSync plus writeFileAtomicSync of the complete JSON state.",
+        "src/stcontrol.js:980-1000 persists request admission; src/stcontrol.js:1005-1011 persists request completion, producing two full-file writes per request.",
+        "src/stcontrol.js:915-927 persists every browser heartbeat.",
+        "src/stcontrol.js:294-303 resets all in-flight counters on restart, proving these counters are runtime state rather than recovery evidence."
+      ],
+      "dependency_map": {
+        "hot_path_callers": [
+          "stcontrolRequestTracker request admission",
+          "stcontrolRequestTracker finish/close callback",
+          "noteStcontrolPageHeartbeat"
+        ],
+        "durability_required_callers": [
+          "session registration/logout",
+          "mode, lease, gate and nonce changes",
+          "independent-write pendingSyncUsers marker",
+          "operation result/idempotency records"
+        ],
+        "shared_resource": "stateQueue and one adapter-state.json file across all users"
+      }
+    },
+    "remediation_plan": {
+      "strategy": "Retain one short serialized admission critical section for correctness, but separate serialization from persistence and persist only durable state transitions.",
+      "steps": [
+        {
+          "order": 1,
+          "change": "Introduce a queue helper whose mutator can explicitly request durable persistence; keep the existing durable wrapper as the default so control-plane callers remain fail-safe.",
+          "files": ["src/stcontrol.js"]
+        },
+        {
+          "order": 2,
+          "change": "Perform lease, gate, durable-session validation and in-flight increment atomically in that queue. Managed reads/writes update runtime counters without a synchronous file write.",
+          "files": ["src/stcontrol.js"]
+        },
+        {
+          "order": 3,
+          "change": "For an independent write, create the pending-sync marker in the same admission section and force persistence before next(); do not weaken the recovery evidence boundary.",
+          "files": ["src/stcontrol.js"]
+        },
+        {
+          "order": 4,
+          "change": "Make finish/close counter decrements volatile. Coalesce lastSeen/lastPage activity into a bounded checkpoint rather than fsyncing every heartbeat; session creation/logout and mode/gate/lease transitions stay immediate.",
+          "files": ["src/stcontrol.js"]
+        },
+        {
+          "order": 5,
+          "change": "Add instrumentation-friendly tests that stub write-file-atomic and assert a managed request/finish and page heartbeat do not cause per-event durable writes, while independent write admission does persist its marker before next().",
+          "files": ["tests/stcontrol-adapter.node.test.mjs"]
+        }
+      ],
+      "rollback": "The durable wrapper remains the default. A rollback can route all mutations through it again without changing the state schema."
+    },
+    "impact_assessment": {
+      "benefits": [
+        "Removes two synchronous full-state writes from each ordinary request.",
+        "Prevents unrelated users from waiting on disk I/O while preserving serialized authorization.",
+        "Keeps pending independent writes, gates, leases and operation idempotency crash durable."
+      ],
+      "risks": [
+        "Activity timestamps may lag by the checkpoint interval after a crash.",
+        "A careless volatile classification could lose a recovery-critical pending-sync marker."
+      ],
+      "mitigations": [
+        "Explicitly default mutations to durable and opt only enumerated runtime callers into volatile mode.",
+        "Test that independent admission persists before invoking next().",
+        "Keep the existing restart-time in-flight reset behavior."
+      ],
+      "breaking_changes": false
+    },
+    "reassessed_severity": {
+      "severity": "high",
+      "justification": "The finding is directly reachable on every tracked request and scales across all users, but it is a performance/availability bottleneck rather than an authorization bypass by itself."
+    },
+    "confidence_score": 0.99,
+    "cross_references": [
+      "arch-001-7d2a4c9e",
+      "src/stcontrol.js:277-280",
+      "src/stcontrol.js:340-348",
+      "src/stcontrol.js:915-927",
+      "src/stcontrol.js:980-1011"
+    ]
+  }
+]

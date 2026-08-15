@@ -23,7 +23,7 @@ func TestEnqueueAgentCommandBindsActiveGeneration(t *testing.T) {
 	defer closeDB()
 	p := commandParams(time.Date(2026, 8, 7, 18, 30, 0, 0, time.UTC))
 	mock.ExpectQuery(`INSERT INTO agent_commands`).
-		WithArgs(p.ID, p.OperationID, p.NodeID, p.CommandType, p.EncryptedPayload, p.PayloadSHA256, p.ExpiresAt, p.Now).
+		WithArgs(p.ID, p.OperationID, p.NodeID, p.CommandType, p.EncryptedPayload, p.PayloadSHA256, p.ExpiresAt, p.Now, int64(0), false).
 		WillReturnRows(sqlmock.NewRows([]string{"controller_generation"}).AddRow(int64(8)))
 	generation, err := st.EnqueueAgentCommand(context.Background(), p)
 	if err != nil || generation != 8 {
@@ -39,10 +39,10 @@ func TestEnqueueAgentCommandIdempotencyRejectsSemanticMismatch(t *testing.T) {
 	p := commandParams(time.Date(2026, 8, 7, 18, 30, 0, 0, time.UTC))
 	mock.ExpectQuery(`INSERT INTO agent_commands`).
 		WillReturnRows(sqlmock.NewRows([]string{"controller_generation"}))
-	mock.ExpectQuery(`SELECT node_id, command_type, payload_sha256, controller_generation`).
+	mock.ExpectQuery(`SELECT node_id, command_type, payload_sha256, controller_generation,state`).
 		WithArgs(p.OperationID).
-		WillReturnRows(sqlmock.NewRows([]string{"node_id", "command_type", "payload_sha256", "controller_generation"}).
-			AddRow(int64(99), p.CommandType, p.PayloadSHA256, int64(8)))
+		WillReturnRows(sqlmock.NewRows([]string{"node_id", "command_type", "payload_sha256", "controller_generation", "state"}).
+			AddRow(int64(99), p.CommandType, p.PayloadSHA256, int64(8), "succeeded"))
 	_, err := st.EnqueueAgentCommand(context.Background(), p)
 	if !errors.Is(err, ErrAgentCommandConflict) {
 		t.Fatalf("error=%v, want ErrAgentCommandConflict", err)
@@ -57,13 +57,74 @@ func TestEnqueueAgentCommandAllowsExactIdempotentReplay(t *testing.T) {
 	p := commandParams(time.Date(2026, 8, 7, 18, 30, 0, 0, time.UTC))
 	mock.ExpectQuery(`INSERT INTO agent_commands`).
 		WillReturnRows(sqlmock.NewRows([]string{"controller_generation"}))
-	mock.ExpectQuery(`SELECT node_id, command_type, payload_sha256, controller_generation`).
+	mock.ExpectQuery(`SELECT node_id, command_type, payload_sha256, controller_generation,state`).
 		WithArgs(p.OperationID).
-		WillReturnRows(sqlmock.NewRows([]string{"node_id", "command_type", "payload_sha256", "controller_generation"}).
-			AddRow(p.NodeID, p.CommandType, p.PayloadSHA256, int64(8)))
+		WillReturnRows(sqlmock.NewRows([]string{"node_id", "command_type", "payload_sha256", "controller_generation", "state"}).
+			AddRow(p.NodeID, p.CommandType, p.PayloadSHA256, int64(8), "running"))
 	generation, err := st.EnqueueAgentCommand(context.Background(), p)
 	if err != nil || generation != 8 {
 		t.Fatalf("generation=%d err=%v", generation, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestEnqueueAgentCommandAtomicallyRequeuesExactRetryableTerminal(t *testing.T) {
+	t.Parallel()
+	for _, terminalState := range []string{"failed", "expired"} {
+		t.Run(terminalState, func(t *testing.T) {
+			st, mock, closeDB := newMockStore(t)
+			defer closeDB()
+			p := commandParams(time.Date(2026, 8, 7, 18, 30, 0, 0, time.UTC))
+			p.ExpectedControllerGeneration = 8
+			p.RequeueRetryableTerminal = true
+			mock.ExpectQuery(`(?s)INSERT INTO agent_commands.*ON CONFLICT \(operation_id\) DO UPDATE SET.*id=EXCLUDED.id.*state='queued'.*result_summary=NULL.*\$10::boolean.*agent_commands.state IN \('failed','expired'\)`).
+				WithArgs(p.ID, p.OperationID, p.NodeID, p.CommandType, p.EncryptedPayload,
+					p.PayloadSHA256, p.ExpiresAt, p.Now, int64(8), true).
+				WillReturnRows(sqlmock.NewRows([]string{"controller_generation"}).AddRow(int64(8)))
+			generation, err := st.EnqueueAgentCommand(context.Background(), p)
+			if err != nil || generation != 8 {
+				t.Fatalf("state=%s generation=%d err=%v", terminalState, generation, err)
+			}
+			assertMockExpectations(t, mock)
+		})
+	}
+}
+
+func TestEnqueueAgentCommandDoesNotRequeueTerminalWithoutExplicitOptIn(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	p := commandParams(time.Date(2026, 8, 7, 18, 30, 0, 0, time.UTC))
+	p.ExpectedControllerGeneration = 8
+	mock.ExpectQuery(`(?s)INSERT INTO agent_commands.*AND \$10::boolean.*agent_commands.state IN \('failed','expired'\)`).
+		WithArgs(p.ID, p.OperationID, p.NodeID, p.CommandType, p.EncryptedPayload,
+			p.PayloadSHA256, p.ExpiresAt, p.Now, int64(8), false).
+		WillReturnRows(sqlmock.NewRows([]string{"controller_generation"}))
+	mock.ExpectQuery(`SELECT node_id, command_type, payload_sha256, controller_generation,state`).
+		WithArgs(p.OperationID).
+		WillReturnRows(sqlmock.NewRows([]string{"node_id", "command_type", "payload_sha256", "controller_generation", "state"}).
+			AddRow(p.NodeID, p.CommandType, p.PayloadSHA256, int64(8), "failed"))
+	generation, err := st.EnqueueAgentCommand(context.Background(), p)
+	if err != nil || generation != 8 {
+		t.Fatalf("generation=%d err=%v", generation, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestEnqueueAgentCommandExpectedGenerationRejectsRolloverReplay(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	p := commandParams(time.Date(2026, 8, 7, 18, 30, 0, 0, time.UTC))
+	p.ExpectedControllerGeneration = 9
+	mock.ExpectQuery(`INSERT INTO agent_commands`).WillReturnRows(sqlmock.NewRows([]string{"controller_generation"}))
+	mock.ExpectQuery(`SELECT node_id, command_type, payload_sha256, controller_generation,state`).
+		WithArgs(p.OperationID).
+		WillReturnRows(sqlmock.NewRows([]string{"node_id", "command_type", "payload_sha256", "controller_generation", "state"}).
+			AddRow(p.NodeID, p.CommandType, p.PayloadSHA256, int64(8), "succeeded"))
+	_, err := st.EnqueueAgentCommand(context.Background(), p)
+	if !errors.Is(err, ErrAgentCommandConflict) {
+		t.Fatalf("error=%v, want generation fence conflict", err)
 	}
 	assertMockExpectations(t, mock)
 }
@@ -119,6 +180,65 @@ func TestLeaseAgentCommandReturnsNilWhenQueueEmpty(t *testing.T) {
 	now := time.Date(2026, 8, 7, 18, 30, 0, 0, time.UTC)
 	mock.ExpectBegin()
 	mock.ExpectQuery(`SELECT command.id, command.operation_id`).WithArgs(int64(22), now).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation_id", "command_type", "payload", "payload_sha256", "attempt", "controller_generation", "expires_at",
+		}))
+	mock.ExpectCommit()
+	lease, err := st.LeaseAgentCommand(context.Background(), 22, "worker-identity-1", now, time.Minute)
+	if err != nil || lease != nil {
+		t.Fatalf("lease=%+v err=%v", lease, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestLeaseAgentCommandReclaimsAckCrashAfterLeaseEvenWhenAdmissionExpired(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 7, 19, 0, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)\(\(command.state='queued' AND command.expires_at>\$2\).*command.state IN \('leased','acked','running'\) AND command.lease_until<=\$2`).
+		WithArgs(int64(22), now).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation_id", "command_type", "payload", "payload_sha256", "attempt", "controller_generation", "expires_at",
+		}).AddRow("command-id", "operation-id", "freeze_user_data", []byte(`{"version":2}`),
+			make([]byte, 32), 1, int64(8), now.Add(-time.Hour)))
+	mock.ExpectExec(`UPDATE agent_commands`).
+		WithArgs("command-id", "replacement-worker", now.Add(time.Minute), 2, now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	lease, err := st.LeaseAgentCommand(context.Background(), 22, "replacement-worker", now, time.Minute)
+	if err != nil || lease == nil || lease.ID != "command-id" || lease.Attempt != 2 {
+		t.Fatalf("lease=%+v err=%v", lease, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestGetAgentCommandResultExpiresNeverLeasedOverdueAdmission(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	operationID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	now := time.Date(2026, 8, 7, 19, 5, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)WITH expired AS \(.*state='expired'.*state='queued'.*expires_at<=now\(\).*RETURNING operation_id.*SELECT state`).
+		WithArgs(operationID).
+		WillReturnRows(sqlmock.NewRows([]string{"state", "result_summary", "updated_at"}).
+			AddRow("expired", []byte(`{}`), now))
+	result, err := st.GetAgentCommandResult(context.Background(), operationID)
+	if err != nil || result == nil || result.State != "expired" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestLeaseAgentCommandIndependentDrainingAllowlistIncludesUserDataRelease(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 7, 18, 30, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)node.control_mode='independent-draining'.*'freeze_user_data','release_user_data'`).
+		WithArgs(int64(22), now).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "operation_id", "command_type", "payload", "payload_sha256", "attempt", "controller_generation", "expires_at",
 		}))

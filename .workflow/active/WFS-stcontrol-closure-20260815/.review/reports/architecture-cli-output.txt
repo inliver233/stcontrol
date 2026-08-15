@@ -1,0 +1,8 @@
+Architecture deep scan completed against `origin/main..flash` and the coupled `Sillytarven-online` adapter.
+
+Findings:
+1. Critical: `Sillytarven-online/src/stcontrol.js:973` authorizes managed writes from a stale lease snapshot before the serialized state mutation runs.
+2. High: `Sillytarven-online/src/stcontrol.js:945` promotes managed sessions to independent only in the browser envelope, not in persisted adapter state.
+3. High: `internal/controller/storage_repair.go:67` and `internal/controller/controller_backup.go:73` check the recovery gate before entering store transactions that do not revalidate readiness.
+
+No source files were modified.

@@ -1,0 +1,64 @@
+{
+  "batch_id": 1,
+  "groups": [
+    {
+      "group_id": "G1",
+      "name": "online-session-core-single-owner",
+      "finding_ids": [
+        "FIX-ONLINE-ATOMIC",
+        "FIX-ONLINE-INDEPENDENT",
+        "FIX-ONLINE-HANDOFF",
+        "FIX-ONLINE-PERSISTENCE",
+        "FIX-HEARTBEAT-ENTRY"
+      ],
+      "strategy": "serial-single-agent-online-state-machine",
+      "owned_files": [
+        "Sillytarven-online/src/stcontrol.js",
+        "Sillytarven-online/src/endpoints/stcontrol.js",
+        "Sillytarven-online/public/scripts/user.js",
+        "Sillytarven-online/public/scripts/user-heartbeat.js",
+        "Sillytarven-online/tests/stcontrol-adapter.node.test.mjs",
+        "Sillytarven-online/tests/stcontrol-disaster-login.node.test.mjs",
+        "Sillytarven-online/tests/stcontrol-routes.node.test.mjs",
+        "Sillytarven-online/tests/stcontrol-native-entry-guards.node.test.mjs"
+      ],
+      "risk": "critical",
+      "tests": [
+        "node --test tests/stcontrol-adapter.node.test.mjs",
+        "node --test tests/stcontrol-disaster-login.node.test.mjs",
+        "node --test tests/stcontrol-routes.node.test.mjs tests/stcontrol-native-entry-guards.node.test.mjs"
+      ]
+    }
+  ],
+  "timeline": [
+    {
+      "stage": 1,
+      "groups": [
+        "G1"
+      ],
+      "mode": "serial"
+    }
+  ],
+  "metadata": {
+    "findings_count": 5,
+    "groups_count": 1,
+    "shared_online_files": [
+      "Sillytarven-online/src/stcontrol.js",
+      "Sillytarven-online/src/endpoints/stcontrol.js",
+      "Sillytarven-online/public/scripts/user.js",
+      "Sillytarven-online/public/scripts/user-heartbeat.js"
+    ],
+    "deep_dive_refs": [
+      "reports/deep-dive-1-arch-001-7d2a4c9e.md",
+      "reports/deep-dive-1-arch-002-b54f1e2a.md",
+      "reports/deep-dive-1-act-001-9b7e2a1c.md",
+      "reports/deep-dive-1-perf-001-6a1c2b9d.md"
+    ],
+    "planning_basis": "The five findings converge on one Online request/session pipeline: stcontrolRequestTracker admission atomicity, managed-to-independent durable promotion, admin/user handoff exclusivity, ordinary-request persistence, and browser heartbeat entry wiring all touch the same state machine or its direct route/frontend entrypoints. Keep src/stcontrol.js, src/endpoints/stcontrol.js, public/scripts/user*.js, and the related node tests under one execution group so the same agent can land the state-shape changes and regressions without cross-group file conflicts.",
+    "downstream_serial_dependencies": [
+      "batch-4/FIX-DATA-FAULT-RELEASE must stay after batch-1 because it extends the same Sillytarven-online/src/stcontrol.js and Sillytarven-online/src/endpoints/stcontrol.js gate/release contract.",
+      "batch-4/FIX-DATA-FAULT-RELEASE must also stay after batch-2 because FIX-R14-PASSWORD-REMOVAL changes the same Sillytarven-online/src/endpoints/stcontrol.js endpoint surface that batch 4 reuses for fenced remove and release wiring."
+    ],
+    "created_at": "2026-08-15T16:38:00+08:00"
+  }
+}

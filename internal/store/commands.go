@@ -24,11 +24,20 @@ type EnqueueAgentCommandParams struct {
 	PayloadSHA256    []byte
 	ExpiresAt        time.Time
 	Now              time.Time
+	// ExpectedControllerGeneration fences a workflow claim to the same active
+	// controller epoch before the command can become visible to an Agent. Zero
+	// keeps the legacy "bind whichever epoch is active" behaviour.
+	ExpectedControllerGeneration int64
+	// RequeueRetryableTerminal permits an exact failed/expired command to be
+	// made visible again with a fresh delivery ID. Callers must opt in only when
+	// the remote operation is itself idempotent for OperationID and scope.
+	RequeueRetryableTerminal bool
 }
 
 func (s *Store) EnqueueAgentCommand(ctx context.Context, p EnqueueAgentCommandParams) (int64, error) {
 	if p.ID == "" || p.OperationID == "" || p.NodeID <= 0 || p.CommandType == "" ||
-		!json.Valid(p.EncryptedPayload) || len(p.PayloadSHA256) != 32 || p.ExpiresAt.IsZero() {
+		!json.Valid(p.EncryptedPayload) || len(p.PayloadSHA256) != 32 || p.ExpiresAt.IsZero() ||
+		p.ExpectedControllerGeneration < 0 {
 		return 0, ErrInvalidAgentCommand
 	}
 	if p.Now.IsZero() {
@@ -44,28 +53,42 @@ func (s *Store) EnqueueAgentCommand(ctx context.Context, p EnqueueAgentCommandPa
 		  state, controller_generation, expires_at, created_at, updated_at
 		)
 		SELECT $1,$2,$3,$4,$5,$6,'queued',generation,$7,$8,$8
-		FROM controller_epochs WHERE state='active'
-		ON CONFLICT (operation_id) DO NOTHING
+		FROM controller_epochs
+		WHERE state='active' AND ($9::bigint=0 OR generation=$9)
+		ON CONFLICT (operation_id) DO UPDATE SET
+		  id=EXCLUDED.id,payload=EXCLUDED.payload,state='queued',attempt=0,
+		  lease_owner=NULL,lease_until=NULL,result_summary=NULL,result_digest=NULL,
+		  expires_at=EXCLUDED.expires_at,updated_at=EXCLUDED.updated_at
+		WHERE agent_commands.node_id=EXCLUDED.node_id
+		  AND agent_commands.command_type=EXCLUDED.command_type
+		  AND agent_commands.payload_sha256=EXCLUDED.payload_sha256
+		  AND agent_commands.controller_generation=EXCLUDED.controller_generation
+		  AND $10::boolean
+		  AND agent_commands.state IN ('failed','expired')
 		RETURNING controller_generation`,
 		p.ID, p.OperationID, p.NodeID, p.CommandType, p.EncryptedPayload,
-		p.PayloadSHA256, p.ExpiresAt, p.Now).Scan(&generation)
+		p.PayloadSHA256, p.ExpiresAt, p.Now, p.ExpectedControllerGeneration,
+		p.RequeueRetryableTerminal).Scan(&generation)
 	if err == sql.ErrNoRows {
 		var existingNodeID int64
-		var existingType string
+		var existingType, existingState string
 		var existingDigest []byte
 		err = s.DB.QueryRowContext(ctx, `
-			SELECT node_id, command_type, payload_sha256, controller_generation
+			SELECT node_id, command_type, payload_sha256, controller_generation,state
 			FROM agent_commands WHERE operation_id=$1`, p.OperationID).
-			Scan(&existingNodeID, &existingType, &existingDigest, &generation)
+			Scan(&existingNodeID, &existingType, &existingDigest, &generation, &existingState)
 		if err == sql.ErrNoRows {
 			return 0, ErrNoActiveController
 		}
 		if err != nil {
 			return 0, fmt.Errorf("load idempotent agent command: %w", err)
 		}
-		if existingNodeID != p.NodeID || existingType != p.CommandType || !bytes.Equal(existingDigest, p.PayloadSHA256) {
+		if existingNodeID != p.NodeID || existingType != p.CommandType ||
+			!bytes.Equal(existingDigest, p.PayloadSHA256) ||
+			(p.ExpectedControllerGeneration > 0 && generation != p.ExpectedControllerGeneration) {
 			return 0, ErrAgentCommandConflict
 		}
+		_ = existingState // exact non-terminal/succeeded replay remains idempotent
 		return generation, nil
 	}
 	if err != nil {
@@ -113,7 +136,7 @@ func (s *Store) LeaseAgentCommand(
 		JOIN controller_epochs epoch
 		  ON epoch.generation=command.controller_generation AND epoch.state='active'
 		JOIN nodes node ON node.id=command.node_id
-		WHERE command.node_id=$1 AND command.expires_at>$2
+		WHERE command.node_id=$1
 		  AND node.controller_generation=epoch.generation
 		  AND (
 		    node.control_mode='managed'
@@ -122,10 +145,10 @@ func (s *Store) LeaseAgentCommand(
 		      'complete_independent_sync','capture_conflict_evidence',
 		      'read_conflict_evidence_page','start_conflict_evidence_transfer',
 		      'prepare_conflict_resolution','apply_conflict_resolution_decisions',
-		      'publish_conflict_resolution','freeze_user_data'
+		      'publish_conflict_resolution','freeze_user_data','release_user_data'
 		    ))
 		  )
-		  AND (command.state='queued'
+		  AND ((command.state='queued' AND command.expires_at>$2)
 		    OR (command.state IN ('leased','acked','running') AND command.lease_until<=$2))
 		ORDER BY command.created_at
 		FOR UPDATE OF command SKIP LOCKED LIMIT 1`, nodeID, now).
@@ -233,6 +256,11 @@ func (s *Store) GetAgentCommandResult(ctx context.Context, operationID string) (
 	}
 	var out AgentCommandResult
 	err := s.DB.QueryRowContext(ctx, `
+		WITH expired AS (
+		  UPDATE agent_commands SET state='expired',updated_at=now()
+		  WHERE operation_id=$1 AND state='queued' AND expires_at<=now()
+		  RETURNING operation_id
+		)
 		SELECT state, COALESCE(result_summary,'{}'::jsonb), updated_at
 		FROM agent_commands WHERE operation_id=$1`, operationID).
 		Scan(&out.State, &out.ResultSummary, &out.UpdatedAt)

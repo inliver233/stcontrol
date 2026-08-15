@@ -55,6 +55,15 @@ type UserDataFaultStatus struct {
 	ResolvedAt            *time.Time `json:"resolved_at,omitempty"`
 	ResolutionKind        string     `json:"resolution_kind,omitempty"`
 	ResolutionOperationID string     `json:"resolution_operation_id,omitempty"`
+	ReleaseState          string     `json:"release_state,omitempty"`
+	ReleaseOperationID    string     `json:"release_operation_id,omitempty"`
+	ReleaseAttempt        int        `json:"release_attempt,omitempty"`
+	ReleaseLeaseOwner     string     `json:"release_lease_owner,omitempty"`
+	ReleaseLeaseUntil     *time.Time `json:"release_lease_until,omitempty"`
+	ReleaseNextAttemptAt  *time.Time `json:"release_next_attempt_at,omitempty"`
+	ReleaseErrorCode      string     `json:"release_error_code,omitempty"`
+	ReleaseReleasedAt     *time.Time `json:"release_released_at,omitempty"`
+	ReleaseGeneration     int64      `json:"release_controller_generation,omitempty"`
 	UpdatedAt             time.Time  `json:"updated_at"`
 	Replayed              bool       `json:"replayed"`
 
@@ -72,7 +81,11 @@ const userDataFaultStatusColumns = `
 	  fault.controller_generation,fault.freeze_operation_id::text,fault.attempt,
 	  fault.protection_state,fault.error_code,fault.reported_at,fault.frozen_at,
 	  fault.resolved_at,fault.resolution_kind,fault.resolution_operation_id::text,
-	  fault.updated_at,fault.local_handle,fault.reported_by_admin_id
+	  fault.release_state,fault.release_operation_id::text,fault.release_attempt,
+	  fault.release_lease_owner::text,fault.release_lease_until,
+	  fault.release_next_attempt_at,fault.release_error_code,fault.release_released_at,
+	  fault.release_controller_generation,fault.updated_at,fault.local_handle,
+	  fault.reported_by_admin_id
 	FROM user_data_faults fault
 	JOIN global_users global_user ON global_user.id=fault.user_id`
 
@@ -80,13 +93,19 @@ func scanUserDataFaultStatus(scanner userDataFaultScanner, status *UserDataFault
 	var freezeOperationID, protectionState, errorCode sql.NullString
 	var frozenAt, resolvedAt sql.NullTime
 	var resolutionKind, resolutionOperationID sql.NullString
+	var releaseOperationID, releaseLeaseOwner, releaseErrorCode sql.NullString
+	var releaseLeaseUntil, releaseNextAttemptAt, releaseReleasedAt sql.NullTime
+	var releaseGeneration sql.NullInt64
 	if err := scanner.Scan(
 		&status.ID, &status.OperationID, &status.UserUUID, &status.UserID,
 		&status.NodeID, &status.ReasonCode, &status.State, &status.ActivityEpoch,
 		&status.ControllerGeneration, &freezeOperationID, &status.Attempt,
 		&protectionState, &errorCode, &status.ReportedAt, &frozenAt, &resolvedAt,
-		&resolutionKind, &resolutionOperationID, &status.UpdatedAt,
-		&status.localHandle, &status.reportedByAdminID,
+		&resolutionKind, &resolutionOperationID, &status.ReleaseState,
+		&releaseOperationID, &status.ReleaseAttempt, &releaseLeaseOwner,
+		&releaseLeaseUntil, &releaseNextAttemptAt, &releaseErrorCode,
+		&releaseReleasedAt, &releaseGeneration, &status.UpdatedAt, &status.localHandle,
+		&status.reportedByAdminID,
 	); err != nil {
 		return err
 	}
@@ -95,6 +114,9 @@ func scanUserDataFaultStatus(scanner userDataFaultScanner, status *UserDataFault
 	status.ErrorCode = errorCode.String
 	status.ResolutionKind = resolutionKind.String
 	status.ResolutionOperationID = resolutionOperationID.String
+	status.ReleaseOperationID = releaseOperationID.String
+	status.ReleaseLeaseOwner = releaseLeaseOwner.String
+	status.ReleaseErrorCode = releaseErrorCode.String
 	if frozenAt.Valid {
 		value := frozenAt.Time
 		status.FrozenAt = &value
@@ -102,6 +124,21 @@ func scanUserDataFaultStatus(scanner userDataFaultScanner, status *UserDataFault
 	if resolvedAt.Valid {
 		value := resolvedAt.Time
 		status.ResolvedAt = &value
+	}
+	if releaseLeaseUntil.Valid {
+		value := releaseLeaseUntil.Time
+		status.ReleaseLeaseUntil = &value
+	}
+	if releaseNextAttemptAt.Valid {
+		value := releaseNextAttemptAt.Time
+		status.ReleaseNextAttemptAt = &value
+	}
+	if releaseReleasedAt.Valid {
+		value := releaseReleasedAt.Time
+		status.ReleaseReleasedAt = &value
+	}
+	if releaseGeneration.Valid {
+		status.ReleaseGeneration = releaseGeneration.Int64
 	}
 	return nil
 }
@@ -193,7 +230,9 @@ func (s *Store) ReportUserDataFault(
 	var openFaultID string
 	err = tx.QueryRowContext(ctx, `
 		SELECT id::text FROM user_data_faults
-		WHERE user_id=$1 AND state<>'resolved' FOR UPDATE`, globalUserID).Scan(&openFaultID)
+		WHERE user_id=$1 AND (
+		  state<>'resolved' OR release_state NOT IN ('released','superseded')
+		) FOR UPDATE`, globalUserID).Scan(&openFaultID)
 	if err == nil {
 		return nil, ErrUserDataFaultAlreadyOpen
 	}
@@ -365,6 +404,18 @@ type UserDataFaultTask struct {
 	ControllerGeneration int64
 }
 
+type UserDataFaultReleaseTask struct {
+	ID                   string
+	OperationID          string
+	GlobalUserID         int64
+	UserUUID             string
+	NodeID               int64
+	Handle               string
+	ActivityEpoch        int64
+	Attempt              int
+	ControllerGeneration int64
+}
+
 func (s *Store) ClaimUserDataFault(
 	ctx context.Context,
 	faultID, freezeOperationID, workerID string,
@@ -419,6 +470,94 @@ func (s *Store) ClaimUserDataFault(
 	}
 	if err != nil {
 		return nil, fmt.Errorf("claim user data fault: %w", err)
+	}
+	return &task, nil
+}
+
+func (s *Store) ListSchedulableUserDataFaultReleaseIDs(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT id::text FROM user_data_faults
+		WHERE state='resolved' AND (
+		  release_state='pending'
+		  OR (release_state='retry_wait' AND release_next_attempt_at<=now())
+		  OR (release_state='releasing' AND release_lease_until<=now())
+		)
+		ORDER BY COALESCE(release_next_attempt_at,release_lease_until),updated_at,id
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *Store) ClaimUserDataFaultRelease(
+	ctx context.Context,
+	faultID, releaseOperationID, workerID string,
+	now time.Time,
+	leaseTTL time.Duration,
+) (*UserDataFaultReleaseTask, error) {
+	if !validUUIDText(faultID) || !validUUIDText(releaseOperationID) ||
+		!validUUIDText(workerID) || leaseTTL <= 0 {
+		return nil, ErrInvalidUserDataFault
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var task UserDataFaultReleaseTask
+	err := s.DB.QueryRowContext(ctx, `
+		WITH active_epoch AS (
+		  SELECT generation FROM controller_epochs WHERE state='active'
+		), candidate AS (
+		  SELECT fault.id FROM user_data_faults fault
+		  WHERE fault.id=$1::uuid AND fault.state='resolved' AND (
+		    fault.release_state='pending'
+		    OR (fault.release_state='retry_wait' AND fault.release_next_attempt_at<=$4)
+		    OR (fault.release_state='releasing' AND fault.release_lease_until<=$4)
+		  )
+		  FOR UPDATE
+		), claimed AS (
+		  UPDATE user_data_faults fault SET
+		    release_state='releasing',
+		    release_operation_id=CASE
+		      WHEN fault.release_controller_generation<>epoch.generation
+		        OR fault.release_operation_id IS NULL THEN $2::uuid
+		      ELSE fault.release_operation_id END,
+		    release_controller_generation=epoch.generation,
+		    release_lease_owner=$3::uuid,release_lease_until=$5,
+		    release_attempt=fault.release_attempt+1,release_next_attempt_at=NULL,
+		    release_error_code=NULL,updated_at=$4
+		  FROM candidate,active_epoch epoch
+		  WHERE fault.id=candidate.id
+		  RETURNING fault.id,fault.release_operation_id,fault.user_id,fault.node_id,
+		    fault.local_handle,fault.activity_epoch,fault.release_attempt,
+		    fault.release_controller_generation
+		)
+		SELECT claimed.id::text,claimed.release_operation_id::text,claimed.user_id,
+		  global_user.uuid::text,claimed.node_id,claimed.local_handle,
+		  claimed.activity_epoch,claimed.release_attempt,claimed.release_controller_generation
+		FROM claimed JOIN global_users global_user ON global_user.id=claimed.user_id`,
+		faultID, releaseOperationID, workerID, now, now.Add(leaseTTL)).Scan(
+		&task.ID, &task.OperationID, &task.GlobalUserID, &task.UserUUID,
+		&task.NodeID, &task.Handle, &task.ActivityEpoch, &task.Attempt,
+		&task.ControllerGeneration,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("claim user data fault release: %w", err)
 	}
 	return &task, nil
 }
@@ -523,6 +662,126 @@ func (s *Store) RetryUserDataFault(
 	return nil
 }
 
+func (s *Store) CompleteUserDataFaultRelease(
+	ctx context.Context,
+	faultID, releaseOperationID, workerID string,
+	now time.Time,
+) error {
+	if !validUUIDText(faultID) || !validUUIDText(releaseOperationID) || !validUUIDText(workerID) {
+		return ErrInvalidUserDataFault
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var activeGeneration int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT generation FROM controller_epochs WHERE state='active' FOR SHARE`).Scan(&activeGeneration); err != nil {
+		if err == sql.ErrNoRows {
+			return ErrNoActiveController
+		}
+		return err
+	}
+	var state, releaseState string
+	var storedOperationID, storedLeaseOwner sql.NullString
+	var storedGeneration sql.NullInt64
+	var userID int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT state,release_state,release_operation_id::text,release_controller_generation,
+		  release_lease_owner::text,user_id
+		FROM user_data_faults WHERE id=$1 FOR UPDATE`, faultID).Scan(
+		&state, &releaseState, &storedOperationID, &storedGeneration, &storedLeaseOwner, &userID,
+	)
+	if err == sql.ErrNoRows {
+		return ErrUserDataFaultState
+	}
+	if err != nil {
+		return err
+	}
+	if releaseState == "released" && storedOperationID.Valid &&
+		storedOperationID.String == releaseOperationID {
+		return tx.Commit()
+	}
+	if state != "resolved" || releaseState != "releasing" ||
+		!storedOperationID.Valid || storedOperationID.String != releaseOperationID ||
+		!storedGeneration.Valid || storedGeneration.Int64 != activeGeneration ||
+		!storedLeaseOwner.Valid || storedLeaseOwner.String != workerID {
+		return ErrUserDataFaultState
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE user_data_faults SET release_state='released',release_lease_owner=NULL,
+		  release_lease_until=NULL,release_next_attempt_at=NULL,release_error_code=NULL,
+		  release_released_at=$5,updated_at=$5
+		WHERE id=$1::uuid AND state='resolved' AND release_state='releasing'
+		  AND release_operation_id=$2::uuid AND release_controller_generation=$3
+		  AND release_lease_owner=$4::uuid AND release_lease_until>$5`,
+		faultID, releaseOperationID, activeGeneration,
+		workerID, now)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrUserDataFaultState
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO audit_events (
+		  occurred_at,actor_type,action,target_type,target_id,operation_id,
+		  controller_generation,outcome,detail
+		) VALUES (
+		  $1,'system','user-data-fault-release-completed','user',$2::text,$3,$4,'succeeded',
+		  jsonb_build_object('fault_id',$5::text,'release_state','released'))`,
+		now, userID, releaseOperationID, activeGeneration, faultID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) RetryUserDataFaultRelease(
+	ctx context.Context,
+	faultID, releaseOperationID, workerID, errorCode string,
+	now time.Time,
+	retryAfter time.Duration,
+) error {
+	if !validUUIDText(faultID) || !validUUIDText(releaseOperationID) ||
+		!validUUIDText(workerID) || !ValidMachineReasonCode(errorCode) || retryAfter <= 0 {
+		return ErrInvalidUserDataFault
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	result, err := s.DB.ExecContext(ctx, `
+		UPDATE user_data_faults fault SET release_state='retry_wait',
+		  release_lease_owner=NULL,release_lease_until=NULL,
+		  release_next_attempt_at=$5,release_error_code=$4,updated_at=$6
+		FROM controller_epochs epoch
+		WHERE fault.id=$1::uuid AND fault.state='resolved'
+		  AND fault.release_operation_id=$2::uuid
+		  AND fault.release_lease_owner=$3::uuid AND fault.release_state='releasing'
+		  AND fault.release_lease_until>$6
+		  AND fault.release_controller_generation=epoch.generation
+		  AND epoch.state='active'`, faultID, releaseOperationID, workerID,
+		errorCode, now.Add(retryAfter), now)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrUserDataFaultState
+	}
+	return nil
+}
+
 func requireUserDataFaultRecoveryReadyLocked(ctx context.Context, tx *sql.Tx, userID int64) error {
 	var state string
 	err := tx.QueryRowContext(ctx, `
@@ -554,7 +813,10 @@ func resolveUserDataFaultLocked(
 	result, err := tx.ExecContext(ctx, `
 		UPDATE user_data_faults SET state='resolved',resolution_kind=$2,
 		  resolution_operation_id=$3::uuid,resolved_at=$4,updated_at=$4,
-		  error_code=NULL,next_attempt_at=NULL
+		  error_code=NULL,next_attempt_at=NULL,release_state='pending',
+		  release_operation_id=NULL,release_controller_generation=NULL,
+		  release_attempt=0,release_lease_owner=NULL,release_lease_until=NULL,
+		  release_next_attempt_at=$4,release_error_code=NULL,release_released_at=NULL
 		WHERE user_id=$1 AND state='recovery_available'`, userID,
 		resolutionKind, resolutionOperationID, now)
 	if err != nil {

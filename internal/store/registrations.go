@@ -138,7 +138,9 @@ func (s *Store) CreateRegistrationWorkflow(
 		SELECT role,status,connectivity_state,operational_state,compatibility_state,capacity_state,
 		  control_mode,desired_control_mode,allow_register,registration_policy_state,
 		  registration_policy_version,registration_policy_expires_at
-		FROM nodes WHERE id=$1 FOR SHARE`, p.NodeID).
+		FROM nodes WHERE id=$1
+		  AND controller_generation=(SELECT generation FROM controller_epochs WHERE state='active')
+		FOR SHARE`, p.NodeID).
 		Scan(&role, &nodeStatus, &connectivityState, &operationalState, &compatibilityState, &capacityState,
 			&controlMode, &desiredControlMode, &allowRegister, &policyState, &policyVersion, &policyExpiresAt)
 	if err == sql.ErrNoRows {
@@ -408,7 +410,6 @@ func (s *Store) ScheduleRegistrationRetry(
 	}
 	return attempt, nil
 }
-
 
 // RegistrationReservationTTL bounds how long a pending registration may hold a
 // username.  After this window the reservation is released (and the workflow

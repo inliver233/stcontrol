@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,7 @@ const (
 	oauthPendingTTL      = 10 * time.Minute
 	oauthPendingClaimTTL = 2 * time.Minute
 	oauthPendingCookie   = "stcontrol_oauth_pending"
+	oauthStateCookieBase = "stcontrol_oauth_state_"
 )
 
 // handleOAuthBegin 发起 OAuth 跳转。query: node_id（注册目标节点，可选）。
@@ -69,6 +71,7 @@ func (s *Server) handleOAuthBegin(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusInternalServerError, "OAuth 配置无效")
 		return
 	}
+	s.setOAuthStateCookie(w, r, provider, state, int(oauthStateTTL.Seconds()))
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
@@ -110,6 +113,10 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if bindingSession == nil {
+		if !s.consumeOAuthStateCookie(w, r, provider, state) {
+			protocol.WriteError(w, http.StatusBadRequest, "OAuth 状态无效")
+			return
+		}
 		var consumed bool
 		var err error
 		registrationNodeID, consumed, err = s.Store.ConsumeOAuthState(r.Context(), stateHash[:], provider, now)
@@ -366,6 +373,34 @@ func (s *Server) setOAuthPendingCookie(w http.ResponseWriter, r *http.Request, t
 		Name: oauthPendingCookie, Value: token, Path: "/api/auth/oauth/complete",
 		HttpOnly: true, Secure: s.secureCookies(r), SameSite: http.SameSiteLaxMode, MaxAge: maxAge,
 	})
+}
+
+func oauthStateCookieName(provider string) string {
+	return oauthStateCookieBase + provider
+}
+
+func oauthCallbackPath(provider string) string {
+	return "/api/auth/oauth/" + provider + "/callback"
+}
+
+func (s *Server) setOAuthStateCookie(w http.ResponseWriter, r *http.Request, provider, state string, maxAge int) {
+	http.SetCookie(w, &http.Cookie{
+		Name: oauthStateCookieName(provider), Value: state, Path: oauthCallbackPath(provider),
+		HttpOnly: true, Secure: s.secureCookies(r), SameSite: http.SameSiteLaxMode, MaxAge: maxAge,
+	})
+}
+
+func (s *Server) clearOAuthStateCookie(w http.ResponseWriter, r *http.Request, provider string) {
+	s.setOAuthStateCookie(w, r, provider, "", -1)
+}
+
+func (s *Server) consumeOAuthStateCookie(w http.ResponseWriter, r *http.Request, provider, state string) bool {
+	cookie, err := r.Cookie(oauthStateCookieName(provider))
+	s.clearOAuthStateCookie(w, r, provider)
+	if err != nil || cookie.Value == "" || state == "" {
+		return false
+	}
+	return hmac.Equal([]byte(cookie.Value), []byte(state))
 }
 
 func (s *Server) clearOAuthPendingCookie(w http.ResponseWriter, r *http.Request) {

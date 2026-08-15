@@ -1,0 +1,130 @@
+[
+  {
+    "finding_id": "arch-002-b54f1e2a",
+    "dimension": "architecture",
+    "iteration": 1,
+    "analysis_timestamp": "2026-08-15T16:32:00+08:00",
+    "cli_tool_used": "codex",
+    "model": "gpt-5",
+    "analysis_duration_ms": 900000,
+    "original_finding": {
+      "severity": "high",
+      "title": "Managed-to-independent session promotion only updates the browser envelope, not the durable session state",
+      "file": "E:/Sillytarvennew/Sillytarven-online/src/stcontrol.js",
+      "line": 945
+    },
+    "root_cause": {
+      "summary": "The adapter intentionally delays managed-session takeover until a post-outage request proves the same cross-Agent ownership boundary as a fresh disaster login, but once that proof succeeds it mutates only `request.session.stcontrol`. The serialized durable session record, its `activityEpoch` / `controllerGeneration`, the active-independent counters, and the first pending-sync marker all continue to read from the stale managed record.",
+      "evidence": [
+        "src/stcontrol.js:518-523 explicitly says confirmed outage must clear managed leases immediately but must not convert sessions until a later request proves ownership.",
+        "src/stcontrol.js:623-636 and src/stcontrol.js:676-724 define the ownership/quorum gate used by disaster login and request-path promotion.",
+        "src/stcontrol.js:945-953 updates only the browser envelope to `independent`, resets `activityEpoch` to 0, and copies the current controller generation after `canUseNativeLogin()` succeeds.",
+        "src/stcontrol.js:982-999 reuses `current.sessions[sessionId]` without overwriting `loginMode`, `activityEpoch`, or `controllerGeneration`, so the durable record stays `managed` and the `independent_write` marker at lines 997-998 never fires for a promoted session.",
+        "src/stcontrol.js:482-489, src/stcontrol.js:553-555, and src/stcontrol.js:1030-1037 count active independent sessions and report telemetry from the durable record, not the browser envelope.",
+        "src/stcontrol.js:526-531 seeds draining-time pending-sync facts only from durable independent sessions, so a promoted-but-not-durable session is invisible to the recovery boundary.",
+        "tests/stcontrol-adapter.node.test.mjs:762-799 currently locks in the stale behavior by asserting that the durable session remains `managed` after outage transition.",
+        "internal/agent/control_mode.go:233-241 and internal/store/control_modes.go:230-249 refuse `independent-draining -> managed` only when adapter-reported `ActiveIndependentSessions` or `PendingUserSyncs` stay non-zero, so under-reporting directly weakens the managed-recovery fence."
+      ],
+      "dependency_map": {
+        "identity_boundary": [
+          "Round 28 discussion.md:899-909 requires existing logged-in users not to be dropped unconditionally when controller failure is confirmed.",
+          "Round 29 discussion.md:928-944 restricts disaster write access to the last active node.",
+          "Round 30 discussion.md:965-970 allows takeover on another node only after system judgement plus user confirmation.",
+          "users-public.js:171-195 applies the explicit password + takeover path for fresh independent login."
+        ],
+        "durable_state_boundary": [
+          "src/stcontrol.js durable session cache in `state.sessions`",
+          "src/stcontrol.js `pendingSyncUsers` marker creation",
+          "src/stcontrol.js telemetry and mode-status reporting"
+        ],
+        "managed_recovery_boundary": [
+          "internal/agent/control_mode.go adapter-reported `ActiveIndependentSessions` / `PendingUserSyncs`",
+          "internal/store/control_modes.go durable `independent_user_reconciliations` plus adapter facts",
+          "src/stcontrol.js `markUserSynchronized()` drain-completion gate"
+        ]
+      }
+    },
+    "remediation_plan": {
+      "strategy": "Preserve the Round28 session-continuity rule and the existing ownership proof boundary, but durably promote the session inside the same serialized request-admission mutation that follows a successful independent-ownership decision.",
+      "steps": [
+        {
+          "order": 1,
+          "change": "Keep `applyStcontrolMode()` fail-closed behavior as-is: clear managed leases on confirmed outage, but do not bulk-convert all sessions there.",
+          "files": [
+            "src/stcontrol.js"
+          ]
+        },
+        {
+          "order": 2,
+          "change": "In `stcontrolRequestTracker()`, carry an explicit `promotedToIndependent` flag after `canUseNativeLogin()` succeeds, then inside the existing `mutateState()` admission block overwrite the durable session's `loginMode`, `activityEpoch=0`, and `controllerGeneration` to match the newly authorized independent envelope.",
+          "files": [
+            "src/stcontrol.js"
+          ]
+        },
+        {
+          "order": 3,
+          "change": "Evaluate `pendingSyncUsers` after that durable overwrite so the first post-promotion write persists an `independent_write` marker immediately.",
+          "files": [
+            "src/stcontrol.js"
+          ]
+        },
+        {
+          "order": 4,
+          "change": "Update the outage regression to drive `stcontrolRequestTracker()` through a successful ownership proof and assert that the durable session is now `independent`, `activityEpoch` is zeroed, `controllerGeneration` is refreshed, telemetry reports `independent`, and a write creates a durable pending-sync marker.",
+          "files": [
+            "tests/stcontrol-adapter.node.test.mjs"
+          ]
+        },
+        {
+          "order": 5,
+          "change": "Add a recovery-boundary regression proving that after promotion plus an independent write, `applyStcontrolMode(DRAINING)` reports non-zero `active_independent_sessions` / `pending_user_syncs`, `markUserSynchronized()` rejects while the session is still active, and only logout or idle expiry plus exact marker completion allows the node back to managed.",
+          "files": [
+            "tests/stcontrol-adapter.node.test.mjs"
+          ]
+        }
+      ],
+      "rollback": "If the product intentionally changes to 'existing managed cookies must always re-login during disaster mode', remove request-path promotion entirely. Otherwise the safe rollback for this fix is to revert only the targeted durable-session overwrite and its regressions; no schema change is involved."
+    },
+    "impact_assessment": {
+      "benefits": [
+        "Preserves the Round28 requirement that already logged-in users are not unconditionally dropped during confirmed controller outage.",
+        "Keeps the existing ownership/quorum proof boundary instead of silently auto-promoting all sessions at mode-switch time.",
+        "Makes `activeIndependentSessions`, telemetry, `pendingUserSyncs`, and draining reconciliation observe the same independent identity the browser is already using.",
+        "Restores the `independent-draining -> managed` fence that Agent and Store already implement."
+      ],
+      "risks": [
+        "A careless implementation could mark a session independent before ownership proof actually succeeded.",
+        "Using stale pre-mutation controller-generation data could preserve the wrong disaster-generation stamp on the durable session."
+      ],
+      "mitigations": [
+        "Gate the durable overwrite behind a local boolean set only after `canUseNativeLogin()` returns `{ allowed: true }` or after a fresh independent login path has already registered an independent session.",
+        "Write the durable session fields inside the serialized `mutateState()` block and source the generation from the current state used for persistence.",
+        "Add regressions for both the successful promotion path and the denied-promotion path."
+      ],
+      "breaking_changes": false
+    },
+    "reassessed_severity": {
+      "severity": "high",
+      "justification": "The bug is not just telemetry drift. It suppresses the exact adapter facts that Agent and Store use to hold the node in `independent-draining`, so a recovered controller can be told the node is fully drained while a browser is still writing under an independent cookie. The later managed-mode fence can then be reopened on false zero/zero evidence."
+    },
+    "confidence_score": 0.99,
+    "cross_references": [
+      "ACT-002",
+      "R02",
+      "R04",
+      "R05",
+      "Round28",
+      "Round29",
+      "Round30",
+      "src/stcontrol.js:518-523",
+      "src/stcontrol.js:945-999",
+      "src/stcontrol.js:1018-1045",
+      "src/stcontrol.js:1157-1168",
+      "src/endpoints/users-public.js:171-195",
+      "tests/stcontrol-adapter.node.test.mjs:762-799",
+      "tests/stcontrol-disaster-login.node.test.mjs:123-159",
+      "internal/agent/control_mode.go:233-315",
+      "internal/store/control_modes.go:230-249"
+    ]
+  }
+]

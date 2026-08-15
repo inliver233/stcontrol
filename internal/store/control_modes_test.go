@@ -181,22 +181,23 @@ func TestControllerRebuildAllowsOldCredentialForHeartbeatOnly(t *testing.T) {
 			WillReturnRows(sqlmock.NewRows([]string{
 				"role", "control_mode", "control_mode_generation", "desired_control_mode", "desired_mode_generation", "generation",
 			}).AddRow("compute", NodeModeManaged, int64(2), NodeModeManaged, int64(2), int64(6)))
-		mock.ExpectQuery(`(?s)SELECT EXISTS .*controller_rebuild_operations`).WithArgs(
+		mock.ExpectQuery(`(?s)SELECT EXISTS .*controller_rebuild_operations.*ready_with_deferred`).WithArgs(
 			int64(6), int64(12), int64(4),
 		).WillReturnRows(sqlmock.NewRows([]string{"allowed"}).AddRow(true))
-		mock.ExpectExec(`UPDATE nodes SET control_mode=\$2`).WithArgs(
-			int64(12), NodeModeManaged, int64(2), NodeModeManaged, int64(2), "", now,
-			int64(6), nil, nil, nil, 0, 0, 0, 0, nil, int64(4), 0,
-		).WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectExec(`INSERT INTO node_control_mode_events`).WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectQuery(`UPDATE controller_rebuild_nodes item SET`).WithArgs(
 			int64(12), int64(6), int64(4), NodeModeManaged, NodeModeManaged, now,
 		).WillReturnRows(sqlmock.NewRows([]string{"rebuild_id"}).
 			AddRow("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
+		mock.ExpectExec(`UPDATE controller_rebuild_nodes item`).WithArgs(
+			"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", now,
+		).WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery(`(?s)count\(\*\).*FILTER`).WithArgs("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").
-			WillReturnRows(sqlmock.NewRows([]string{"total", "reconciled"}).AddRow(1, 0))
+			WillReturnRows(sqlmock.NewRows([]string{"total", "reconciled", "ready"}).AddRow(1, 0, 0))
 		mock.ExpectExec(`UPDATE controller_rebuild_operations SET total_nodes`).WithArgs(
 			"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 1, 0, now,
+		).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(`UPDATE controller_rebuild_operations\s+SET state=\$2`).WithArgs(
+			"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "reconciling", now,
 		).WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectCommit()
 		decision, err := st.ReconcileNodeControlModeAuthenticated(
@@ -216,7 +217,7 @@ func TestControllerRebuildAllowsOldCredentialForHeartbeatOnly(t *testing.T) {
 			WillReturnRows(sqlmock.NewRows([]string{
 				"role", "control_mode", "control_mode_generation", "desired_control_mode", "desired_mode_generation", "generation",
 			}).AddRow("compute", NodeModeManaged, int64(2), NodeModeManaged, int64(2), int64(6)))
-		mock.ExpectQuery(`(?s)SELECT EXISTS .*controller_rebuild_operations`).WithArgs(
+		mock.ExpectQuery(`(?s)SELECT EXISTS .*controller_rebuild_operations.*ready_with_deferred`).WithArgs(
 			int64(6), int64(12), int64(4),
 		).WillReturnRows(sqlmock.NewRows([]string{"allowed"}).AddRow(false))
 		mock.ExpectRollback()
@@ -228,7 +229,6 @@ func TestControllerRebuildAllowsOldCredentialForHeartbeatOnly(t *testing.T) {
 	})
 }
 
-
 func TestControlPlaneReadinessIgnoresOfflineNodes(t *testing.T) {
 	t.Parallel()
 	st, mock, closeDB := newMockStore(t)
@@ -236,7 +236,7 @@ func TestControlPlaneReadinessIgnoresOfflineNodes(t *testing.T) {
 	// An offline compute node with an old generation must NOT block readiness:
 	// when it reconnects, the previous-generation credential can only reach the
 	// recovery heartbeat and must rotate before leasing commands.
-	mock.ExpectQuery(`SELECT EXISTS .*controller_epochs`).WillReturnRows(
+	mock.ExpectQuery(`(?s)SELECT EXISTS .*controller_epochs.*ready_with_deferred`).WillReturnRows(
 		sqlmock.NewRows([]string{"ready"}).AddRow(true),
 	)
 	ready, err := st.IsControlPlaneReady(context.Background())
@@ -249,7 +249,7 @@ func TestControlPlaneReadinessRequiresActiveGenerationAndManagedNodes(t *testing
 	t.Parallel()
 	st, mock, closeDB := newMockStore(t)
 	defer closeDB()
-	mock.ExpectQuery(`SELECT EXISTS .*controller_epochs`).WillReturnRows(
+	mock.ExpectQuery(`(?s)SELECT EXISTS .*controller_epochs.*ready_with_deferred`).WillReturnRows(
 		sqlmock.NewRows([]string{"ready"}).AddRow(false),
 	)
 	ready, err := st.IsControlPlaneReady(context.Background())

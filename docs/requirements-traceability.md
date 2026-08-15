@@ -1,6 +1,6 @@
 # 需求追踪矩阵
 
-更新日期：2026-08-15（第二批：决策④采纳链路、Round 60 真实 pg_dump 端到端、建议 #8/#10 闭环）
+更新日期：2026-08-15（flash 复审闭环：P1 身份/世代/独立模式/数据故障与冲突恢复）
 
 本矩阵以工作区根目录的 `详细任务.txt` 为总验收入口，并以较晚的 `.workflow/.analysis/ANL-多节点云酒馆总控方案复盘优化-2026-08-07/discussion.md` 问答结论覆盖早期方案冲突。状态只依据当前代码和已执行测试，不把 README 声明、静态页面或正常演示当作完成证据。
 
@@ -187,6 +187,20 @@
 
 - **R19 冲突证据认领 SQL 占位符修复**：`ClaimConflictEvidenceTask` 的 failed 重新武装子句误用 `$4`（与 evidence_lease_until 冲突），真实 PostgreSQL 报 `got 5 parameters but the statement requires 4`；改为 `$5` 后真实库 conflict evidence→resolution 全链集成测试通过。该缺陷只在真实数据库暴露（sqlmock 不校验占位符数量）。提交 `3eb6ba8`。
 - 复验：真实 PostgreSQL 上 store 全部 `TestPostgres*` 与 controller 全部 `TestController*` 集成套件全绿；`go build/vet/test -short ./...`、web tsc + vitest 16/16、Online adapter 16/16 全绿。
+
+## 2026-08-15 flash 分支复审闭环（P1 阻断缺陷）
+
+> 本节以当前代码、最新 requirements-context 矩阵和复审实测为准；它覆盖本文件中更早的阶段性判断。这里仅声明已确认实现缺陷的闭环，不把未运行的真实 PostgreSQL、Linux 双进程或跨机故障矩阵冒充完成。
+
+- **OAuth 登录 CSRF 绑定**：登录 state 除数据库 hash/一次性核销外，新增 provider/path 作用域的 host-only、`HttpOnly`、`SameSite=Lax`、HTTPS 下 `Secure` 浏览器 cookie；callback 在消费 state 前做定长、常量时间 cookie 绑定校验，绑定 OAuth 流程仍沿用既有 Controller session/generation 约束。
+- **R14 改密/解绑节点收敛**：Online adapter 接受并精确校验 `remove:true + version`，删除本地 verifier；迁移 0049 只为当前确实无密码材料的账号回填 removal version，有新材料的历史 intent 直接完成。待发 removal 查询同时约束当前账号版本一致且 hash/salt 均为空，避免离线重连时旧解绑与同版本新密码永久冲突。
+- **R12 Controller rebuild 与节点世代**：迁移 0050 引入 `deferred/ready_with_deferred`，promotion 原子隔离非活动世代节点；离线或 stale 节点不会永久阻断控制面，但也不会被伪记为 reconciled/succeeded。旧凭据 recovery heartbeat 在任何 Store mutation 前关闭本地 gate，只记录恢复事实、保持节点 offline，且 handoff、注册、命令租约和手工 online 更新均以 active controller generation 做数据库围栏。在线节点随后失联时，stale sweeper 在 serializable 事务中 defer 对应 rebuild item 并重算 readiness。
+- **节点兼容性观测**：第三次过早心跳不再写入违反数据库约束的 `verifying/observations=3` 组合；达到时间门槛后才进入 resolved，兼容升级路径保持可重放。
+- **独立模式 envelope/租约**：Online 对无 envelope 的 managed/independent 会话失败关闭；managed→independent 必须证明精确 durable ownership，并原子更新 session mode/epoch/generation；draining 只允许已持久化 independent 会话，回到 managed 前会关闭遗留 independent 写门。用户与管理员 handoff 互斥，生产入口明确装载 heartbeat 且管理员专用页不发用户保活。
+- **数据故障 gate 可恢复状态机**：迁移 0051 持久化 freeze/release 状态、attempt、operation 与 generation；resolved 但尚未 released/superseded 的 fault 仍阻止新 fault 报告。Controller 对 freeze/release 公平轮转，命令 enqueue 原子校验期望 generation；仅该 generation-fenced 工作流可把 exact failed/expired delivery 换新 command ID 重排，普通固定命令的 replay 语义不扩张。Agent、Controller 与 Online 对 `operation_id/controller_generation/fault/user/handle/activity_epoch` 逐层精确回显和校验；Online 用 fault-scoped durable tombstone 支持远端已释放后的新世代收敛，gate 删除、tombstone 与成功回执同事务持久化。
+- **恢复/冲突恢复 UI**：恢复发布和冲突发布继续在最终发布点复查活动写租约；`Conflict.tsx` 只把真实终态视为完成，401/403 才跳登录，404/网络/5xx 保持轮询。刷新后持久 operation 先恢复为 retrying 占位并继续轮询，不再因第一次瞬态失败丢失恢复上下文。
+- **R06 直接门禁覆盖**：新增实际命中 `write_drain_timeout` 的用例，验证超时只释放当前 snapshot gate，不能删除 replacement 或 data-fault gate；不再以“仅 Linux 可测”为由遗漏该分支。
+- **本机基础证据**：Online P1 定向 Node 套件 44/44；stcontrol web Vitest 19/19、production build 通过；`go test ./...`、`go vet ./...`、`go build ./...` 通过。首次 Go 全量测试使用 C 盘默认 TEMP 时有 3 个容量门禁用例因临时盘仅余约 1.6 GiB 正确失败；将 TEMP/TMP 指向同项目 E 盘测试目录后原命令全绿，证明容量保护本身生效。新增 PostgreSQL 升级、并发和崩溃恢复用例在未配置 `STCONTROL_TEST_POSTGRES_DSN` 的本机明确 skip，保留到 Linux/真实 PostgreSQL 验收执行。
 
 ## 完成判定规则
 

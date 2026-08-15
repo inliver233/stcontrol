@@ -1,0 +1,32 @@
+{
+  "group_id": "G3",
+  "status": "completed",
+  "attempt": 1,
+  "findings_total": 1,
+  "findings_fixed": 1,
+  "phase": "verified-and-patched",
+  "started_at": "2026-08-15T17:05:00+08:00",
+  "last_update": "2026-08-15T17:28:00+08:00",
+  "current_scope": "Reviewed restore lease fencing, conflict publish serialization, conflict evidence recovery, and Conflict.tsx polling/error handling; patched the frontend to keep polling evidence_failed states so the durable failed-source rearm path becomes visible.",
+  "tests": [
+    {
+      "command": "go test ./internal/store -run 'TestCompleteRestoreWorkflowRefusesPublishOverActiveWriterLease|TestCompleteRestoreWorkflowAtomicallyPromotesVerifiedTarget|TestListConflictEvidenceTasksRearmsFailedSources|TestConflictResolutionStoreRejectsInvalidPublicInputs'",
+      "status": "passed"
+    },
+    {
+      "command": "go test ./internal/agent -run 'TestConflictResolutionPublishAllowedWithoutActiveLease|TestConflictResolutionPublishBlockedByActiveWriterLease|TestConflictResolutionPublishAllowsOnlyMatchingLocalSessionEpoch'",
+      "status": "passed"
+    },
+    {
+      "command": "npm test -- src/pages/Conflict.test.tsx",
+      "status": "passed",
+      "details": "Dependencies installed with npm ci; final web board passed 19/19 including Conflict.test.tsx."
+    },
+    {
+      "command": "npm run build",
+      "status": "passed",
+      "details": "Production TypeScript/Vite build completed successfully."
+    }
+  ],
+  "errors": []
+}

@@ -1,0 +1,136 @@
+[
+  {
+    "dimension": "quality",
+    "review_id": "review-20260815-acceptance",
+    "analysis_timestamp": "2026-08-15T07:32:34Z",
+    "cli_tool_used": "codex",
+    "model": "gpt-5",
+    "analysis_duration_ms": 1860000,
+    "summary": {
+      "total_findings": 4,
+      "critical": 0,
+      "high": 2,
+      "medium": 2,
+      "low": 0,
+      "files_analyzed": 9,
+      "lines_reviewed": 2300
+    },
+    "findings": [
+      {
+        "id": "qua-001-8f1c2d3a",
+        "title": "Split admin and user session envelopes let stale admin state bypass managed-user fences",
+        "severity": "high",
+        "category": "error-handling",
+        "description": "The coupled SillyTavern adapter persists admin and user handoffs in different session fields. Admin handoff writes `request.session.stcontrolAdmin`, but user handoff only writes the managed-user envelope. The request tracker exits early whenever the admin marker exists, so a same-browser admin->user transition can skip stale-writer, quiesce, and lease checks entirely.",
+        "file": "E:\\Sillytarvennew\\Sillytarven-online\\src\\endpoints\\stcontrol.js",
+        "line": 446,
+        "snippet": "request.session.stcontrolAdmin = {",
+        "recommendation": "Normalize handoff state to a single session shape, or clear the opposite envelope on every successful handoff/logout. Add a regression that reuses the same session for admin handoff followed by user handoff and then exercises a managed write.",
+        "references": [
+          "E:\\Sillytarvennew\\Sillytarven-online\\src\\endpoints\\stcontrol.js:446",
+          "E:\\Sillytarvennew\\Sillytarven-online\\src\\endpoints\\stcontrol.js:478",
+          "E:\\Sillytarvennew\\Sillytarven-online\\src\\stcontrol.js:932"
+        ],
+        "impact": "Session persistence becomes non-deterministic across handoff modes, and user writes can execute under stale admin state instead of the managed-user fence model the controller expects.",
+        "metadata": {
+          "secondary_file": "E:\\Sillytarvennew\\Sillytarven-online\\src\\stcontrol.js",
+          "cross_repo": true,
+          "focus": "state-persistence"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": []
+      },
+      {
+        "id": "qua-002-6b7e91f0",
+        "title": "Controller disaster backup reconciliation drops background failures before they become observable",
+        "severity": "high",
+        "category": "error-handling",
+        "description": "The controller backup reconciler returns on every setup or scheduling error without logging, metrics, or a durable failure marker. Only branches inside `executeControllerBackup` that call `fail(...)` change task state; scheduler, progress-marking, UUID generation, and `checkNewOperations()` failures vanish silently.",
+        "file": "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\internal\\controller\\controller_backup.go",
+        "line": 72,
+        "snippet": "if _, err := s.Store.ReconcileControllerDisasterBackups(ctx, now, maxAttempts); err != nil { return }",
+        "recommendation": "Surface every early-return path through structured logging and a metric/audit hook, and cover negative paths in unit tests so operators can distinguish \"no backup due\" from \"backup loop stopped making progress.\"",
+        "references": [
+          "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\internal\\controller\\controller_backup.go:72",
+          "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\internal\\controller\\controller_backup.go:83",
+          "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\internal\\controller\\controller_backup_test.go:13"
+        ],
+        "impact": "A broken backup loop can miss disaster-recovery points for hours while leaving almost no source-level evidence beyond an unchanged schedule, which makes acceptance and production diagnosis difficult.",
+        "metadata": {
+          "focus": "observability",
+          "tested_negative_paths": false
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": []
+      },
+      {
+        "id": "qua-003-c4e28ab1",
+        "title": "AI phase observation builders are copy-pasted and already drifted once",
+        "severity": "medium",
+        "category": "duplication",
+        "description": "Six enqueue functions manually repeat observation ID creation, redactor setup, evidence assembly, JSON marshaling, and dedup key construction. The file now contains comments documenting a prior D5 regression where one builder forgot to serialize candidate refs, and `enqueueAnomalyAttribution` still leaves an unused `evidenceCatalog` local behind. That is a live signal that schema evolution is happening by copy-edit rather than through a shared contract.",
+        "file": "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\internal\\controller\\ai_phase_tasks.go",
+        "line": 24,
+        "snippet": "// ordering actions (RECOMMEND_NODE_ORDER etc.); omitting it made every ordering advisory fail with empty_candidates (D5).",
+        "recommendation": "Extract a shared observation-builder helper for common redaction/dedup/serialization behavior, and let each phase provide only its domain-specific projector. Fold the repeated contract assertions in `ai_phase_tasks_test.go` into one reusable schema-level test helper.",
+        "references": [
+          "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\internal\\controller\\ai_phase_tasks.go:24",
+          "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\internal\\controller\\ai_phase_tasks.go:59",
+          "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\internal\\controller\\ai_phase_tasks_test.go:155"
+        ],
+        "impact": "Future field additions, redaction rules, or validation requirements are likely to land in only some phases, producing phase-specific advisory dropouts that look like data issues instead of code drift.",
+        "metadata": {
+          "focus": "drift",
+          "dead_code_signal": "unused evidenceCatalog local"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": []
+      },
+      {
+        "id": "qua-004-a93d54ce",
+        "title": "Storage repair claim logic is too large for branch-level reasoning and its tests mostly snapshot SQL text",
+        "severity": "medium",
+        "category": "complexity",
+        "description": "A single transaction-sized function claims the intent, rechecks writer leases, selects capacity, creates the legacy backup job, seeds the workflow graph, publishes transfer capability state, updates replica metadata, and emits audit rows. The surrounding tests are mostly `sqlmock` regexes over SQL text, which verify shape but not each decision boundary as a named invariant.",
+        "file": "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\internal\\store\\storage_repair.go",
+        "line": 238,
+        "snippet": "func (s *Store) ClaimAndCreateStorageRepair(",
+        "recommendation": "Split the transaction into small internal helpers (`claimIntent`, `validateWriterFence`, `selectTarget`, `materializeWorkflow`, `auditReservation`) and add invariant-focused tests for each branch that currently disappears into SQL regex matching.",
+        "references": [
+          "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\internal\\store\\storage_repair.go:238",
+          "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\internal\\store\\storage_repair.go:358",
+          "E:\\Sillytarvennew\\stcontrol\\.flash-worktree\\internal\\store\\storage_repair_test.go:45"
+        ],
+        "impact": "Any change to one fence or side effect risks unintended behavior elsewhere in the transaction, and failures are expensive to localize because the tests mostly validate the generated SQL envelope instead of the state-machine intent.",
+        "metadata": {
+          "focus": "testability",
+          "transaction_span_lines": "238-498"
+        },
+        "iteration": 0,
+        "status": "pending_remediation",
+        "cross_references": []
+      }
+    ],
+    "cross_references": [
+      {
+        "finding_id": "qua-001-8f1c2d3a",
+        "related_dimensions": [
+          "security",
+          "architecture"
+        ],
+        "reason": "Split session state is both a correctness defect and the source of the handoff bypass noted in security review."
+      },
+      {
+        "finding_id": "qua-003-c4e28ab1",
+        "related_dimensions": [
+          "maintainability",
+          "best-practices"
+        ],
+        "reason": "Repeated AI observation builders increase drift risk and leave dead code in the quality path."
+      }
+    ]
+  }
+]

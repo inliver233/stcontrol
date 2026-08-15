@@ -89,6 +89,14 @@ func TestDecideNodeCompatibilityIncidentRequiresDistinctStableObservations(t *te
 	}
 	cursor.CompatibleObservations = second.CompatibleObservations
 	cursor.IncidentLastSeenAt = secondAt
+	thirdEarly := decideNodeCompatibilityIncident(cursor,
+		compatibilityFacts(started.Add(29*time.Second), "compatible", "", fingerprintA))
+	if thirdEarly.Action != "update" || thirdEarly.IncidentState != "verifying" ||
+		thirdEarly.CompatibleObservations != 2 || thirdEarly.EffectiveState != "unknown" {
+		t.Fatalf("early third observation=%+v", thirdEarly)
+	}
+	cursor.CompatibleObservations = thirdEarly.CompatibleObservations
+	cursor.IncidentLastSeenAt = started.Add(29 * time.Second)
 	resolved := decideNodeCompatibilityIncident(cursor,
 		compatibilityFacts(started.Add(30*time.Second), "compatible", "", fingerprintA))
 	if resolved.Action != "resolve" || resolved.CompatibleObservations != 3 ||

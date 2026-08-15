@@ -1,0 +1,8 @@
+{
+  "session_id": "WFS-stcontrol-closure-20260815",
+  "type": "review-fix",
+  "description": "stcontrol original-requirements acceptance closure on flash",
+  "created_at": "2026-08-15T15:00:38+08:00",
+  "baseline": "origin/main..flash",
+  "source_review": "E:/Sillytarvennew/.workflow/.review"
+}

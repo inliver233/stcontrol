@@ -58,6 +58,8 @@ func expectRecoverySuffix(
 	mock.ExpectExec(`UPDATE node_accounts`).WithArgs(
 		int64(70), p.NodePasswordHash, p.NodePasswordSalt, p.Now,
 	).WillReturnResult(sqlmock.NewResult(0, stagedNodes))
+	mock.ExpectExec(`UPDATE node_account_password_removals`).WithArgs(int64(70), p.Now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE controller_sessions`).WithArgs(int64(70), p.Now).
 		WillReturnResult(sqlmock.NewResult(0, 3))
 	mock.ExpectQuery(`INSERT INTO identity_recovery_operations`).WithArgs(
@@ -181,6 +183,8 @@ func TestRecoverUserPasswordIdentityRollsBackWithoutActiveController(t *testing.
 	mock.ExpectExec(`UPDATE node_accounts`).WithArgs(
 		int64(70), p.NodePasswordHash, p.NodePasswordSalt, now,
 	).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(`UPDATE node_account_password_removals`).WithArgs(int64(70), now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE controller_sessions`).WithArgs(int64(70), now).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectQuery(`INSERT INTO identity_recovery_operations`).WithArgs(

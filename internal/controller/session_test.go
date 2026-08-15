@@ -214,3 +214,43 @@ func TestOAuthPendingCookieIsHttpOnlyAndPathScoped(t *testing.T) {
 		t.Fatalf("unsafe OAuth pending cookie: %+v", cookies)
 	}
 }
+
+func TestOAuthStateCookieIsProviderScopedAndHostOnly(t *testing.T) {
+	t.Parallel()
+	server := &Server{Cfg: &config.ControllerConfig{PublicURL: "https://control.example"}}
+	req := httptest.NewRequest(http.MethodGet, "https://control.example/api/auth/oauth/discord/callback", nil)
+	recorder := httptest.NewRecorder()
+	server.setOAuthStateCookie(recorder, req, "discord", "opaque-state", 600)
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 ||
+		cookies[0].Name != oauthStateCookieName("discord") ||
+		!cookies[0].HttpOnly ||
+		!cookies[0].Secure ||
+		cookies[0].SameSite != http.SameSiteLaxMode ||
+		cookies[0].MaxAge != 600 ||
+		cookies[0].Path != oauthCallbackPath("discord") ||
+		cookies[0].Domain != "" {
+		t.Fatalf("unsafe OAuth state cookie: %+v", cookies)
+	}
+}
+
+func TestConsumeOAuthStateCookieClearsMismatchedCookie(t *testing.T) {
+	t.Parallel()
+	server := &Server{Cfg: &config.ControllerConfig{PublicURL: "https://control.example"}}
+	req := httptest.NewRequest(http.MethodGet, "https://control.example/api/auth/oauth/discord/callback", nil)
+	req.AddCookie(&http.Cookie{Name: oauthStateCookieName("discord"), Value: "stored-state"})
+	recorder := httptest.NewRecorder()
+	if server.consumeOAuthStateCookie(recorder, req, "discord", "other-state") {
+		t.Fatal("mismatched OAuth state cookie was accepted")
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 ||
+		cookies[0].Name != oauthStateCookieName("discord") ||
+		!cookies[0].HttpOnly ||
+		!cookies[0].Secure ||
+		cookies[0].SameSite != http.SameSiteLaxMode ||
+		cookies[0].Path != oauthCallbackPath("discord") ||
+		cookies[0].MaxAge != -1 {
+		t.Fatalf("unexpected OAuth state cleanup cookie: %+v", cookies)
+	}
+}

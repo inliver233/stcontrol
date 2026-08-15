@@ -323,7 +323,6 @@ func (s *Store) GetUserByID(ctx context.Context, id int64) (*User, error) {
 	return u, err
 }
 
-
 // GetUserByUUID 按全局 UUID 查找（管理员按 uuid 定位用户）。
 func (s *Store) GetUserByUUID(ctx context.Context, uuid string) (*User, error) {
 	if uuid == "" {
@@ -345,6 +344,7 @@ func (s *Store) GetUserByUUID(ctx context.Context, uuid string) (*User, error) {
 	}
 	return u, err
 }
+
 // DeleteUser 删除用户（注册回滚用）。
 func (s *Store) DeleteUser(ctx context.Context, id int64) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -442,6 +442,9 @@ func stagePasswordMaterialCount(
 		WHERE user_id=$1 AND status IN ('active','pending','error')`,
 		globalUserID, passwordHash, passwordSalt, now)
 	if err != nil {
+		return 0, err
+	}
+	if err := clearPendingPasswordRemovals(ctx, tx, globalUserID, now); err != nil {
 		return 0, err
 	}
 	return result.RowsAffected()

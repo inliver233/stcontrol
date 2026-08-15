@@ -50,6 +50,12 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 		generation = assertPostgresControllerRebuild(t, stores[0], recoveryNode, generation)
 	})
 
+	t.Run("controller rebuild defers offline nodes without skipping online rotation", func(t *testing.T) {
+		deferredOnline := insertIntegrationNode(t, stores[0], "controller-rebuild-online")
+		deferredOffline := insertIntegrationNode(t, stores[0], "controller-rebuild-offline")
+		generation = assertPostgresDeferredControllerRebuild(t, stores[0], deferredOnline, deferredOffline, generation)
+	})
+
 	t.Run("single writer and operation binding", func(t *testing.T) {
 		userID := insertIntegrationGlobalUser(t, stores[0], "lease-user")
 		assertConcurrentSingleWriter(t, stores[0], userID, nodeA, nodeB, generation)
@@ -71,6 +77,9 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 	t.Run("node lifecycle binds replay and retires only after durable drain", func(t *testing.T) {
 		assertPostgresNodeLifecycleHardening(t, stores[0], nodeA)
 	})
+	t.Run("terminal agent commands requeue without changing operation scope", func(t *testing.T) {
+		assertPostgresAgentCommandTerminalRequeue(t, stores[0], generation)
+	})
 
 	t.Run("node retirement executor persists and atomically promotes home", func(t *testing.T) {
 		assertPostgresNodeRetirementExecutor(t, stores[0])
@@ -91,6 +100,120 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 	t.Run("ten-thousand account inventory is durable and page bounded", func(t *testing.T) {
 		assertPostgresAccountInventoryScale(t, stores[0], nodeA)
 	})
+}
+
+func assertPostgresAgentCommandTerminalRequeue(
+	t *testing.T,
+	st *Store,
+	generation int64,
+) {
+	t.Helper()
+	ctx := context.Background()
+	nodeID := insertIntegrationNode(t, st, "agent-command-terminal-requeue")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	operationID := "75200000-0000-4000-8000-000000000001"
+	payload := json.RawMessage(`{"version":2,"ciphertext":"scope-bound"}`)
+	digest := sha256.Sum256([]byte("terminal-requeue-scope"))
+	params := EnqueueAgentCommandParams{
+		ID: "75200000-0000-4000-8000-000000000002", OperationID: operationID,
+		NodeID: nodeID, CommandType: "freeze_user_data", EncryptedPayload: payload,
+		PayloadSHA256: digest[:], ExpiresAt: now.Add(10 * time.Minute), Now: now,
+		ExpectedControllerGeneration: generation,
+		RequeueRetryableTerminal:     true,
+	}
+	if got, err := st.EnqueueAgentCommand(ctx, params); err != nil || got != generation {
+		t.Fatalf("seed retryable command: generation=%d err=%v", got, err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE agent_commands SET state='failed',result_summary='{"ok":false}'::jsonb
+		WHERE operation_id=$1`, operationID); err != nil {
+		t.Fatalf("mark command failed: %v", err)
+	}
+
+	ids := []string{
+		"75200000-0000-4000-8000-000000000003",
+		"75200000-0000-4000-8000-000000000004",
+	}
+	errs := make(chan error, len(ids))
+	var wg sync.WaitGroup
+	for index, id := range ids {
+		wg.Add(1)
+		go func(index int, id string) {
+			defer wg.Done()
+			retry := params
+			retry.ID = id
+			retry.Now = now.Add(time.Duration(index+1) * time.Second)
+			retry.ExpiresAt = retry.Now.Add(10 * time.Minute)
+			got, err := st.EnqueueAgentCommand(ctx, retry)
+			if err == nil && got != generation {
+				err = fmt.Errorf("generation=%d want=%d", got, generation)
+			}
+			errs <- err
+		}(index, id)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent terminal requeue: %v", err)
+		}
+	}
+	var commandID, state string
+	var count int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT min(id::text),min(state),count(*) FROM agent_commands WHERE operation_id=$1`,
+		operationID).Scan(&commandID, &state, &count); err != nil || count != 1 || state != "queued" ||
+		(commandID != ids[0] && commandID != ids[1]) {
+		t.Fatalf("atomic failed-command requeue id=%q state=%q count=%d err=%v", commandID, state, count, err)
+	}
+
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE agent_commands SET state='running',lease_owner='worker-after-ack',lease_until=$2
+		WHERE operation_id=$1`, operationID, now.Add(time.Minute)); err != nil {
+		t.Fatalf("mark command running after ack: %v", err)
+	}
+	ackReplay := params
+	ackReplay.ID = "75200000-0000-4000-8000-000000000005"
+	ackReplay.Now = now.Add(3 * time.Second)
+	ackReplay.ExpiresAt = ackReplay.Now.Add(10 * time.Minute)
+	if _, err := st.EnqueueAgentCommand(ctx, ackReplay); err != nil {
+		t.Fatalf("exact replay after ack: %v", err)
+	}
+	var afterAckID, afterAckState string
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT id::text,state FROM agent_commands WHERE operation_id=$1`, operationID).
+		Scan(&afterAckID, &afterAckState); err != nil || afterAckID != commandID || afterAckState != "running" {
+		t.Fatalf("ack-crash replay changed delivery id=%q state=%q err=%v", afterAckID, afterAckState, err)
+	}
+	ackCrashAt := now.Add(4 * time.Second)
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE agent_commands SET lease_until=$2,expires_at=$2 WHERE operation_id=$1`,
+		operationID, ackCrashAt.Add(-time.Second)); err != nil {
+		t.Fatalf("expire ack-crash lease: %v", err)
+	}
+	reclaimed, err := st.LeaseAgentCommand(
+		ctx, nodeID, "replacement-worker", ackCrashAt, time.Minute,
+	)
+	if err != nil || reclaimed == nil || reclaimed.ID != commandID ||
+		reclaimed.OperationID != operationID {
+		t.Fatalf("reclaim ack-crash command: lease=%+v err=%v", reclaimed, err)
+	}
+
+	if _, err := st.DB.ExecContext(ctx, `UPDATE agent_commands SET state='expired' WHERE operation_id=$1`, operationID); err != nil {
+		t.Fatalf("expire command: %v", err)
+	}
+	expiredRetry := params
+	expiredRetry.ID = "75200000-0000-4000-8000-000000000006"
+	expiredRetry.Now = now.Add(5 * time.Second)
+	expiredRetry.ExpiresAt = expiredRetry.Now.Add(10 * time.Minute)
+	if _, err := st.EnqueueAgentCommand(ctx, expiredRetry); err != nil {
+		t.Fatalf("requeue expired command: %v", err)
+	}
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT id::text,state FROM agent_commands WHERE operation_id=$1`, operationID).
+		Scan(&commandID, &state); err != nil || commandID != expiredRetry.ID || state != "queued" {
+		t.Fatalf("expired requeue id=%q state=%q err=%v", commandID, state, err)
+	}
 }
 
 func assertPostgresIndependentTakeoverAudit(t *testing.T, st *Store, generation int64) {
@@ -239,7 +362,7 @@ func assertPostgresControllerRebuild(
 		t.Fatalf("old credential recovery heartbeat decision=%+v err=%v", decision, err)
 	}
 	status, err = st.GetLatestControllerRebuild(ctx)
-	if err != nil || status.Nodes[0].State != "heartbeat_verified" {
+	if err != nil || status.State != "ready_with_deferred" || status.Nodes[0].State != "deferred" {
 		t.Fatalf("verified controller rebuild heartbeat=%+v err=%v", status, err)
 	}
 	intermediateGeneration := nextGeneration
@@ -258,8 +381,8 @@ func assertPostgresControllerRebuild(
 		t.Fatalf("superseded rebuild state=%q error=%q err=%v", supersededState, supersededError, err)
 	}
 	status, err = st.GetLatestControllerRebuild(ctx)
-	if err != nil || status.State != "reconciling" ||
-		status.Generation != nextGeneration || status.Nodes[0].State != "awaiting_heartbeat" {
+	if err != nil || status.State != "ready_with_deferred" ||
+		status.Generation != nextGeneration || status.Nodes[0].State != "deferred" {
 		t.Fatalf("replacement controller rebuild=%+v err=%v", status, err)
 	}
 	// The Agent may have durably accepted the intermediate generation before
@@ -285,7 +408,7 @@ func assertPostgresControllerRebuild(
 		t.Fatalf("controller rebuild rotation=%+v err=%v", rotation, err)
 	}
 	status, err = st.GetLatestControllerRebuild(ctx)
-	if err != nil || status.Nodes[0].State != "rotation_pending" {
+	if err != nil || status.Nodes[0].State != "deferred" {
 		t.Fatalf("pending controller rebuild rotation=%+v err=%v", status, err)
 	}
 	activatedGeneration, err := st.ActivateAgentCredentialRotation(
@@ -293,6 +416,19 @@ func assertPostgresControllerRebuild(
 	)
 	if err != nil || activatedGeneration != nextGeneration {
 		t.Fatalf("activate controller rebuild rotation generation=%d err=%v", activatedGeneration, err)
+	}
+	status, err = st.GetLatestControllerRebuild(ctx)
+	if err != nil || status.State != "ready_with_deferred" || status.ReconciledNodes != 0 ||
+		status.CompletedAt != nil || status.Nodes[0].State != "deferred" {
+		t.Fatalf("credential activation incorrectly completed rebuild=%+v err=%v", status, err)
+	}
+	// Credential activation alone cannot republish a node. A fresh heartbeat
+	// authenticated by the successor generation is the reconciliation point.
+	fact.ControllerGeneration = nextGeneration
+	fact.ObservedAt = now.Add(9 * time.Second)
+	decision, err = st.ReconcileNodeControlModeAuthenticated(ctx, nodeID, fact, nextGeneration)
+	if err != nil || decision.ControllerGeneration != nextGeneration {
+		t.Fatalf("successor generation heartbeat decision=%+v err=%v", decision, err)
 	}
 	status, err = st.GetLatestControllerRebuild(ctx)
 	if err != nil || status.State != "succeeded" || status.ReconciledNodes != 1 ||
@@ -313,15 +449,151 @@ func assertPostgresControllerRebuild(
 	if _, err := st.EnqueueAgentCommand(ctx, EnqueueAgentCommandParams{
 		ID: "73000000-0000-4000-8000-000000000006", OperationID: "73000000-0000-4000-8000-000000000007",
 		NodeID: nodeID, CommandType: "verify_user", EncryptedPayload: json.RawMessage(`{"ciphertext":"test"}`),
-		PayloadSHA256: secondDigest[:], ExpiresAt: now.Add(time.Hour), Now: now.Add(9 * time.Second),
+		PayloadSHA256: secondDigest[:], ExpiresAt: now.Add(time.Hour), Now: now.Add(10 * time.Second),
 	}); err != nil {
 		t.Fatalf("enqueue post-rebuild command: %v", err)
 	}
 	lease, err = st.LeaseAgentCommand(
-		ctx, nodeID, "rebuild-worker-current", now.Add(10*time.Second), time.Minute,
+		ctx, nodeID, "rebuild-worker-current", now.Add(11*time.Second), time.Minute,
 	)
 	if err != nil || lease == nil || lease.ControllerGeneration != nextGeneration {
 		t.Fatalf("current credential node could not lease command: lease=%+v err=%v", lease, err)
+	}
+	return nextGeneration
+}
+
+func assertPostgresDeferredControllerRebuild(
+	t *testing.T,
+	st *Store,
+	onlineNodeID, offlineNodeID, previousGeneration int64,
+) int64 {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO agent_credentials (
+		  id,node_id,credential_version,credential_type,secret_ciphertext,
+		  controller_generation,created_at
+		) VALUES
+		  ('73100000-0000-4000-8000-000000000001',$1,1,'hmac',$3,$4,$5),
+		  ('73100000-0000-4000-8000-000000000002',$2,1,'hmac',$3,$4,$5)`,
+		onlineNodeID, offlineNodeID, []byte("deferred-controller-secret"), previousGeneration, now,
+	); err != nil {
+		t.Fatalf("insert deferred controller rebuild credentials: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET connectivity_state='offline' WHERE id=$1`, offlineNodeID); err != nil {
+		t.Fatalf("mark deferred rebuild node offline: %v", err)
+	}
+	nextGeneration, err := st.PromoteControllerEpoch(ctx, "postgres-deferred-rebuild-test", now.Add(time.Second))
+	if err != nil || nextGeneration != previousGeneration+1 {
+		t.Fatalf("promote deferred rebuild generation=%d err=%v", nextGeneration, err)
+	}
+	status, err := st.GetLatestControllerRebuild(ctx)
+	if err != nil || status == nil || status.State != "reconciling" || status.Generation != nextGeneration || status.TotalNodes != 2 {
+		t.Fatalf("initial deferred controller rebuild=%+v err=%v", status, err)
+	}
+	nodeStates := map[int64]string{}
+	for _, node := range status.Nodes {
+		nodeStates[node.NodeID] = node.State
+	}
+	if nodeStates[onlineNodeID] != "awaiting_heartbeat" || nodeStates[offlineNodeID] != "deferred" {
+		t.Fatalf("initial deferred rebuild states=%v", nodeStates)
+	}
+	ready, err := st.IsControlPlaneReady(ctx)
+	if err != nil || ready {
+		t.Fatalf("control plane opened before online rebuild rotation: ready=%v err=%v", ready, err)
+	}
+
+	fact := NodeControlModeFact{
+		Mode: NodeModeManaged, ModeGeneration: 1,
+		ControllerGeneration: previousGeneration, ObservedAt: now.Add(2 * time.Second),
+	}
+	decision, err := st.ReconcileNodeControlModeAuthenticated(ctx, onlineNodeID, fact, previousGeneration)
+	if err != nil || decision.ControllerGeneration != nextGeneration || decision.DesiredMode != NodeModeManaged {
+		t.Fatalf("online deferred rebuild heartbeat decision=%+v err=%v", decision, err)
+	}
+	rotation, err := st.EnsureAgentCredentialRotation(ctx, EnsureAgentCredentialRotationParams{
+		ID: "73100000-0000-4000-8000-000000000003", OperationID: "73100000-0000-4000-8000-000000000004",
+		NodeID: onlineNodeID, ProposedCiphertext: []byte("deferred-online-new-secret"),
+		ControllerGeneration: nextGeneration, Now: now.Add(3 * time.Second),
+		ExpiresAt: now.Add(24 * time.Hour),
+	})
+	if err != nil || rotation == nil || rotation.CredentialVersion != 2 {
+		t.Fatalf("online deferred rebuild rotation=%+v err=%v", rotation, err)
+	}
+	if _, err := st.ActivateAgentCredentialRotation(
+		ctx, onlineNodeID, rotation.CredentialVersion, now.Add(4*time.Second),
+	); err != nil {
+		t.Fatalf("activate online deferred rebuild rotation: %v", err)
+	}
+	status, err = st.GetLatestControllerRebuild(ctx)
+	if err != nil || status.State != "ready_with_deferred" || status.ReconciledNodes != 0 {
+		t.Fatalf("deferred rebuild after online rotation=%+v err=%v", status, err)
+	}
+	nodeStates = map[int64]string{}
+	for _, node := range status.Nodes {
+		nodeStates[node.NodeID] = node.State
+	}
+	if nodeStates[onlineNodeID] != "deferred" || nodeStates[offlineNodeID] != "deferred" {
+		t.Fatalf("deferred rebuild post-online states=%v", nodeStates)
+	}
+	ready, err = st.IsControlPlaneReady(ctx)
+	if err != nil || !ready {
+		t.Fatalf("control plane stayed closed with deferred offline node: ready=%v err=%v", ready, err)
+	}
+
+	currentFact := fact
+	currentFact.ControllerGeneration = nextGeneration
+	currentFact.ObservedAt = now.Add(5 * time.Second)
+	decision, err = st.ReconcileNodeControlModeAuthenticated(ctx, onlineNodeID, currentFact, nextGeneration)
+	if err != nil || decision.ControllerGeneration != nextGeneration {
+		t.Fatalf("online successor heartbeat decision=%+v err=%v", decision, err)
+	}
+	fact.ObservedAt = now.Add(6 * time.Second)
+	decision, err = st.ReconcileNodeControlModeAuthenticated(ctx, offlineNodeID, fact, previousGeneration)
+	if err != nil || decision.ControllerGeneration != nextGeneration || decision.DesiredMode != NodeModeManaged {
+		t.Fatalf("deferred offline recovery heartbeat decision=%+v err=%v", decision, err)
+	}
+	status, err = st.GetLatestControllerRebuild(ctx)
+	if err != nil {
+		t.Fatalf("load deferred rebuild after recovery heartbeat: %v", err)
+	}
+	nodeStates = map[int64]string{}
+	for _, node := range status.Nodes {
+		nodeStates[node.NodeID] = node.State
+	}
+	if nodeStates[onlineNodeID] != "reconciled" || nodeStates[offlineNodeID] != "deferred" {
+		t.Fatalf("deferred offline node did not enter recovery path: %v", nodeStates)
+	}
+	rotation, err = st.EnsureAgentCredentialRotation(ctx, EnsureAgentCredentialRotationParams{
+		ID: "73100000-0000-4000-8000-000000000005", OperationID: "73100000-0000-4000-8000-000000000006",
+		NodeID: offlineNodeID, ProposedCiphertext: []byte("deferred-offline-new-secret"),
+		ControllerGeneration: nextGeneration, Now: now.Add(7 * time.Second),
+		ExpiresAt: now.Add(24 * time.Hour),
+	})
+	if err != nil || rotation == nil || rotation.CredentialVersion != 2 {
+		t.Fatalf("offline deferred rebuild rotation=%+v err=%v", rotation, err)
+	}
+	if _, err := st.ActivateAgentCredentialRotation(
+		ctx, offlineNodeID, rotation.CredentialVersion, now.Add(8*time.Second),
+	); err != nil {
+		t.Fatalf("activate offline deferred rebuild rotation: %v", err)
+	}
+	currentFact.ObservedAt = now.Add(9 * time.Second)
+	decision, err = st.ReconcileNodeControlModeAuthenticated(ctx, offlineNodeID, currentFact, nextGeneration)
+	if err != nil || decision.ControllerGeneration != nextGeneration {
+		t.Fatalf("offline successor heartbeat decision=%+v err=%v", decision, err)
+	}
+	status, err = st.GetLatestControllerRebuild(ctx)
+	if err != nil || status.State != "succeeded" || status.ReconciledNodes != 2 {
+		t.Fatalf("completed deferred controller rebuild=%+v err=%v", status, err)
+	}
+	nodeStates = map[int64]string{}
+	for _, node := range status.Nodes {
+		nodeStates[node.NodeID] = node.State
+	}
+	if nodeStates[onlineNodeID] != "reconciled" || nodeStates[offlineNodeID] != "reconciled" {
+		t.Fatalf("completed deferred rebuild states=%v", nodeStates)
 	}
 	return nextGeneration
 }
@@ -658,6 +930,14 @@ func assertPostgresUserDataFaultLifecycle(t *testing.T, st *Store, generation in
 		resolvedFault.ResolutionOperationID != takeoverOperation || resolvedFault.ResolvedAt == nil {
 		t.Fatalf("resolved takeover fault: status=%+v err=%v", resolvedFault, err)
 	}
+	blockedDigest := sha256.Sum256([]byte("must-wait-for-node-gate-release"))
+	if _, err := st.ReportUserDataFault(ctx, ReportUserDataFaultParams{
+		OperationID: "74100000-0000-4000-8000-000000000011", RequestDigest: blockedDigest[:],
+		UserUUID: "74100000-0000-4000-8000-000000000001", ExpectedHomeNodeID: hotNodeID,
+		ReasonCode: "user_database_corrupt", AdminID: adminID, Now: takeoverClaimAt.Add(3 * time.Second),
+	}); !errors.Is(err, ErrUserDataFaultAlreadyOpen) {
+		t.Fatalf("resolved-but-unreleased fault allowed an interleaved report: %v", err)
+	}
 	var newHomeNodeID int64
 	var oldHomeState, newHomeState, faultAlertState string
 	if err := st.DB.QueryRowContext(ctx, `
@@ -840,8 +1120,9 @@ func insertIntegrationNode(t *testing.T, st *Store, name string) int64 {
 	err := st.DB.QueryRow(`
 		INSERT INTO nodes (
 		  uuid,name,role,base_url,status,connectivity_state,operational_state,
-		  capacity_state,compatibility_state
-		) VALUES (gen_random_uuid(),$1,'compute',$2,'online','online','active','open','compatible')
+		  capacity_state,compatibility_state,controller_generation
+		) VALUES (gen_random_uuid(),$1,'compute',$2,'online','online','active','open','compatible',
+		  (SELECT generation FROM controller_epochs WHERE state='active'))
 		RETURNING id`, name, "https://"+name+".example").Scan(&id)
 	if err != nil {
 		t.Fatalf("insert integration node %q: %v", name, err)
@@ -865,6 +1146,10 @@ func assertPostgresNodeCompatibilityIncident(t *testing.T, st *Store) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	nodeID := insertIntegrationNode(t, st, "compatibility-upgrade")
+	generation, err := st.GetActiveControllerGeneration(ctx)
+	if err != nil {
+		t.Fatalf("load compatibility controller generation: %v", err)
+	}
 	fingerprintA := strings.Repeat("a", 64)
 	fingerprintB := strings.Repeat("b", 64)
 
@@ -878,7 +1163,7 @@ func assertPostgresNodeCompatibilityIncident(t *testing.T, st *Store) {
 		facts.TavernVersion = version
 		facts.RegistrationPolicy.ObservedAt = at
 		facts.RegistrationPolicy.ExpiresAt = at.Add(time.Minute)
-		if err := st.UpdateNodeHeartbeat(ctx, nodeID, facts, testNodeCapacityPolicy()); err != nil {
+		if err := st.UpdateNodeHeartbeat(ctx, nodeID, generation, facts, testNodeCapacityPolicy()); err != nil {
 			t.Fatalf("heartbeat at %s (%s): %v", at, state, err)
 		}
 	}
@@ -913,6 +1198,10 @@ func assertPostgresNodeCompatibilityIncident(t *testing.T, st *Store) {
 	assertNodeState("unknown", "upgrade_verifying")
 	assertIncident("verifying", "node_reconnected", 1)
 	restartedGeneration := advanceIntegrationControllerGeneration(t, st, now.Add(20*time.Second))
+	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET controller_generation=$2 WHERE id=$1`, nodeID, restartedGeneration); err != nil {
+		t.Fatalf("reconcile compatibility node generation: %v", err)
+	}
+	generation = restartedGeneration
 	heartbeat(now.Add(25*time.Second), "compatible", "", fingerprintA, "v1")
 	assertIncident("verifying", "node_reconnected", 2)
 	var incidentGeneration int64
@@ -949,7 +1238,7 @@ func assertPostgresNodeCompatibilityIncident(t *testing.T, st *Store) {
 	stale.TavernVersion = "v2"
 	stale.RegistrationPolicy.ObservedAt = stale.ObservedAt
 	stale.RegistrationPolicy.ExpiresAt = stale.ObservedAt.Add(time.Minute)
-	if err := st.UpdateNodeHeartbeat(ctx, nodeID, stale, testNodeCapacityPolicy()); !errors.Is(err, ErrStaleNodeHeartbeat) {
+	if err := st.UpdateNodeHeartbeat(ctx, nodeID, generation, stale, testNodeCapacityPolicy()); !errors.Is(err, ErrStaleNodeHeartbeat) {
 		t.Fatalf("older heartbeat error=%v, want ErrStaleNodeHeartbeat", err)
 	}
 	assertNodeState("compatible", "")
