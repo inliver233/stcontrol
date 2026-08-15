@@ -130,7 +130,11 @@ func (b *breaker) allow(now time.Time) bool {
 		return true
 	}
 	if now.Sub(b.openedAt) >= 10*time.Minute && !b.halfOpenTry {
-		// half-open: admit exactly one low-sensitivity probe.
+		// half-open: admit exactly one probe per breaker key (per
+		// provider+model+task, §5.2). Since P0/P1 tasks each have their own
+		// breaker, the probe is the same task family that tripped it - for the
+		// inspection/anomaly families this is the low-sensitivity sample §5.2
+		// describes; disaster/conflict probes are still read-only observations.
 		b.halfOpenTry = true
 		return true
 	}
