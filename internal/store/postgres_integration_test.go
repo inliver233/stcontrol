@@ -42,19 +42,30 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetActiveControllerGeneration: %v", err)
 	}
-	nodeA := insertIntegrationNode(t, stores[0], "writer-a")
-	nodeB := insertIntegrationNode(t, stores[0], "writer-b")
 	recoveryNode := insertIntegrationNode(t, stores[0], "controller-rebuild")
 
 	t.Run("controller promotion only permits heartbeat recovery before credential rotation", func(t *testing.T) {
 		generation = assertPostgresControllerRebuild(t, stores[0], recoveryNode, generation)
 	})
+	// The next case exercises a two-node rebuild in isolation. The node used by
+	// the preceding completed-rebuild scenario has no further duties in this
+	// acceptance run, so retire it exactly as the production lifecycle would
+	// before promoting another generation.
+	if _, err := stores[0].DB.Exec(`
+		UPDATE nodes SET operational_state='retired' WHERE id=$1`, recoveryNode); err != nil {
+		t.Fatalf("retire completed rebuild fixture node: %v", err)
+	}
 
 	t.Run("controller rebuild defers offline nodes without skipping online rotation", func(t *testing.T) {
 		deferredOnline := insertIntegrationNode(t, stores[0], "controller-rebuild-online")
 		deferredOffline := insertIntegrationNode(t, stores[0], "controller-rebuild-offline")
 		generation = assertPostgresDeferredControllerRebuild(t, stores[0], deferredOnline, deferredOffline, generation)
 	})
+
+	// Create the general-purpose fixtures after the promotion scenarios so
+	// they start online and are bound to the generation used below.
+	nodeA := insertIntegrationNode(t, stores[0], "writer-a")
+	nodeB := insertIntegrationNode(t, stores[0], "writer-b")
 
 	t.Run("single writer and operation binding", func(t *testing.T) {
 		userID := insertIntegrationGlobalUser(t, stores[0], "lease-user")

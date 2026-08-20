@@ -266,6 +266,19 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "password_update_failed"})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true})
+	case "set_oauth_identity":
+		var payload protocol.SetOAuthIdentityRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "compute" ||
+			!validHandle(payload.Handle) ||
+			(payload.Provider != "discord" && payload.Provider != "linuxdo") ||
+			!safeInventoryString(payload.Subject, 512) || payload.Version <= 0 {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		payload.OperationID = command.OperationID
+		if err := a.setOAuthIdentity(ctx, &payload); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "oauth_identity_update_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true})
 	case "verify_node_admin":
 		var payload protocol.VerifyNodeAdminRequest
 		if err := json.Unmarshal(plaintext, &payload); err != nil || a.Cfg.Role != "compute" ||

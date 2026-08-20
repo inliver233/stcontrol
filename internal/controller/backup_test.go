@@ -46,6 +46,28 @@ func TestSnapshotWorkflowLeaseMaintainerCancelsOnFenceLoss(t *testing.T) {
 	}
 }
 
+func TestOfflineBackupSchedulerQueuesDurableWorkWithoutInlineSnapshot(t *testing.T) {
+	t.Parallel()
+	server := &Server{snapshotSlots: make(chan struct{}, 1)}
+
+	// A queued workflow must return without requiring a worker identity, Store,
+	// or Agent.  Calling the same dispatcher inline proves the test would reach
+	// execution rather than accidentally passing through a nil code path.
+	if err := server.dispatchSnapshotWorkflow(
+		context.Background(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false,
+	); err != nil {
+		t.Fatalf("queue-only dispatch: %v", err)
+	}
+	if got := len(server.snapshotSlots); got != 0 {
+		t.Fatalf("queue-only dispatch consumed %d snapshot slots", got)
+	}
+	if err := server.dispatchSnapshotWorkflow(
+		context.Background(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", true,
+	); err == nil || !strings.Contains(err.Error(), "snapshot worker identity unavailable") {
+		t.Fatalf("inline dispatch error=%v, want worker identity failure", err)
+	}
+}
+
 func TestTransferCapabilityIsDeterministicButScoped(t *testing.T) {
 	t.Parallel()
 	key := []byte("controller-master-key")

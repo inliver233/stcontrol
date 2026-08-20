@@ -50,7 +50,7 @@ func TestScheduleStorageRepairTasksPersistsOneFencedIntent(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectExec(`(?s)UPDATE storage_repair_tasks task SET state='cancelled'.*task.state IN \('pending','retry_wait'\).*JOIN user_replicas legacy_copy.*copy.replica_kind='archive'.*copy.verified_at IS NOT NULL`).
 		WithArgs(now).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`(?s)INSERT INTO storage_repair_tasks.*home_replica.size_bytes.*JOIN user_replicas archive_legacy.*copy.verified_at IS NOT NULL.*workflow.workflow_type IN \('snapshot','restore','conflict_resolution'\).*FROM replica_conflicts conflict.*FROM user_data_faults fault.*ON CONFLICT DO NOTHING`).
+	mock.ExpectExec(`(?s)INSERT INTO storage_repair_tasks.*home_replica.size_bytes.*controller_rebuild_operations rebuild.*rebuild.state NOT IN \('succeeded','ready_with_deferred'\).*JOIN user_replicas archive_legacy.*copy.verified_at IS NOT NULL.*workflow.workflow_type IN \('snapshot','restore','conflict_resolution'\).*FROM replica_conflicts conflict.*FROM user_data_faults fault.*ON CONFLICT DO NOTHING`).
 		WithArgs(now, int64(1<<30), int64(64<<20)).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectCommit()
@@ -61,13 +61,13 @@ func TestScheduleStorageRepairTasksPersistsOneFencedIntent(t *testing.T) {
 	assertMockExpectations(t, mock)
 }
 
-func TestClaimAndCreateStorageRepairReturnsNilWithoutDueIntent(t *testing.T) {
+func TestClaimAndCreateStorageRepairRejectsClosedRecoveryGate(t *testing.T) {
 	t.Parallel()
 	st, mock, closeDB := newMockStore(t)
 	defer closeDB()
 	p := storageRepairExecutionParams(time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC))
 	mock.ExpectBegin()
-	mock.ExpectQuery(`(?s)FROM storage_repair_tasks task.*task.attempt<\$2.*FOR UPDATE OF task,global_user,legacy,home,home_replica SKIP LOCKED`).
+	mock.ExpectQuery(`(?s)FROM storage_repair_tasks task.*task.attempt<\$2.*controller_rebuild_operations rebuild.*rebuild.state NOT IN \('succeeded','ready_with_deferred'\).*FOR UPDATE OF task,global_user,legacy,home,home_replica SKIP LOCKED`).
 		WithArgs(p.Now, p.MaxAttempts).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "legacy_user_id", "user_id", "source_node_id", "estimated_bytes", "attempt"}))
 	mock.ExpectRollback()

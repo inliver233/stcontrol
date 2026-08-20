@@ -12,6 +12,8 @@ export default function SelectNodePage() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [nodesLoadError, setNodesLoadError] = useState('')
+  const [nodesReload, setNodesReload] = useState(0)
   const [invitationCode, setInvitationCode] = useState('')
   const operationID = useRef(crypto.randomUUID())
   const { refresh } = useAuth()
@@ -23,6 +25,8 @@ export default function SelectNodePage() {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
+      setLoading(true)
+      setNodesLoadError('')
       try {
         const { nodes: list } = await api.availableNodes()
         if (cancelled) return
@@ -42,12 +46,14 @@ export default function SelectNodePage() {
         )
         if (!cancelled) setNodes(withLatency)
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : '加载节点失败')
-        setLoading(false)
+        if (!cancelled) {
+          setNodesLoadError(err instanceof Error ? err.message : '加载节点失败')
+          setLoading(false)
+        }
       }
     })()
     return () => { cancelled = true }
-  }, [requestedNodeID])
+  }, [requestedNodeID, nodesReload])
 
   useEffect(() => {
     let cancelled = false
@@ -96,7 +102,14 @@ export default function SelectNodePage() {
         </div>
         {error && <div className="error-msg">{error}</div>}
         {loading ? (
-          <div className="loading">正在加载节点…</div>
+          <div className="loading" role="status">正在加载节点…</div>
+        ) : nodesLoadError ? (
+          <div className="empty-state">
+            <p role="alert">{nodesLoadError}</p>
+            <button className="btn-sm primary" type="button" onClick={() => setNodesReload(value => value + 1)}>重试加载节点</button>
+          </div>
+        ) : nodes.length === 0 ? (
+          <div className="empty-state">当前没有可用的注册节点，请稍后重试或联系管理员。</div>
         ) : (
           <>
             <div className="node-grid">

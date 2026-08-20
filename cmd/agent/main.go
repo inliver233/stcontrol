@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"log"
 	"net/http"
@@ -22,6 +23,12 @@ func main() {
 	tavernDir := flag.String("tavern-dir", "", "酒馆安装目录(覆盖配置)")
 	register := flag.Bool("register", false, "执行注册后退出")
 	configureTavern := flag.Bool("configure-tavern", false, "把已注册节点身份安全写入酒馆 stcontrol adapter 配置")
+	auditQuery := flag.Bool("audit", false, "查询本机安全审计元数据后退出")
+	auditEvent := flag.String("audit-event", "", "按审计事件精确筛选")
+	auditCommand := flag.String("audit-command", "", "按 command_id 精确筛选")
+	auditOperation := flag.String("audit-operation", "", "按 operation_id 精确筛选")
+	auditSince := flag.String("audit-since", "", "只返回此 RFC3339 时间之后的事件")
+	auditLimit := flag.Int("audit-limit", 100, "最多返回最近 1..1000 条审计事件")
 	flag.Parse()
 
 	cfg := config.DefaultAgent()
@@ -38,6 +45,29 @@ func main() {
 	}
 	if *tavernDir != "" {
 		cfg.TavernDir = *tavernDir
+	}
+	if *auditQuery {
+		var since time.Time
+		if *auditSince != "" {
+			var err error
+			since, err = time.Parse(time.RFC3339, *auditSince)
+			if err != nil {
+				log.Fatalf("审计起始时间无效: %v", err)
+			}
+		}
+		events, err := agent.QueryLocalAudit(cfg.DataDir, agent.LocalAuditQuery{
+			Event: *auditEvent, CommandID: *auditCommand, OperationID: *auditOperation,
+			Since: since, Limit: *auditLimit,
+		})
+		if err != nil {
+			log.Fatalf("查询本机审计失败: %v", err)
+		}
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(events); err != nil {
+			log.Fatalf("输出本机审计失败: %v", err)
+		}
+		return
 	}
 
 	a, err := agent.New(cfg)

@@ -72,14 +72,31 @@ func (s *Server) scheduleOfflineBackups(ctx context.Context) {
 		if job, _ := s.Store.FindRunningBackupForUserOnNode(ctx, u.ID, nodeID); job != nil {
 			continue
 		}
-		// 触发备份
-		_ = s.TriggerUserBackup(ctx, u.ID, nodeID, "offline")
+		// Persist the durable workflow only.  The snapshot reconciler owns the
+		// potentially multi-hour transfer; one slow user must never block this
+		// scan from scheduling the remaining offline users.
+		_ = s.queueUserBackup(ctx, u.ID, nodeID, "offline")
 	}
 }
 
 // TriggerUserBackup 为某用户在家节点触发一次备份到配置的备份目标。
 // 目标选择: 优先该用户已配置的热备/存储副本; 否则系统默认存储节点。
 func (s *Server) TriggerUserBackup(ctx context.Context, userID, srcNodeID int64, trigger string) error {
+	return s.createUserBackup(ctx, userID, srcNodeID, trigger, true)
+}
+
+// queueUserBackup persists an offline-backup workflow without executing it in
+// the scanner goroutine.  The durable snapshot reconciler claims it later.
+func (s *Server) queueUserBackup(ctx context.Context, userID, srcNodeID int64, trigger string) error {
+	return s.createUserBackup(ctx, userID, srcNodeID, trigger, false)
+}
+
+func (s *Server) createUserBackup(
+	ctx context.Context,
+	userID, srcNodeID int64,
+	trigger string,
+	executeInline bool,
+) error {
 	if err := s.checkNewOperations(); err != nil {
 		return err
 	}
@@ -146,13 +163,20 @@ func (s *Server) TriggerUserBackup(ctx context.Context, userID, srcNodeID int64,
 		return err
 	}
 
+	return s.dispatchSnapshotWorkflow(ctx, workflow.WorkflowID, executeInline)
+}
+
+func (s *Server) dispatchSnapshotWorkflow(ctx context.Context, workflowID string, executeInline bool) error {
+	if !executeInline {
+		return nil
+	}
 	// Manual/admin triggers and callers that assert completion run the
 	// workflow inline under a bounded slot; the durable reconciler also picks
 	// up scheduled workflows so a crash mid-transfer is recovered.
 	select {
 	case s.snapshotSlots <- struct{}{}:
 		defer func() { <-s.snapshotSlots }()
-		return s.executeSnapshotWorkflow(ctx, workflow.WorkflowID)
+		return s.executeSnapshotWorkflow(ctx, workflowID)
 	default:
 		// Slots saturated: leave the workflow scheduled for the reconciler.
 		return nil

@@ -3,6 +3,7 @@ package controller
 import (
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,9 +16,9 @@ import (
 // resist brute force.  The limiter below is deliberately small, in-memory and
 // per-process: the single active Controller owns the control plane, so a local
 // window is sufficient and restart resets it (PostgreSQL remains the durable
-// authority for sessions/tickets).  Agent endpoints are NOT rate limited here
-// because the Agent channel has its own HMAC/nonce/lease fences and must not
-// be starved by admin traffic.
+// authority for sessions/tickets). Agent registration has a source-IP budget;
+// authenticated Agent traffic has a separate per-node namespace so a noisy
+// node cannot consume user/admin capacity or starve another node.
 
 // rateBucket is a fixed-window counter with an atomic swap.  Windows are
 // intentionally coarse (per second / per minute) so the lock is only held for
@@ -30,12 +31,12 @@ type rateBucket struct {
 
 // rateLimiter tracks per-key request counts in fixed windows.
 type rateLimiter struct {
-	mu       sync.Mutex
-	buckets  map[string]*rateBucket
-	limit    int
-	window   time.Duration
-	maxKeys  int
-	lastGC   time.Time
+	mu      sync.Mutex
+	buckets map[string]*rateBucket
+	limit   int
+	window  time.Duration
+	maxKeys int
+	lastGC  time.Time
 }
 
 func newRateLimiter(limit int, window time.Duration, maxKeys int) *rateLimiter {
@@ -70,11 +71,11 @@ func (l *rateLimiter) allow(key string, now time.Time) bool {
 		}
 		l.lastGC = now
 	}
-	if len(l.buckets) >= l.maxKeys {
+	b, ok := l.buckets[key]
+	if !ok && len(l.buckets) >= l.maxKeys {
 		l.mu.Unlock()
 		return false
 	}
-	b, ok := l.buckets[key]
 	if !ok {
 		b = &rateBucket{windowAt: now}
 		l.buckets[key] = b
@@ -89,6 +90,50 @@ func (l *rateLimiter) allow(key string, now time.Time) bool {
 	}
 	b.count++
 	return b.count <= l.limit
+}
+
+// agentRegistrationRateLimitMiddleware bounds unauthenticated one-time
+// enrollment attempts by trusted clientIP. It deliberately uses the stricter
+// login limiter but a disjoint key namespace.
+func (s *Server) agentRegistrationRateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.loginLimiter != nil && !s.loginLimiter.allow("agent-register-ip:"+clientIP(r), time.Now()) {
+			w.Header().Set("Retry-After", "60")
+			protocolWriteTooManyRequests(w)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// agentRateLimitMiddleware runs after agentAuthMiddleware and keys only on the
+// authenticated node fact in context. The normal 20-second command long poll
+// consumes roughly three requests/minute, far below the 120/min node budget;
+// short heartbeat/ACK/result bursts remain available without being unlimited.
+func (s *Server) agentRateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		node := currentNode(r)
+		if node == nil {
+			protocolWriteUnauthorizedAgent(w)
+			return
+		}
+		if s.rateLimiter != nil && !s.rateLimiter.allow("agent-node:"+formatNodeRateLimitKey(node.ID), time.Now()) {
+			w.Header().Set("Retry-After", "60")
+			protocolWriteTooManyRequests(w)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func formatNodeRateLimitKey(nodeID int64) string {
+	return strconv.FormatInt(nodeID, 10)
+}
+
+func protocolWriteUnauthorizedAgent(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusUnauthorized)
+	_, _ = w.Write([]byte(`{"error":"节点认证失败","code":"agent_auth_required"}`))
 }
 
 // clientIP returns the best-effort client address for rate limiting.  The

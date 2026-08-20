@@ -86,16 +86,18 @@ func (s *Server) routes(r *chi.Mux) {
 	// 票据核销（仅已认证节点可调用；节点身份不接受请求体声明）
 	r.Route("/api/tickets", func(r chi.Router) {
 		r.Use(s.agentAuthMiddleware)
+		r.Use(s.agentRateLimitMiddleware)
 		r.Post("/redeem", s.handleTicketRedeem)
 		r.Post("/redeem-admin", s.handleAdminTicketRedeem)
 	})
 
 	// 子控注册（一次性令牌, 无需 PSK）
-	r.Post("/api/agent/register", s.handleAgentRegister)
+	r.With(s.agentRegistrationRateLimitMiddleware).Post("/api/agent/register", s.handleAgentRegister)
 
 	// 子控心跳/状态（需 PSK 签名）
 	r.Route("/api/agent", func(r chi.Router) {
 		r.Use(s.agentAuthMiddleware)
+		r.Use(s.agentRateLimitMiddleware)
 		r.Post("/heartbeat", s.handleAgentHeartbeat)
 		r.Post("/credentials/confirm", s.handleAgentConfirmCredential)
 		r.Post("/commands/lease", s.handleAgentLeaseCommand)

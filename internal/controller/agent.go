@@ -192,10 +192,9 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	acknowledgedTakeovers := make([]string, 0, len(req.ControlMode.ConfirmedTakeovers))
-	for _, takeover := range req.ControlMode.ConfirmedTakeovers {
-		acknowledgedTakeovers = append(acknowledgedTakeovers, takeover.OperationID)
-	}
+	acknowledgedTakeovers := durableTakeoverAcknowledgements(
+		req.ControlMode.ConfirmedTakeovers, !recoveryHeartbeat,
+	)
 	// Node quota policy: echo the administrator's expected quota + version so
 	// the Agent can validate and apply it, then report the effective value back.
 	protocol.WriteJSON(w, http.StatusOK, protocol.HeartbeatResponse{
@@ -208,6 +207,20 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		ExpectedDiskQuotaBytes:         node.ExpectedDiskQuotaBytes,
 		QuotaPolicyVersion:             node.QuotaPolicyVersion,
 	})
+}
+
+func durableTakeoverAcknowledgements(
+	takeovers []protocol.IndependentTakeover,
+	durablyRecorded bool,
+) []string {
+	if !durablyRecorded {
+		return nil
+	}
+	acknowledged := make([]string, 0, len(takeovers))
+	for _, takeover := range takeovers {
+		acknowledged = append(acknowledged, takeover.OperationID)
+	}
+	return acknowledged
 }
 
 func heartbeatRequiresImmediateGate(authenticatedGeneration, activeGeneration int64, reportedMode string) bool {

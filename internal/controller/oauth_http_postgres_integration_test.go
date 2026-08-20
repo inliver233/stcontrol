@@ -69,6 +69,10 @@ func TestControllerOAuthHTTPStatePendingLoginAndIdentityBinding(t *testing.T) {
 		GuildID: "guild-42",
 	}
 	server := New(cfg, st, []byte("0123456789abcdef0123456789abcdef"))
+	// This scenario deliberately exercises many invalid and replayed OAuth
+	// states from one httptest client. Keep its authentication budget above the
+	// scenario size; rate-limit behavior is covered independently.
+	server.loginLimiter = newRateLimiter(1_000, time.Minute, 1_000)
 
 	providerCalls := make(map[string]int)
 	server.oauthHTTP = &http.Client{

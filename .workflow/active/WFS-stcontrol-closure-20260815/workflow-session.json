@@ -4,5 +4,8 @@
   "description": "stcontrol original-requirements acceptance closure on flash",
   "created_at": "2026-08-15T15:00:38+08:00",
   "baseline": "origin/main..flash",
-  "source_review": "E:/Sillytarvennew/.workflow/.review"
+  "source_review": "E:/Sillytarvennew/.workflow/.review",
+  "status": "completed",
+  "completed_at": "2026-08-21T03:20:00+08:00",
+  "server_acceptance_artifact": "E:/Sillytarvennew/服务器测试清单.md"
 }

@@ -409,6 +409,18 @@ type SetPasswordRequest struct {
 	Remove       bool   `json:"remove"`
 }
 
+// SetOAuthIdentityRequest is the fixed, version-fenced projection of one
+// Controller OAuth identity onto a node-local account. Remove retains the
+// exact subject so a delayed command can never clear a replacement identity.
+type SetOAuthIdentityRequest struct {
+	OperationID string `json:"operation_id"`
+	Handle      string `json:"handle"`
+	Provider    string `json:"provider"`
+	Subject     string `json:"subject"`
+	Remove      bool   `json:"remove"`
+	Version     int64  `json:"version"`
+}
+
 // FreezeUserDataRequest is the complete, closed command contract for a
 // single authoritative-home data fault. It deliberately contains no path,
 // command line or release credential.

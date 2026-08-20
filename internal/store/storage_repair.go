@@ -67,7 +67,6 @@ func (s *Store) ListActiveStorageRepairUserIDs(ctx context.Context) (map[int64]s
 	return users, rows.Err()
 }
 
-
 // SetStorageRepairPreferredTarget lets an administrator steer the storage
 // repair target for a user (Round 26).  The reconciler prefers the chosen node
 // when it remains eligible and falls back to deterministic auto-selection
@@ -182,6 +181,28 @@ func (s *Store) ScheduleStorageRepairTasks(ctx context.Context, now time.Time) (
 		  AND home_replica.node_id=legacy.home_node_id AND home_replica.kind='home'
 		  AND home_replica.state='ready'
 		WHERE protection.state IN ('temporary','unprotected')
+		  AND EXISTS (SELECT 1 FROM controller_epochs epoch WHERE epoch.state='active')
+		  AND NOT EXISTS (
+		    SELECT 1 FROM controller_rebuild_operations rebuild
+		    JOIN controller_epochs epoch ON epoch.generation=rebuild.generation
+		    WHERE epoch.state='active'
+		      AND rebuild.state NOT IN ('succeeded','ready_with_deferred')
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM nodes recovery_node
+		    WHERE recovery_node.role='compute'
+		      AND recovery_node.operational_state NOT IN ('decommissioned','retired')
+		      AND recovery_node.connectivity_state='online'
+		      AND EXISTS (
+		        SELECT 1 FROM agent_credentials credential
+		        WHERE credential.node_id=recovery_node.id AND credential.revoked_at IS NULL
+		      )
+		      AND (recovery_node.control_mode<>'managed'
+		        OR recovery_node.desired_control_mode<>'managed'
+		        OR recovery_node.controller_generation<>(
+		          SELECT generation FROM controller_epochs WHERE state='active'
+		        ))
+		  )
 		  AND NOT EXISTS (
 		    SELECT 1 FROM replica_copies copy
 		    JOIN snapshot_manifests snapshot ON snapshot.id=copy.snapshot_id
@@ -279,6 +300,28 @@ func (s *Store) ClaimAndCreateStorageRepair(
 		  AND home_replica.state='ready'
 		WHERE task.state IN ('pending','retry_wait') AND task.next_attempt_at<=$1
 		  AND task.attempt<$2
+		  AND EXISTS (SELECT 1 FROM controller_epochs epoch WHERE epoch.state='active')
+		  AND NOT EXISTS (
+		    SELECT 1 FROM controller_rebuild_operations rebuild
+		    JOIN controller_epochs epoch ON epoch.generation=rebuild.generation
+		    WHERE epoch.state='active'
+		      AND rebuild.state NOT IN ('succeeded','ready_with_deferred')
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM nodes recovery_node
+		    WHERE recovery_node.role='compute'
+		      AND recovery_node.operational_state NOT IN ('decommissioned','retired')
+		      AND recovery_node.connectivity_state='online'
+		      AND EXISTS (
+		        SELECT 1 FROM agent_credentials credential
+		        WHERE credential.node_id=recovery_node.id AND credential.revoked_at IS NULL
+		      )
+		      AND (recovery_node.control_mode<>'managed'
+		        OR recovery_node.desired_control_mode<>'managed'
+		        OR recovery_node.controller_generation<>(
+		          SELECT generation FROM controller_epochs WHERE state='active'
+		        ))
+		  )
 		  AND NOT EXISTS (
 		    SELECT 1 FROM replica_copies copy
 		    JOIN snapshot_manifests snapshot ON snapshot.id=copy.snapshot_id

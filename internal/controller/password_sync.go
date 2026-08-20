@@ -25,6 +25,10 @@ func (s *Server) passwordSyncReconciler(ctx context.Context) {
 func (s *Server) reconcilePendingPasswords(ctx context.Context) {
 	s.passwordSyncMu.Lock()
 	defer s.passwordSyncMu.Unlock()
+	// Repair intents for node accounts created/replaced after the original
+	// identity bind before selecting due deliveries. This is durable metadata
+	// work only; the fixed Agent command path below remains bounded.
+	_ = s.Store.ReconcileOAuthIdentitySyncIntents(ctx, time.Now().UTC())
 	syncs, err := s.Store.ListPendingPasswordSyncs(ctx, 20, time.Now().UTC())
 	if err != nil {
 		syncs = nil
@@ -35,6 +39,11 @@ func (s *Server) reconcilePendingPasswords(ctx context.Context) {
 		removals = nil
 	}
 	_, _ = s.deliverPasswordRemovals(ctx, removals)
+	oauthSyncs, err := s.Store.ListPendingOAuthIdentitySyncs(ctx, 20, time.Now().UTC())
+	if err != nil {
+		oauthSyncs = nil
+	}
+	_, _ = s.deliverOAuthIdentitySyncs(ctx, oauthSyncs)
 	// Best-effort hygiene: for users whose password changes were just processed,
 	// drop the stored previous-password verifier once every node account has
 	// converged (or the fallback window elapsed), so the old password stops
@@ -47,6 +56,53 @@ func (s *Server) reconcilePendingPasswords(ctx context.Context) {
 		}
 		_ = s.Store.ClearPasswordFallbackIfConverged(ctx, sync.GlobalUserID, now)
 	}
+}
+
+// deliverOAuthIdentitySyncs projects every bound Discord/LinuxDo identity to
+// each reachable local account. Offline nodes and partial command failures
+// retain their durable intent; a later account/identity version supersedes the
+// old exact-subject command instead of allowing a delayed removal to win.
+func (s *Server) deliverOAuthIdentitySyncs(
+	ctx context.Context,
+	syncs []store.PendingOAuthIdentitySync,
+) (synced, pending int) {
+	for _, sync := range syncs {
+		if ctx.Err() != nil {
+			return synced, len(syncs) - synced
+		}
+		node, err := s.Store.GetNodeByID(ctx, sync.NodeID)
+		if err != nil || node == nil || !nodeReadyForManagedOperation(node) {
+			pending++
+			continue
+		}
+		operationID, err := newUUID()
+		if err != nil {
+			_ = s.Store.MarkOAuthIdentitySyncError(ctx, sync, time.Now().UTC())
+			pending++
+			continue
+		}
+		_, err = s.runAgentCommandWithOperation(
+			ctx, node, "set_oauth_identity", protocol.SetOAuthIdentityRequest{
+				OperationID: operationID,
+				Handle:      sync.LocalHandle,
+				Provider:    sync.Provider,
+				Subject:     sync.Subject,
+				Remove:      !sync.DesiredPresent,
+				Version:     sync.Version,
+			}, operationID, 45*time.Second,
+		)
+		if err != nil {
+			_ = s.Store.MarkOAuthIdentitySyncError(ctx, sync, time.Now().UTC())
+			pending++
+			continue
+		}
+		if err := s.Store.CompleteOAuthIdentitySync(ctx, sync, time.Now().UTC()); err != nil {
+			pending++
+			continue
+		}
+		synced++
+	}
+	return synced, pending
 }
 
 func (s *Server) deliverPasswordSyncs(

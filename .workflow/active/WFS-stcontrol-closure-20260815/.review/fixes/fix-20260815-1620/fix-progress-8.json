@@ -1,1 +1,1 @@
-{"group_id":"G8","status":"deferred_user_confirmation","attempt":0,"findings_total":1,"findings_fixed":0,"tests":[]}
+{"group_id":"G8","status":"completed","attempt":1,"findings_total":1,"findings_fixed":1,"tests":["AI admin pagination/advisory EOF/phase-builder fixes already present in flash","go test -short -count=1 ./...","web Vitest 24/24 and production build"]}

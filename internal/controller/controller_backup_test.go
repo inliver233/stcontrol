@@ -2,6 +2,10 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -10,15 +14,23 @@ import (
 
 func TestControllerBackupMaxAttemptsIsBounded(t *testing.T) {
 	t.Parallel()
-	if got := controllerBackupMaxAttempts(config.ControllerDisasterBackupPolicy{}); got != 3 { t.Fatalf("default max=%d", got) }
+	if got := controllerBackupMaxAttempts(config.ControllerDisasterBackupPolicy{}); got != 3 {
+		t.Fatalf("default max=%d", got)
+	}
 	policy := config.ControllerDisasterBackupPolicy{RetryMax: 100}
-	if got := controllerBackupMaxAttempts(policy); got != 8 { t.Fatalf("bounded max=%d", got) }
+	if got := controllerBackupMaxAttempts(policy); got != 8 {
+		t.Fatalf("bounded max=%d", got)
+	}
 }
 
 func TestControllerBackupIntervalDefaultsTo24h(t *testing.T) {
 	t.Parallel()
-	if got := controllerBackupInterval(config.ControllerDisasterBackupPolicy{}); got != 24*time.Hour { t.Fatalf("interval=%v", got) }
-	if got := controllerBackupInterval(config.ControllerDisasterBackupPolicy{IntervalSec: 3600}); got != time.Hour { t.Fatalf("interval=%v", got) }
+	if got := controllerBackupInterval(config.ControllerDisasterBackupPolicy{}); got != 24*time.Hour {
+		t.Fatalf("interval=%v", got)
+	}
+	if got := controllerBackupInterval(config.ControllerDisasterBackupPolicy{IntervalSec: 3600}); got != time.Hour {
+		t.Fatalf("interval=%v", got)
+	}
 }
 
 func TestReconcileControllerBackupOnceReturnsEarlyWhenDisabled(t *testing.T) {
@@ -34,16 +46,56 @@ func TestReconcileControllerBackupOnceReturnsEarlyWhenDisabled(t *testing.T) {
 func TestControllerBackupTransferEndpointRequiresHTTPS(t *testing.T) {
 	t.Parallel()
 	_, err := controllerBackupTransferEndpoint("http://storage.example/data", "11111111-1111-4111-8111-111111111111")
-	if err == nil { t.Fatal("expected https requirement") }
+	if err == nil {
+		t.Fatal("expected https requirement")
+	}
 	ep, err := controllerBackupTransferEndpoint("https://storage.example/data", "11111111-1111-4111-8111-111111111111")
-	if err != nil { t.Fatalf("err=%v", err) }
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
 	want := "https://storage.example/data/transfer/v1/controller-backups/11111111-1111-4111-8111-111111111111"
-	if ep != want { t.Fatalf("endpoint=%q want %q", ep, want) }
+	if ep != want {
+		t.Fatalf("endpoint=%q want %q", ep, want)
+	}
 }
 
 func TestControllerBackupPolicyFromDefaultSection(t *testing.T) {
 	t.Parallel()
 	server := &Server{}
 	policy := server.controllerBackupPolicy()
-	if !policy.Enabled || policy.RetryMax != 3 { t.Fatalf("policy=%+v", policy) }
+	if !policy.Enabled || policy.RetryMax != 3 {
+		t.Fatalf("policy=%+v", policy)
+	}
+}
+
+func TestControllerBackupRetryCommandIdentityIsAttemptScoped(t *testing.T) {
+	t.Parallel()
+	operationID := "11111111-1111-4111-8111-111111111111"
+	first := deriveWorkflowOperationID(operationID, fmt.Sprintf("receive-controller-backup:%d", 1))
+	second := deriveWorkflowOperationID(operationID, fmt.Sprintf("receive-controller-backup:%d", 2))
+	if first == second || first != deriveWorkflowOperationID(
+		operationID, fmt.Sprintf("receive-controller-backup:%d", 1),
+	) {
+		t.Fatalf("attempt identities first=%q second=%q", first, second)
+	}
+}
+
+func TestControllerBackupArchiveHashStreamsCorrectDigest(t *testing.T) {
+	t.Parallel()
+	payload := make([]byte, 5<<20)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+	path := t.TempDir() + string(os.PathSeparator) + "archive.tar.zst"
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := sha256.Sum256(payload)
+	got, err := controllerFileSHA256(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != hex.EncodeToString(want[:]) {
+		t.Fatalf("digest=%q want=%q", got, hex.EncodeToString(want[:]))
+	}
 }

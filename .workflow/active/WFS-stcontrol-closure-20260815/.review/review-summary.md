@@ -42,3 +42,11 @@ Review completion is partial because confirmed Critical/High findings remain. Th
 The original review disposition above records the pre-fix state. As of 2026-08-15, G1–G4 are implemented and board-verified. The Online stale-write admission root, independent ownership/session conversion, OAuth initiating-browser binding, R14 removal contract, controller rebuild generation fencing, compatibility heartbeat constraint, durable data-fault release, R06 timeout coverage, and conflict polling recovery have no remaining confirmed Critical/High blocker after an independent combined-diff review.
 
 Checkpoint evidence: Online P1 tests 44/44; stcontrol web 19/19 plus production build; `go test ./...`, `go vet ./...`, and `go build ./...` all pass when Go TEMP/TMP is placed on the E: project volume. PostgreSQL-only cases compile and intentionally skip without `STCONTROL_TEST_POSTGRES_DSN`. G5–G7 remain active work, so the overall workflow is not complete and Phase 9 finalization has not begun.
+
+## Final remediation checkpoint — 2026-08-21
+
+The preceding checkpoint is historical. G5–G8 are now complete: Controller backup/storage barriers and retry recovery, Agent limiter/audit closure, cross-repository protocol/process acceptance, and the authorized AI tail are implemented and verified. The Online rebase is conflict-free; OAuth convergence has one durable operation identity across Controller, command queue, Agent and adapter.
+
+Final evidence includes real PostgreSQL Store/Controller packages with 0 fail/0 skip, Online 47/47, web 24/24 plus production build, cross-repository adapter/full-server tests, and the real Controller/two-Agent/Tavern restart scenario (218.83s). That scenario found and closed a recovery-only mode-generation deadlock and premature takeover acknowledgement. `go test -short`, vet, build and diff checks are green.
+
+No confirmed development blocker remains. Linux race/coverage, cross-machine TLS/NAT, real disk/power faults, capacity/browser/soak and upgrade evidence remain release-environment acceptance and are enumerated in `服务器测试清单.md`; they are not represented as locally passed.

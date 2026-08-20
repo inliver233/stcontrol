@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"stcontrol/internal/config"
+	"stcontrol/internal/store"
 )
 
 func TestRateLimiterAllowsUpToLimitThenRejects(t *testing.T) {
@@ -40,6 +42,87 @@ func TestRateLimiterRespectsMaxKeys(t *testing.T) {
 	limiter.allow("b", now)
 	if limiter.allow("c", now) {
 		t.Fatal("key beyond maxKeys was allowed")
+	}
+	if !limiter.allow("a", now) {
+		t.Fatal("existing key was rejected merely because key capacity was full")
+	}
+}
+
+func TestAgentRegisterRateLimitedPerSourceIP(t *testing.T) {
+	t.Parallel()
+	server := &Server{loginLimiter: newRateLimiter(2, time.Minute, 100)}
+	called := 0
+	handler := server.agentRegistrationRateLimitMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	hit := func(ip string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/api/agent/register", strings.NewReader(`{}`))
+		request.RemoteAddr = ip + ":4711"
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	}
+	for i := 0; i < 2; i++ {
+		if got := hit("203.0.113.9").Code; got != http.StatusNoContent {
+			t.Fatalf("registration %d status=%d", i+1, got)
+		}
+	}
+	limited := hit("203.0.113.9")
+	if limited.Code != http.StatusTooManyRequests || limited.Header().Get("Retry-After") == "" {
+		t.Fatalf("limited status=%d headers=%v", limited.Code, limited.Header())
+	}
+	if got := hit("203.0.113.10").Code; got != http.StatusNoContent {
+		t.Fatalf("independent source status=%d", got)
+	}
+	if called != 3 {
+		t.Fatalf("handler called=%d want 3", called)
+	}
+}
+
+func TestAuthenticatedAgentRoutesRateLimitedPerNode(t *testing.T) {
+	t.Parallel()
+	server := &Server{rateLimiter: newRateLimiter(2, time.Minute, 100)}
+	called := 0
+	handler := server.agentRateLimitMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	hit := func(nodeID int64) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/api/agent/commands/lease", strings.NewReader(`{}`))
+		request = request.WithContext(context.WithValue(
+			request.Context(), ctxKey("stcontrol-node"), &store.Node{ID: nodeID},
+		))
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	}
+	for i := 0; i < 2; i++ {
+		if got := hit(12).Code; got != http.StatusNoContent {
+			t.Fatalf("node 12 request %d status=%d", i+1, got)
+		}
+	}
+	if got := hit(12); got.Code != http.StatusTooManyRequests || got.Header().Get("Retry-After") == "" {
+		t.Fatalf("node 12 limited status=%d headers=%v", got.Code, got.Header())
+	}
+	if got := hit(13).Code; got != http.StatusNoContent {
+		t.Fatalf("node 13 should have independent budget, status=%d", got)
+	}
+	if called != 3 {
+		t.Fatalf("handler called=%d want 3", called)
+	}
+}
+
+func TestAgentTrafficLimiterFailsClosedWithoutAuthenticatedNode(t *testing.T) {
+	t.Parallel()
+	server := &Server{rateLimiter: newRateLimiter(2, time.Minute, 100)}
+	handler := server.agentRateLimitMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("unauthenticated request reached handler")
+	}))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/agent/heartbeat", nil))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d want 401", recorder.Code)
 	}
 }
 
@@ -126,7 +209,6 @@ func TestLoginLockoutMiddlewareRejectsLockedUsername(t *testing.T) {
 		t.Fatalf("unlocked status=%d", recorder.Code)
 	}
 }
-
 
 func TestClientIPIgnoresSpoofedForwardedHeadersFromPublicPeer(t *testing.T) {
 	t.Parallel()

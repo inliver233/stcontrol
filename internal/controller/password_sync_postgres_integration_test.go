@@ -292,6 +292,92 @@ func TestControllerPasswordRemovalUsesExactVersionAndCancelsStaleOfflineRemoval(
 	}
 }
 
+func TestControllerOAuthIdentitySyncRetriesPartialAgentFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Controller OAuth identity-sync PostgreSQL integration is disabled in short mode")
+	}
+	ctx, st, generation, _ := newControllerRetirementStore(t)
+	secretKey := []byte("0123456789abcdef0123456789abcdef")
+	first := createControllerBackupNode(t, ctx, st, "oauth-sync-first", "compute", false, generation)
+	second := createControllerBackupNode(t, ctx, st, "oauth-sync-second", "compute", false, generation)
+	psks := map[int64]string{first.ID: "oauth-sync-first-psk", second.ID: "oauth-sync-second-psk"}
+	for nodeID, psk := range psks {
+		seedControllerBackupCredential(t, ctx, st, secretKey, nodeID, generation, psk)
+	}
+	user := createControllerBackupUser(t, ctx, st, first.ID, "oauth-sync-user")
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO node_accounts (user_id,node_id,local_handle,status,updated_at)
+		VALUES ($1,$2,$3,'active',now())`, user.GlobalID, second.ID, user.Username); err != nil {
+		t.Fatalf("seed second OAuth-sync account: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := st.BindOAuthIdentity(ctx, user.GlobalID, "discord", "oauth-stable-subject", now); err != nil {
+		t.Fatalf("bind OAuth identity: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE node_account_oauth_syncs SET updated_at=$2 WHERE global_user_id=$1`,
+		user.GlobalID, now.Add(-3*time.Minute)); err != nil {
+		t.Fatalf("age OAuth identity intents: %v", err)
+	}
+
+	var secondAttempts atomic.Int32
+	harness := newControllerDurableCommandHarness(
+		ctx, st, psks,
+		func(nodeID int64, lease *store.AgentCommandLease, plaintext []byte) (agentCommandSummary, bool, error) {
+			if lease.CommandType != "set_oauth_identity" {
+				return agentCommandSummary{}, false, fmt.Errorf("unexpected OAuth-sync command %q", lease.CommandType)
+			}
+			var request protocol.SetOAuthIdentityRequest
+			if err := json.Unmarshal(plaintext, &request); err != nil || request.OperationID != lease.OperationID ||
+				request.Handle != user.Username || request.Provider != "discord" ||
+				request.Subject != "oauth-stable-subject" || request.Remove || request.Version <= 0 {
+				return agentCommandSummary{}, false, fmt.Errorf(
+					"invalid OAuth-sync payload on node %d: request=%+v err=%v", nodeID, request, err,
+				)
+			}
+			if nodeID == second.ID && secondAttempts.Add(1) == 1 {
+				return agentCommandSummary{OK: false, Code: "oauth_identity_update_failed"}, false, nil
+			}
+			return agentCommandSummary{OK: true}, true, nil
+		},
+	)
+	t.Cleanup(harness.stop)
+	server := New(config.DefaultController(), st, secretKey)
+	syncs, err := st.ListPendingOAuthIdentitySyncs(ctx, 20, time.Now().UTC())
+	if err != nil || len(syncs) != 2 {
+		t.Fatalf("load initial OAuth syncs: syncs=%+v err=%v", syncs, err)
+	}
+	if synced, pending := server.deliverOAuthIdentitySyncs(ctx, syncs); synced != 1 || pending != 1 {
+		t.Fatalf("first OAuth delivery synced=%d pending=%d harness_errors=%v", synced, pending, harness.errors())
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE node_account_oauth_syncs SET updated_at=$3
+		WHERE global_user_id=$1 AND node_id=$2 AND state='pending'`,
+		user.GlobalID, second.ID, now.Add(-4*time.Minute)); err != nil {
+		t.Fatalf("age failed OAuth identity intent: %v", err)
+	}
+	syncs, err = st.ListPendingOAuthIdentitySyncs(ctx, 20, time.Now().UTC())
+	if err != nil || len(syncs) != 1 || syncs[0].NodeID != second.ID {
+		t.Fatalf("load retried OAuth sync: syncs=%+v err=%v", syncs, err)
+	}
+	if synced, pending := server.deliverOAuthIdentitySyncs(ctx, syncs); synced != 1 || pending != 0 {
+		t.Fatalf("retry OAuth delivery synced=%d pending=%d harness_errors=%v", synced, pending, harness.errors())
+	}
+	var completed int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT count(*) FROM node_account_oauth_syncs
+		WHERE global_user_id=$1 AND provider='discord' AND state='completed'`, user.GlobalID).
+		Scan(&completed); err != nil || completed != 2 {
+		t.Fatalf("completed OAuth node projections=%d err=%v", completed, err)
+	}
+	if secondAttempts.Load() != 2 || harness.commandCount("set_oauth_identity") != 3 {
+		t.Fatalf("second attempts=%d total commands=%d", secondAttempts.Load(), harness.commandCount("set_oauth_identity"))
+	}
+	if errs := harness.errors(); len(errs) > 0 {
+		t.Fatalf("OAuth-sync durable command harness errors: %v", errs)
+	}
+}
+
 func waitControllerNodeAccountState(
 	t *testing.T,
 	ctx context.Context,

@@ -1324,7 +1324,7 @@ func processE2ERepositoryRoots(t *testing.T) (string, string) {
 		t.Fatal("resolve process test source path")
 	}
 	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
-	return repositoryRoot, filepath.Clean(filepath.Join(repositoryRoot, "..", "Sillytarven-online"))
+	return repositoryRoot, resolveTavernRepositoryRoot(repositoryRoot)
 }
 
 func newProcessE2ESchema(t *testing.T) (string, func()) {

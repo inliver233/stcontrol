@@ -234,8 +234,12 @@ func (s *Store) reconcileNodeControlModeAuthenticated(
 		}
 		return NodeControlModeDecision{
 			ControllerGeneration: activeGeneration,
-			DesiredMode:          currentDesired,
-			ModeGeneration:       currentDesiredGeneration,
+			// A recovery-only credential must not roll a newer local mode
+			// generation backward before it can accept the successor
+			// credential. Echo the authenticated report without publishing it;
+			// the next current-generation heartbeat is the durable authority.
+			DesiredMode:    fact.Mode,
+			ModeGeneration: fact.ModeGeneration,
 		}, nil
 	}
 	if fact.ModeGeneration < currentModeGeneration ||

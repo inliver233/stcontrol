@@ -169,7 +169,7 @@ func TestControllerRebuildAllowsOldCredentialForHeartbeatOnly(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 9, 4, 0, 0, 0, time.UTC)
 	fact := NodeControlModeFact{
-		Mode: NodeModeManaged, ModeGeneration: 2,
+		Mode: NodeModeIndependentDraining, ModeGeneration: 7,
 		ControllerGeneration: 5, ObservedAt: now,
 	}
 
@@ -185,7 +185,7 @@ func TestControllerRebuildAllowsOldCredentialForHeartbeatOnly(t *testing.T) {
 			int64(6), int64(12), int64(4),
 		).WillReturnRows(sqlmock.NewRows([]string{"allowed"}).AddRow(true))
 		mock.ExpectQuery(`UPDATE controller_rebuild_nodes item SET`).WithArgs(
-			int64(12), int64(6), int64(4), NodeModeManaged, NodeModeManaged, now,
+			int64(12), int64(6), int64(4), NodeModeIndependentDraining, NodeModeManaged, now,
 		).WillReturnRows(sqlmock.NewRows([]string{"rebuild_id"}).
 			AddRow("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
 		mock.ExpectExec(`UPDATE controller_rebuild_nodes item`).WithArgs(
@@ -203,7 +203,8 @@ func TestControllerRebuildAllowsOldCredentialForHeartbeatOnly(t *testing.T) {
 		decision, err := st.ReconcileNodeControlModeAuthenticated(
 			context.Background(), 12, fact, 4,
 		)
-		if err != nil || decision.ControllerGeneration != 6 || decision.DesiredMode != NodeModeManaged {
+		if err != nil || decision.ControllerGeneration != 6 ||
+			decision.DesiredMode != NodeModeIndependentDraining || decision.ModeGeneration != 7 {
 			t.Fatalf("decision=%+v err=%v", decision, err)
 		}
 		assertMockExpectations(t, mock)

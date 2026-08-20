@@ -109,7 +109,7 @@ func TestIndependentDrainingCommandAllowlistIsClosed(t *testing.T) {
 			t.Errorf("reconciliation command %q was rejected", commandType)
 		}
 	}
-	for _, commandType := range []string{"provision_user", "set_password", "restore_user_account", "scan_existing", ""} {
+	for _, commandType := range []string{"provision_user", "set_password", "set_oauth_identity", "restore_user_account", "scan_existing", ""} {
 		if independentReconciliationCommand(commandType) {
 			t.Errorf("ordinary command %q was allowed while draining", commandType)
 		}
@@ -554,6 +554,72 @@ func TestPasswordRemovalWithoutRemoveFlagStillRequiresHashMaterial(t *testing.T)
 	}
 	if succeeded || summary.Code != "invalid_command_payload" {
 		t.Fatalf("succeeded=%v code=%q result=%s", succeeded, summary.Code, result)
+	}
+}
+
+func TestOAuthIdentityCommandPassesExactVersionedIntentToAdapter(t *testing.T) {
+	t.Parallel()
+	operationID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	var adapterRequest protocol.SetOAuthIdentityRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/stcontrol/internal/users/oauth" {
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&adapterRequest); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	}))
+	defer server.Close()
+	a, err := New(&config.AgentConfig{
+		Role: "compute", TavernURL: server.URL, AgentPSK: "agent-secret", NodeID: 12, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := encryptedTestCommand(t, a.Cfg.AgentPSK, "set_oauth_identity", []byte(`{
+		"handle":"alice","provider":"discord","subject":"stable-subject","remove":true,"version":9
+	}`))
+	command.OperationID = operationID
+	succeeded, result := a.executeCommand(context.Background(), command)
+	if !succeeded || adapterRequest.OperationID != operationID || adapterRequest.Handle != "alice" ||
+		adapterRequest.Provider != "discord" || adapterRequest.Subject != "stable-subject" ||
+		!adapterRequest.Remove || adapterRequest.Version != 9 {
+		t.Fatalf("succeeded=%v request=%+v result=%s", succeeded, adapterRequest, result)
+	}
+}
+
+func TestOAuthIdentityCommandRejectsMalformedOrStoragePayload(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		role    string
+		payload string
+	}{
+		{name: "unknown provider", role: "compute", payload: `{"handle":"alice","provider":"github","subject":"x","version":1}`},
+		{name: "missing subject", role: "compute", payload: `{"handle":"alice","provider":"discord","version":1}`},
+		{name: "missing version", role: "compute", payload: `{"handle":"alice","provider":"discord","subject":"x"}`},
+		{name: "storage role", role: "storage", payload: `{"handle":"alice","provider":"discord","subject":"x","version":1}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			a, err := New(&config.AgentConfig{
+				Role: test.role, AgentPSK: "agent-secret", NodeID: 12, DataDir: t.TempDir(), BackupDir: t.TempDir(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			command := encryptedTestCommand(t, a.Cfg.AgentPSK, "set_oauth_identity", []byte(test.payload))
+			command.OperationID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+			succeeded, result := a.executeCommand(context.Background(), command)
+			var summary safeCommandResult
+			if err := json.Unmarshal(result, &summary); err != nil {
+				t.Fatal(err)
+			}
+			if succeeded || summary.Code != "invalid_command_payload" {
+				t.Fatalf("succeeded=%v code=%q result=%s", succeeded, summary.Code, result)
+			}
+		})
 	}
 }
 

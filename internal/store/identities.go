@@ -81,6 +81,11 @@ func (s *Store) BindOAuthIdentity(
 		WHERE user_id=$1`, globalUserID, provider, providerSubject, now); err != nil {
 		return err
 	}
+	if _, err := stageOAuthIdentitySyncs(
+		ctx, tx, globalUserID, provider, providerSubject, true, now,
+	); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -155,6 +160,18 @@ func (s *Store) UnbindUserIdentity(ctx context.Context, legacyUserID, globalUser
 	if activeCount <= 1 {
 		return ErrLastIdentity
 	}
+	var oauthSubject string
+	if provider != "password" {
+		if err := tx.QueryRowContext(ctx, `
+			SELECT provider_subject FROM auth_identities
+			WHERE user_id=$1 AND provider=$2 AND status='active'
+			FOR UPDATE`, globalUserID, provider).Scan(&oauthSubject); err != nil {
+			if err == sql.ErrNoRows {
+				return ErrInvalidIdentity
+			}
+			return err
+		}
+	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE auth_identities SET status='revoked',updated_at=$3
 		WHERE user_id=$1 AND provider=$2 AND status='active'`, globalUserID, provider, now)
@@ -186,6 +203,11 @@ func (s *Store) UnbindUserIdentity(ctx context.Context, legacyUserID, globalUser
 			WHERE user_id=$1`, globalUserID, provider, now); err != nil {
 			return err
 		}
+		if _, err := stageOAuthIdentitySyncs(
+			ctx, tx, globalUserID, provider, oauthSubject, false, now,
+		); err != nil {
+			return err
+		}
 	}
 	var nextProvider, nextSubject string
 	var nextPassword sql.NullString
@@ -196,15 +218,15 @@ func (s *Store) UnbindUserIdentity(ctx context.Context, legacyUserID, globalUser
 		Scan(&nextProvider, &nextSubject, &nextPassword); err != nil {
 		return err
 	}
-	var oauthSubject any
+	var nextOAuthSubject any
 	if nextProvider != "password" {
-		oauthSubject = nextSubject
+		nextOAuthSubject = nextSubject
 	}
 	result, err = tx.ExecContext(ctx, `
 		UPDATE users SET auth_provider=$2,oauth_id=$3,password_enc=NULL,password_hash=$4
 		WHERE id=$1 AND EXISTS (
 		  SELECT 1 FROM global_users WHERE id=$5 AND legacy_user_id=$1
-		)`, legacyUserID, nextProvider, oauthSubject, nextPassword, globalUserID)
+		)`, legacyUserID, nextProvider, nextOAuthSubject, nextPassword, globalUserID)
 	if err != nil {
 		return err
 	}

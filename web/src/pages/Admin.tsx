@@ -303,14 +303,31 @@ export function StatusBadge({ node, healthLabel, reasonLabel }: {
 }
 
 // ---------- 节点管理 ----------
+export function filterAdminNodes(nodes: AdminNode[], query: string, role: string, state: string): AdminNode[] {
+  const normalized = query.trim().toLocaleLowerCase()
+  return nodes.filter(node => {
+    if (role && node.role !== role) return false
+    if (state && ![node.connectivity_state, node.operational_state, node.capacity_state, node.compatibility_state].includes(state)) return false
+    if (!normalized) return true
+    const region = node.region?.Valid ? node.region.String : ''
+    return [String(node.id), node.name, node.base_url, region]
+      .some(value => value.toLocaleLowerCase().includes(normalized))
+  })
+}
+
 function NodesAdmin() {
   const [nodes, setNodes] = useState<AdminNode[]>([])
+  const [loading, setLoading] = useState(true)
+  const [nodeQuery, setNodeQuery] = useState('')
+  const [nodeRole, setNodeRole] = useState('')
+  const [nodeState, setNodeState] = useState('')
   const [retirements, setRetirements] = useState<Record<number, NodeRetirement>>({})
   const [compatibilityIncidents, setCompatibilityIncidents] = useState<Record<number, CompatibilityIncident>>({})
   const [nodeLinks, setNodeLinks] = useState<AdminNodeLink[]>([])
   const [tokenInfo, setTokenInfo] = useState<RegisterToken | null>(null)
   const [scanResult, setScanResult] = useState<ScanResult | null>(null)
   const [error, setError] = useState('')
+  const [loadError, setLoadError] = useState('')
   const [message, setMessage] = useState('')
   const [scanningNode, setScanningNode] = useState<number>(0)
   const [linkNode, setLinkNode] = useState<AdminNode | null>(null)
@@ -391,6 +408,7 @@ function NodesAdmin() {
 
   const load = () => Promise.all([adminApi.nodes(), adminApi.nodeLinks()])
     .then(async ([nodeData, linkData]) => {
+      setLoadError('')
       setNodes(nodeData.nodes ?? [])
       setNodeLinks(linkData.links || [])
       const tracked = (nodeData.nodes ?? []).filter((node: AdminNode) =>
@@ -413,7 +431,8 @@ function NodesAdmin() {
       })
       setCompatibilityIncidents(compatibilityProgress)
     })
-    .catch(e => setError(e.message))
+    .catch(e => setLoadError(e instanceof Error ? e.message : '节点列表加载失败'))
+    .finally(() => setLoading(false))
   useEffect(() => {
     load()
     const timer = window.setInterval(load, 15_000)
@@ -606,10 +625,12 @@ function NodesAdmin() {
     const raw = typeof value === 'number' ? value : (value?.Int64 ?? 0)
     return raw > 0 ? `${(raw / 1073741824).toFixed(1)}GB` : '-'
   }
+  const visibleNodes = filterAdminNodes(nodes, nodeQuery, nodeRole, nodeState)
 
   return (
     <>
       <h2>节点管理</h2>
+      {loadError && <div className="error-msg" role="alert">{loadError} <button className="btn-sm" type="button" onClick={() => void load()}>重试</button></div>}
       {error && <div className="error-msg">{error}</div>}
       {message && <div className="success-msg">{message}</div>}
       {linkNode && (
@@ -688,6 +709,30 @@ function NodesAdmin() {
         <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>节点角色在注册后不可直接修改；如需变更请先排空数据、退役节点后按新角色重新添加。</span>
       </div>
 
+      <form className="card admin-filters" onSubmit={event => event.preventDefault()}>
+        <div className="field">
+          <label htmlFor="node-query">节点关键字</label>
+          <input id="node-query" type="search" value={nodeQuery} onChange={event => setNodeQuery(event.target.value)} placeholder="名称、ID、地区或地址" />
+        </div>
+        <div className="field">
+          <label htmlFor="node-role">角色</label>
+          <select id="node-role" value={nodeRole} onChange={event => setNodeRole(event.target.value)}>
+            <option value="">全部</option><option value="compute">计算</option><option value="storage">存储</option>
+          </select>
+        </div>
+        <div className="field">
+          <label htmlFor="node-state">状态</label>
+          <select id="node-state" value={nodeState} onChange={event => setNodeState(event.target.value)}>
+            <option value="">全部</option><option value="online">在线</option><option value="offline">离线</option>
+            <option value="active">运营</option><option value="maintenance">维护</option><option value="draining">排空</option>
+            <option value="open">开放</option><option value="busy">繁忙</option><option value="full">满载</option>
+            <option value="incompatible">不兼容</option>
+          </select>
+        </div>
+        <button className="btn-sm" type="button" disabled={!nodeQuery && !nodeRole && !nodeState} onClick={() => { setNodeQuery(''); setNodeRole(''); setNodeState('') }}>清除筛选</button>
+        <span className="filter-summary" aria-live="polite">显示 {visibleNodes.length} / {nodes.length} 个节点</span>
+      </form>
+
       {showWizard && (
         <form onSubmit={createNode} className="card" style={{ margin: '0 0 20px', maxWidth: 640 }}>
           <h3>添加节点</h3>
@@ -759,7 +804,11 @@ function NodesAdmin() {
           <tr><th>ID</th><th>名称</th><th>角色</th><th>综合状态</th><th>窗口负载</th><th>磁盘/配额</th><th>用户/队列</th><th>版本</th><th>操作</th></tr>
         </thead>
         <tbody>
-          {nodes.map(n => {
+          {loading ? (
+            <tr><td colSpan={9}><div className="loading" role="status">正在加载节点…</div></td></tr>
+          ) : visibleNodes.length === 0 ? (
+            <tr><td colSpan={9}><div className="empty-state">{nodes.length === 0 ? '尚未添加节点。' : '没有符合当前筛选条件的节点。'}</div></td></tr>
+          ) : visibleNodes.map(n => {
             const link = nodeLink(n.id)
             const retirement = retirements[n.id]
             const compatibilityIncident = compatibilityIncidents[n.id]

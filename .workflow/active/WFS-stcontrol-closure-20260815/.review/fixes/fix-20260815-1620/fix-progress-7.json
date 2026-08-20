@@ -1,1 +1,1 @@
-{"group_id":"G7","status":"pending","attempt":0,"findings_total":3,"findings_fixed":0,"tests":[]}
+{"group_id":"G7","status":"completed","attempt":1,"findings_total":3,"findings_fixed":3,"tests":["Online stcontrol Node suites 47/47","cross-repository Go adapter/full-server tests pass","Controller/Agent/Tavern process restart E2E 218.83s pass"]}

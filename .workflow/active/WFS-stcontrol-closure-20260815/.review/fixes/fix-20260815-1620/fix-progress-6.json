@@ -1,1 +1,1 @@
-{"group_id":"G6","status":"pending","attempt":0,"findings_total":2,"findings_fixed":0,"tests":[]}
+{"group_id":"G6","status":"completed","attempt":1,"findings_total":2,"findings_fixed":2,"tests":["Agent registration per-IP and authenticated per-node limiter tests","go test -short -count=1 ./...","go vet ./...","go build ./..."]}

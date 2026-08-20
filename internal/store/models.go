@@ -134,6 +134,19 @@ type PendingPasswordRemoval struct {
 	Version      int64
 }
 
+// PendingOAuthIdentitySync is a durable, per-provider projection intent for a
+// node-local account. Version is the node account version and fences delayed
+// add/remove commands across account replacement or later identity changes.
+type PendingOAuthIdentitySync struct {
+	GlobalUserID   int64
+	NodeID         int64
+	LocalHandle    string
+	Provider       string
+	Subject        string
+	Version        int64
+	DesiredPresent bool
+}
+
 // Ticket 一次性票据。
 type Ticket struct {
 	ID        int64

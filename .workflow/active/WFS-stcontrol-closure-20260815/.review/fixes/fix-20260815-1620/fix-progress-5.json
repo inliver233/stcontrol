@@ -1,1 +1,1 @@
-{"group_id":"G5","status":"pending","attempt":0,"findings_total":3,"findings_fixed":0,"tests":[]}
+{"group_id":"G5","status":"completed","attempt":1,"findings_total":3,"findings_fixed":3,"tests":["Controller disaster-backup retry/restart/barrier/streaming digest tests","storage repair schedule/claim transactional barrier tests","real PostgreSQL internal/store + internal/controller: 0 fail, 0 skip"]}

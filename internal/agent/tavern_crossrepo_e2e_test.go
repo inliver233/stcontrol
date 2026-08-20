@@ -19,6 +19,29 @@ import (
 	"stcontrol/internal/protocol"
 )
 
+const testTavernRootEnv = "STCONTROL_TEST_TAVERN_ROOT"
+
+func resolveTavernRepositoryRoot(repositoryRoot string) string {
+	candidates := make([]string, 0, 3)
+	if override := strings.TrimSpace(os.Getenv(testTavernRootEnv)); override != "" {
+		candidates = append(candidates, override)
+	}
+	// A normal checkout has both repositories as siblings. A git worktree
+	// stored inside stcontrol (for example .flash-worktree) needs one more
+	// parent traversal. Supporting both keeps acceptance tests relocatable.
+	candidates = append(candidates,
+		filepath.Join(repositoryRoot, "..", "Sillytarven-online"),
+		filepath.Join(repositoryRoot, "..", "..", "Sillytarven-online"),
+	)
+	for _, candidate := range candidates {
+		root := filepath.Clean(candidate)
+		if info, err := os.Stat(filepath.Join(root, "server.js")); err == nil && !info.IsDir() {
+			return root
+		}
+	}
+	return filepath.Clean(candidates[0])
+}
+
 func TestGoAgentCallsRealSillyTavernAdapter(t *testing.T) {
 	if testing.Short() {
 		t.Skip("cross-repository adapter test is disabled in short mode")
@@ -32,7 +55,7 @@ func TestGoAgentCallsRealSillyTavernAdapter(t *testing.T) {
 		t.Fatal("resolve test source path")
 	}
 	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
-	tavernRoot := filepath.Clean(filepath.Join(repositoryRoot, "..", "Sillytarven-online"))
+	tavernRoot := resolveTavernRepositoryRoot(repositoryRoot)
 	fixture := filepath.Join(tavernRoot, "tests", "fixtures", "stcontrol-adapter-server.mjs")
 	if _, err := os.Stat(fixture); err != nil {
 		t.Skipf("Sillytarven adapter fixture is unavailable: %v", err)
@@ -140,7 +163,7 @@ func TestGoAgentCallsFullSillyTavernServerWithCSRF(t *testing.T) {
 		t.Fatal("resolve test source path")
 	}
 	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
-	tavernRoot := filepath.Clean(filepath.Join(repositoryRoot, "..", "Sillytarven-online"))
+	tavernRoot := resolveTavernRepositoryRoot(repositoryRoot)
 	serverScript := filepath.Join(tavernRoot, "server.js")
 	configPath := filepath.Join(tavernRoot, "tests", "fixtures", "stcontrol-config.yaml")
 	if _, err := os.Stat(serverScript); err != nil {

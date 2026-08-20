@@ -41,6 +41,20 @@
 
 ## 当前基线证据
 
+### 2026-08-21 开发收尾校正
+
+本节以当前 `flash`/`online` 实现和真实回归结果为准，并明确覆盖上表较早批次中的“仍缺”描述：
+
+- **R09/R19**：旧物理目录与计算临时副本的清理并非代码缺口。`replica_cleanup` 的 Store、Controller、Agent 固定命令、identity/generation fence、稳定窗口、crash tombstone 和 PostgreSQL 恢复测试已经贯通；开发态仅保留 Linux 双进程、真实磁盘故障和 storage-retirement 故障注入矩阵给服务器验收。
+- **R11**：Agent 新增只读 `--audit` 查询，覆盖当前/轮转 JSONL、时间/动作/结果筛选、limit，以及坏 JSON、符号链接和超限证据 fail-closed。客户端证书、撤销与跨机权限仍属于服务器矩阵。
+- **R14**：迁移 0052 和 durable per-node/per-provider OAuth intent 已闭环 add/remove、exact subject、account version fence、partial failure retry；Controller payload、`agent_commands.operation_id`、Agent/Online adapter 三层 operation identity 一致。真实 PostgreSQL 部分失败测试和 Online 固定 `/users/oauth` 端点回归均通过。
+- **R16/R20**：候选合并页面已实现节点/账号/ID 筛选、错误/空态、稳定 operation ID、忙碌门禁和重放语义；管理员节点组合筛选、Register/SelectNode 加载失败与真实空态、移动端布局均已完成。组件测试 24/24 与 production build 已通过，只保留真实 cookie/CSRF/API 和移动浏览器矩阵。
+- **R21**：Agent enrollment 按受信源 IP 限流、认证 Agent 流量按 node ID 独立限流，和用户/管理员 namespace 分离且 key 数量有界。真实 1k HTTP 并发、带宽和吞吐仍由服务器执行。
+- Controller 离线备份扫描现在只排 durable workflow，不再同步执行最长 8 小时任务；Controller disaster backup 的 barrier、due retry、lease recovery、attempt identity、失败计数与 streaming SHA-256，以及 storage repair 的事务内 recovery barrier 均已闭环。
+- Controller 世代恢复修复了灾难模式高 `mode_generation` 被旧凭据 recovery heartbeat 回滚的死锁；旧凭据只回显、不发布本地模式事实，也不会提前确认未落库 takeover。真实 Controller/双 Agent/Online adapter 重启 E2E 已通过。
+
+因此当前剩余项是服务器/跨机/浏览器/容量/故障注入验收，而不是已知开发实现缺口。完整执行步骤见工作区根目录 `服务器测试清单.md`。
+
 - 2026-08-15 第二批复验基线：真实 PostgreSQL `go test -count=1 -run 'TestPostgres|TestController' ./internal/store/ ./internal/controller/` 44 PASS / 0 SKIP / 0 FAIL（含决策④采纳 3 例、真实 pg_dump 端到端 1 例、采纳 HTTP 1 例）；48 个迁移（0001–0048）连续；`go build/vet/test -short ./...` 全绿；web tsc + vitest 16/16；Online 5 个 stcontrol 套件 28/28。跨平台合并覆盖率与 80% 门禁差距、-race、跨机矩阵仍按“Linux 服务器迁移后验收”口径保留。
 
 - 设置真实 PostgreSQL DSN 后执行 `go test -count=1 -coverpkg=./... -coverprofile=coverage/real_crosspkg.out ./...`、`go vet ./...`、`go build ./...`：全部通过；Windows 全量按文件区间去重覆盖率 63.9%。同一提交另以 WSL 内项目私有 GOPATH/GOCACHE、官方 Go 1.22.5 执行 Linux `internal/agent` 全套并生成跨包 profile；两个平台按相同文件区间取最大命中后为 66.7%（Agent 72.1%、Controller 63.6%、Store 67.0%），这是包含 Linux-only 安全文件系统路径的当前门禁基线。本轮真实数据库套件、双节点进程验收、Controller direct/relay 备份、archive restore、灾难排空/接管/双写冲突/独立写对账、capacity/queue scale、conflict evidence/resolution/节点退休/用户数据冻结/分层副本校验/密码同步故障矩阵及实际 Router 管理/用户/Agent/OAuth/注册/导入/票据 HTTP 验收均包含在全量测试中；总覆盖率仍远低于最终 80% 门禁，不能据此宣称上线完成。Windows `-race` 因宿主 C 编译器不支持 64-bit `runtime/cgo` 而无法构建，WSL 也未安装 gcc，均未计作通过。

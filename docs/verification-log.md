@@ -470,3 +470,16 @@
 - 真实 PostgreSQL 覆盖 Controller 第一次提升后 Agent 已持久接受 N+1、但尚用 N 凭据时再次崩溃并提升 N+2；N 凭据仍只能执行 N+2 恢复心跳，随后轮换并完成 rebuild。恢复前旧节点不能领取新世代命令，完成后旧凭据恢复例外消失，当前凭据可领取命令且操作门才重新开放。
 - 管理员 `/api/admin/controller/rebuild` 与仪表盘显示 generation、完成数及逐节点机器状态；加载失败显式显示。`go test ./...`、`go vet ./...`、Windows/Linux build、web production build、34 migration 真实 PostgreSQL 矩阵和 `git diff --check` 通过；总覆盖率 43.6%，仍低于最终 80%。
 - 尚未完成且未冒充完成：真实 Controller/Agent 双进程网络中断、PostgreSQL/配置/主密钥备份恢复演练、跨机部署安装矩阵及全局 80% 覆盖率继续后续阶段，R12/R20 保持 `部分`。
+
+## 2026-08-21：flash / online 最终开发收尾批次
+
+- Online `online` 分支完成 rebase 和 3 个冲突文件的语义合并；保留 user/admin 双向 handoff 清理、password removal 单调版本、independent ownership proof、atomic admission/fault fencing，并加入多 OAuth map、`oauth_identity_sync` capability 和 exact per-provider version tombstone。六个 stcontrol Node 文件 47/47，通过受影响文件 ESLint 和语法检查。
+- stcontrol 新增 migration 0052 和 durable OAuth convergence：per-node/per-provider add/remove intent、版本栅栏、固定 `set_oauth_identity` Agent command 与 Online adapter contract；真实 PostgreSQL partial-failure 先失败一节点、再由新 worker 重试收敛。修复 durable payload 缺失 operation ID，现 payload、command row、adapter request 三层完全一致。
+- Agent 新增 `--audit` 安全查询；Agent registration per-IP 与 authenticated per-node 限流完成，独立 namespace、可信代理 IP 解析和有界 key map 均有回归。
+- 离线扫描改为仅排 durable backup；Controller disaster backup 增加 schedule/claim 事务内 recovery barrier、重启 due retry、过期 lease rearm、精确 attempt、流式摘要和全阶段失败持久化；storage repair 的 schedule/claim 同样在事务内复核恢复门。
+- 账号候选合并、管理员节点筛选、Register/SelectNode 错误/空态和响应式布局完成；Vitest 4 files / 24 tests、TypeScript/Vite production build 通过。
+- 跨仓 Go 测试根目录解析支持 `STCONTROL_TEST_TAVERN_ROOT`、普通 sibling 和嵌套 worktree；真实 Agent→adapter 与完整 SillyTavern server 两项均通过。
+- 真实 PostgreSQL `internal/store` + `internal/controller` 全包运行 0 fail / 0 skip（Store 22.90s、Controller 66.29s）；期间发现并修复 OAuth HTTP 场景被自身安全负例耗尽登录预算、异步 user-data release 断言竞态，以及 `TestPostgresCriticalConcurrency` fixture 在连续 promotion 后复用旧节点的问题。
+- 真实 Controller/双 Agent/Online adapter 进程重启 E2E 首次暴露 recovery-only heartbeat 返回旧 desired generation 的死锁：Agent 本地灾难模式 generation 更高，先拒绝响应，永远无法接受 successor credential，takeover 也不能落库。修复为 recovery-only 只回显（不发布）当前 Agent mode/generation，且只有 current-generation heartbeat 才返回 takeover acknowledgements；复跑 218.83s 通过。
+- `go test -short -count=1 ./...`、`go vet ./...`、`go build ./...`、`git diff --check` 均通过。真实 PostgreSQL 全仓用 `go test -p 1 -count=1 ./...` 复跑 318.1s：0 fail，唯一 skip 是 Windows 主机不支持的 Linux-only 原子 snapshot publication；该项必须在服务器 Linux 重跑。必须使用 `-p 1`，因为进程 E2E 与 Store 集成测试共享数据库级 Controller advisory lock；包级并发会产生测试夹具之间的假竞争。
+- 开发实现已收尾；Linux race/80% 覆盖率、TLS/NAT、真实 ENOSPC/掉电、storage retirement 双进程、1k HTTP/吞吐、移动与桌面真实浏览器、72h soak/滚动升级仍按服务器验收清单执行，未被本机结果冒充为发布 PASS。
