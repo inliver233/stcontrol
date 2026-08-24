@@ -11,12 +11,14 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/controller ./cmd/controller
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/controller ./cmd/controller \
+    && sh ./scripts/build-agent-dist.sh /out
 
 FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 COPY --from=gobuild /out/controller /app/controller
+COPY --from=gobuild /out/agent-linux-* /app/dist/
 COPY --from=webbuild /web/dist /app/web/dist
 EXPOSE 8443
 ENTRYPOINT ["/app/controller", "--config", "/app/controller.yaml"]

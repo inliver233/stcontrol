@@ -87,6 +87,10 @@ func (formatter queryRedactingLogFormatter) NewLogEntry(r *http.Request) middlew
 }
 
 func (s *Server) routes(r *chi.Mux) {
+	// Agent 产物必须在 SPA 回退前使用独立路由；未知或缺失产物返回 404。
+	r.Get("/dist", http.NotFound)
+	r.Get("/dist/*", s.handleAgentArtifact)
+
 	// 静态前端（React 构建产物, 若存在）
 	s.mountStatic(r)
 

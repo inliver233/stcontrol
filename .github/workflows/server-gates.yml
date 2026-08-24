@@ -24,7 +24,7 @@ jobs:
           cache: true
       - uses: actions/setup-node@v7
         with:
-          node-version: 20.20.2
+          node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Verify Go and coverage gate parser
@@ -33,6 +33,19 @@ jobs:
           go vet ./...
           go build ./...
           scripts/test-check-go-coverage.sh
+          bash -n scripts/install.sh
+          cmp scripts/install.sh internal/controller/install.sh
+          bash scripts/test-install.sh
+      - name: Build checksummed Linux Agent artifacts
+        run: |
+          sh scripts/build-agent-dist.sh /tmp/stcontrol-agent-dist
+          (cd /tmp/stcontrol-agent-dist && sha256sum --check agent-linux-amd64.sha256 agent-linux-arm64.sha256)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: stcontrol-agent-${{ github.sha }}
+          path: /tmp/stcontrol-agent-dist/
+          if-no-files-found: error
+          retention-days: 14
       - name: Run short race suite
         run: go test -short -race -p=1 -count=1 ./...
       - name: Test and build Web
@@ -64,6 +77,7 @@ jobs:
     env:
       STCONTROL_TEST_POSTGRES_DSN: postgres://stcontrol_test:stcontrol_ci_only@127.0.0.1:5432/stcontrol_test?sslmode=disable
       STCONTROL_TEST_TAVERN_ROOT: /tmp/stcontrol-ci-Sillytarven-online
+      STCONTROL_TEST_TAVERN_SHA: 419cdec7e96560d39585f074b0faa1e9e217afcf
       STCONTROL_TEST_PG_BIN: /tmp/stcontrol-ci-pg17/pg_dump
     steps:
       - uses: actions/checkout@v7
@@ -73,12 +87,17 @@ jobs:
           cache: true
       - uses: actions/setup-node@v7
         with:
-          node-version: 20.20.2
+          node-version: 24
       - name: Prepare pinned cross-repository fixture
         run: |
-          git clone --depth=1 --branch online https://github.com/inliver233/Sillytarven-online.git "$STCONTROL_TEST_TAVERN_ROOT"
+          git init "$STCONTROL_TEST_TAVERN_ROOT"
+          git -C "$STCONTROL_TEST_TAVERN_ROOT" remote add origin https://github.com/inliver233/Sillytarven-online.git
+          git -C "$STCONTROL_TEST_TAVERN_ROOT" fetch --depth=1 origin "$STCONTROL_TEST_TAVERN_SHA"
+          git -C "$STCONTROL_TEST_TAVERN_ROOT" checkout --detach FETCH_HEAD
+          test "$(git -C "$STCONTROL_TEST_TAVERN_ROOT" rev-parse HEAD)" = "$STCONTROL_TEST_TAVERN_SHA"
           npm ci --ignore-scripts --prefix "$STCONTROL_TEST_TAVERN_ROOT"
           npm run postinstall --prefix "$STCONTROL_TEST_TAVERN_ROOT"
+          npm run test:server-update --prefix "$STCONTROL_TEST_TAVERN_ROOT"
       - name: Provide PostgreSQL 17 pg_dump
         run: |
           mkdir -p "$(dirname "$STCONTROL_TEST_PG_BIN")"
@@ -98,3 +117,21 @@ jobs:
           path: coverage.out
           if-no-files-found: error
           retention-days: 14
+
+  deployable-controller-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build controller image with Agent distribution
+        run: docker build --file Dockerfile.controller --tag stcontrol-controller:server-ci .
+      - name: Verify Agent artifacts inside the image
+        run: |
+          container_id="$(docker create stcontrol-controller:server-ci)"
+          trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
+          mkdir -p /tmp/controller-agent-dist
+          docker cp "$container_id:/app/dist/." /tmp/controller-agent-dist/
+          cd /tmp/controller-agent-dist
+          sha256sum --check agent-linux-amd64.sha256 agent-linux-arm64.sha256
+          test -s agent-linux-amd64
+          test -s agent-linux-arm64

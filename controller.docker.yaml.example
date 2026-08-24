@@ -8,6 +8,7 @@ tls_key_file: /run/stcontrol-tls/tls.key
 database_url: postgres://stcontrol:stcontrol@db:5432/stcontrol?sslmode=disable
 secret_key_env: CONTROLLER_SECRET_KEY
 static_dir: /app/web/dist
+agent_dist_dir: /app/dist
 
 relay:
   listen: ""

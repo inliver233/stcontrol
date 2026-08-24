@@ -2,6 +2,13 @@ package config
 
 import "testing"
 
+func TestDefaultControllerPublishesAgentArtifacts(t *testing.T) {
+	t.Parallel()
+	if got := DefaultController().AgentDistDir; got != "./dist" {
+		t.Fatalf("agent dist directory=%q, want ./dist", got)
+	}
+}
+
 func TestDefaultControllerHasSafeCapacityHysteresis(t *testing.T) {
 	t.Parallel()
 	node := DefaultController().Node

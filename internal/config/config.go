@@ -19,6 +19,7 @@ type ControllerConfig struct {
 	DatabaseURL      string                         `yaml:"database_url"`
 	SecretKeyEnv     string                         `yaml:"secret_key_env"` // 控制面凭证加密主密钥的环境变量名
 	StaticDir        string                         `yaml:"static_dir"`     // React 构建产物目录
+	AgentDistDir     string                         `yaml:"agent_dist_dir"` // 供安装脚本下载的 Agent 二进制与校验和目录
 	Node             NodePolicy                     `yaml:"node"`
 	Ticket           TicketPolicy                   `yaml:"ticket"`
 	Activity         ActivityPolicy                 `yaml:"activity"`
@@ -203,6 +204,7 @@ func DefaultController() *ControllerConfig {
 		DatabaseURL:  "postgres://postgres:postgres@127.0.0.1:5432/stcontrol?sslmode=disable",
 		SecretKeyEnv: "CONTROLLER_SECRET_KEY",
 		StaticDir:    "./web/dist",
+		AgentDistDir: "./dist",
 		Node: NodePolicy{
 			RegisterCPU: 50, RegisterMem: 50, RegisterDisk: 50,
 			AllocationHardPct: 60, CapacityWindowSec: 120, CapacitySustainSec: 120,
