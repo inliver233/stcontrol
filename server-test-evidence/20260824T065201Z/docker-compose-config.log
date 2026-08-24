@@ -1,0 +1,4 @@
+docker compose config --quiet
+Exit: 0
+Result: PASS
+Resolved configuration was intentionally not stored because it can contain environment-derived secrets.

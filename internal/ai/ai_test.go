@@ -209,3 +209,105 @@ func TestValidateAdvisoryRejectsUnknownRiskFlagAndRequestedObservation(t *testin
 		t.Fatalf("valid enumeration rejected: %v", err)
 	}
 }
+
+func TestValidateAdvisoryBoundedSchemaAndReferenceMatrix(t *testing.T) {
+	t.Parallel()
+	const observationID = "obs_test1234567890"
+	const evidenceRef = "ev_abcdefghijklmnopqrst"
+	const candidateRef = "ref_abcdefghijklmnopqrst"
+	encode := func(advisory Advisory) string {
+		t.Helper()
+		payload, err := json.Marshal(advisory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(payload)
+	}
+	base := Advisory{
+		SchemaVersion: SchemaVersion, TaskType: string(TaskMonitoringInspect),
+		ObservationID: observationID, Action: string(ActionNoAction),
+		Confidence: 0.5, ReasonSummary: "bounded result",
+		CandidateRefs: []string{}, EvidenceRefs: []string{}, RiskFlags: []string{}, RequestedObservations: []string{},
+	}
+	repeat := func(value string, count int) []string {
+		out := make([]string, count)
+		for index := range out {
+			out[index] = value
+		}
+		return out
+	}
+	testCases := []struct {
+		name                 string
+		raw                  string
+		task                 TaskType
+		code                 string
+		evidence, candidates map[string]bool
+	}{
+		{name: "empty", raw: "", task: TaskMonitoringInspect, code: "empty_response"},
+		{name: "oversized", raw: strings.Repeat("x", maxAIResponseBytes+1), task: TaskMonitoringInspect, code: "oversized_response"},
+		{name: "invalid utf8", raw: string([]byte{0xff}), task: TaskMonitoringInspect, code: "invalid_utf8"},
+		{name: "invalid json", raw: `{`, task: TaskMonitoringInspect, code: "invalid_json"},
+		{name: "unknown field", raw: strings.TrimSuffix(encode(base), "}") + `,"unknown":true}`, task: TaskMonitoringInspect, code: "invalid_json"},
+		{name: "too many candidates", raw: func() string { v := base; v.CandidateRefs = repeat(candidateRef, 21); return encode(v) }(), task: TaskMonitoringInspect, code: "too_many_candidates"},
+		{name: "too many evidence", raw: func() string { v := base; v.EvidenceRefs = repeat(evidenceRef, 13); return encode(v) }(), task: TaskMonitoringInspect, code: "too_many_evidence"},
+		{name: "too many risks", raw: func() string { v := base; v.RiskFlags = repeat(string(RiskStaleData), 11); return encode(v) }(), task: TaskMonitoringInspect, code: "too_many_risks"},
+		{name: "too many requests", raw: func() string {
+			v := base
+			v.RequestedObservations = repeat(string(ReqOperatorContext), 9)
+			return encode(v)
+		}(), task: TaskMonitoringInspect, code: "too_many_requests"},
+		{name: "reason too long", raw: func() string { v := base; v.ReasonSummary = strings.Repeat("界", 301); return encode(v) }(), task: TaskMonitoringInspect, code: "reason_too_long"},
+		{name: "negative confidence", raw: func() string { v := base; v.Confidence = -0.1; return encode(v) }(), task: TaskMonitoringInspect, code: "confidence_out_of_range"},
+		{name: "high confidence", raw: func() string { v := base; v.Confidence = 1.1; return encode(v) }(), task: TaskMonitoringInspect, code: "confidence_out_of_range"},
+		{name: "malformed evidence", raw: func() string { v := base; v.EvidenceRefs = []string{"bad"}; return encode(v) }(), task: TaskMonitoringInspect, code: "malformed_evidence_ref"},
+		{name: "duplicate evidence", raw: func() string { v := base; v.EvidenceRefs = []string{evidenceRef, evidenceRef}; return encode(v) }(), task: TaskMonitoringInspect, code: "duplicate_evidence_ref", evidence: map[string]bool{evidenceRef: true}},
+		{name: "empty ordering", raw: func() string {
+			v := base
+			v.TaskType = string(TaskScheduleRecommend)
+			v.Action = string(ActionRecommendNodeOrder)
+			return encode(v)
+		}(), task: TaskScheduleRecommend, code: "empty_candidates"},
+		{name: "malformed candidate", raw: func() string {
+			v := base
+			v.TaskType = string(TaskScheduleRecommend)
+			v.Action = string(ActionRecommendNodeOrder)
+			v.CandidateRefs = []string{"bad"}
+			return encode(v)
+		}(), task: TaskScheduleRecommend, code: "malformed_candidate_ref"},
+		{name: "unsupported candidate", raw: func() string {
+			v := base
+			v.TaskType = string(TaskScheduleRecommend)
+			v.Action = string(ActionRecommendNodeOrder)
+			v.CandidateRefs = []string{candidateRef}
+			return encode(v)
+		}(), task: TaskScheduleRecommend, code: "unsupported_candidate"},
+		{name: "duplicate candidate", raw: func() string {
+			v := base
+			v.TaskType = string(TaskScheduleRecommend)
+			v.Action = string(ActionRecommendNodeOrder)
+			v.CandidateRefs = []string{candidateRef, candidateRef}
+			return encode(v)
+		}(), task: TaskScheduleRecommend, code: "duplicate_candidate_ref", candidates: map[string]bool{candidateRef: true}},
+		{name: "abstain conflict", raw: func() string { v := base; v.Abstain = true; v.Action = string(ActionExplainAlert); return encode(v) }(), task: TaskMonitoringInspect, code: "abstain_action_conflict"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := ValidateAdvisory(testCase.raw, testCase.task, observationID, testCase.evidence, testCase.candidates)
+			if err == nil || !strings.Contains(err.Error(), testCase.code) {
+				t.Fatalf("error=%v, want code %q", err, testCase.code)
+			}
+		})
+	}
+
+	fenced := "```json\n" + encode(base) + "\n```"
+	if _, err := ValidateAdvisory(fenced, TaskMonitoringInspect, observationID, nil, nil); err != nil {
+		t.Fatalf("single JSON code fence rejected: %v", err)
+	}
+	ordering := base
+	ordering.TaskType = string(TaskScheduleRecommend)
+	ordering.Action = string(ActionRecommendNodeOrder)
+	ordering.CandidateRefs = []string{candidateRef}
+	if _, err := ValidateAdvisory(encode(ordering), TaskScheduleRecommend, observationID, nil, map[string]bool{candidateRef: true}); err != nil {
+		t.Fatalf("valid ordering rejected: %v", err)
+	}
+}

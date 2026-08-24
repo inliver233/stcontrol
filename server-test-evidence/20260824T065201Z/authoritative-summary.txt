@@ -1,0 +1,45 @@
+stcontrol server branch second hardening verification
+UTC started: 2026-08-24T06:52:01Z
+Workspace: /root/stcontrol
+
+Authoritative Go coverage run
+- Environment: isolated PostgreSQL 17 test container on loopback; real pg_dump; fixed SillyTavern-online workspace
+- Command shape: go test -p=1 -count=1 -v -coverpkg=./... -covermode=atomic -coverprofile=... ./...
+- Exit: 0
+- RUN events (including subtests): 1301
+- FAIL: 0
+- SKIP: 0
+- panic: 0
+- data race marker: 0
+- cmd/agent: 0.082s
+- cmd/controller: 4.390s
+- internal: 0.254s
+- internal/agent: 233.694s
+- internal/ai: 0.154s
+- internal/config: 0.032s
+- internal/controller: 105.168s
+- internal/crypto: 1.747s
+- internal/store: 82.338s
+
+Deduplicated repository coverage
+- Method: maximum execution count per identical source block across package profiles
+- Covered statements: 13619
+- Total statements: 17761
+- Exact coverage: 76.679241%
+- Gate: 80.0%
+- Additional covered statements required: 590
+- Result: FAIL (release gate)
+
+Current-source verification
+- go test -short -race -p=1 -count=1 ./...: PASS, exit 0
+- go vet ./...: PASS, exit 0
+- go build ./cmd/agent ./cmd/controller: PASS, exit 0
+- Web Vitest: 4 files, 25 tests PASS, exit 0
+- Web TypeScript/Vite production build: PASS, exit 0
+- Web npm audit --omit=dev: 0 vulnerabilities, exit 0
+- docker compose config --quiet: PASS, exit 0
+
+Release conclusion
+- NOT PRODUCTION READY.
+- Automated functional regression passed, but the 80% coverage gate and the external/environmental P0/P1 items documented in the Chinese verification report remain open.
+- No production database write, container replacement, service restart, or deployment was performed.

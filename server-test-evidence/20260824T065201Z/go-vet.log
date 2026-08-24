@@ -1,0 +1,3 @@
+go vet ./...
+Exit: 0
+Result: PASS (no diagnostics)

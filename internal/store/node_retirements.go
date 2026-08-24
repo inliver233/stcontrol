@@ -675,7 +675,7 @@ func (s *Store) CompleteNodeRetirementHomeMigration(
 	}
 	result, err = tx.ExecContext(ctx, `
 		UPDATE node_retirement_items SET state='succeeded',completed_at=$2,updated_at=$2,error_code=NULL
-		WHERE id=$1 AND state IN ('snapshotting','promoting')`, itemID, now)
+		WHERE id=$1 AND state IN ('snapshotting','promoting','retry_wait','blocked')`, itemID, now)
 	if err != nil {
 		return err
 	}

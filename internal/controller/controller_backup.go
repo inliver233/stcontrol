@@ -357,6 +357,9 @@ func buildControllerBackupArchive(ctx context.Context, archivePath, pgDumpPath, 
 		if path == "" {
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
 		info, err := os.Stat(path)
 		if err != nil || info.IsDir() {
 			return fail(fmt.Errorf("controller backup payload missing: %s", path))
@@ -369,7 +372,7 @@ func buildControllerBackupArchive(ctx context.Context, archivePath, pgDumpPath, 
 			_ = file.Close()
 			return fail(err)
 		}
-		written, err := io.Copy(tw, file)
+		written, err := io.Copy(tw, controllerBackupContextReader{ctx: ctx, reader: file})
 		_ = file.Close()
 		if err != nil || written != info.Size() {
 			return fail(fmt.Errorf("controller backup payload changed during archive"))
@@ -389,6 +392,18 @@ func buildControllerBackupArchive(ctx context.Context, archivePath, pgDumpPath, 
 		return err
 	}
 	return archive.Close()
+}
+
+type controllerBackupContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r controllerBackupContextReader) Read(buffer []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(buffer)
 }
 
 func controllerFileSHA256(path string) (string, error) {

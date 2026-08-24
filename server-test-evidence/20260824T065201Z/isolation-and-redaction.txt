@@ -1,0 +1,5 @@
+The authoritative run used an isolated disposable PostgreSQL 17 test container bound only to loopback.
+The production PostgreSQL service was not connected by the test suite.
+The production Controller, Nginx, Cloudflare, and production containers were not mutated or restarted.
+The local test DSN and generated test credentials are intentionally omitted from evidence.
+The two user-owned untracked demo SQL files were preserved and are excluded from delivery.

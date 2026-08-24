@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"stcontrol/internal/config"
+	"stcontrol/internal/protocol"
 )
 
 func TestAgentMainAuditCommand(t *testing.T) {
@@ -65,6 +68,59 @@ func TestAgentMainConfiguresTavernAndReturns(t *testing.T) {
 	configured, err := os.ReadFile(filepath.Join(tavernDir, "config.yaml"))
 	if err != nil || !strings.Contains(string(configured), "enabled: true") ||
 		!strings.Contains(string(configured), "nodeId: 7") {
+		t.Fatalf("configured Tavern=%q err=%v", configured, err)
+	}
+}
+
+func TestAgentMainRegistersPersistsIdentityAndConfiguresComputeAdapter(t *testing.T) {
+	const token = "one-use-main-registration-token"
+	var request protocol.RegisterAgentRequest
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/agent/register" {
+			http.Error(w, "unexpected registration request", http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode registration: %v", err)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(protocol.RegisterAgentResponse{
+			NodeID: 23, AgentPSK: "registered-agent-psk", CredentialVersion: 2, ControllerGeneration: 7,
+		})
+	}))
+	defer controller.Close()
+
+	tavernDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tavernDir, "config.yaml"), []byte("port: 8000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultAgent()
+	cfg.DataDir = t.TempDir()
+	cfg.Listen = "127.0.0.1:9100"
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	withAgentMainArgs(t, []string{
+		"agent", "--config", configPath, "--register", "--token", token,
+		"--controller", controller.URL, "--role", "compute", "--tavern-dir", tavernDir,
+	}, main)
+
+	if request.Token != token || request.Role != "compute" {
+		t.Fatalf("registration request=%+v", request)
+	}
+	persisted := config.DefaultAgent()
+	if err := config.Load(configPath, persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.NodeID != 23 || persisted.AgentPSK != "registered-agent-psk" ||
+		persisted.CredentialVersion != 2 || persisted.ControllerGeneration != 7 {
+		t.Fatalf("persisted config=%+v", persisted)
+	}
+	configured, err := os.ReadFile(filepath.Join(tavernDir, "config.yaml"))
+	if err != nil || !strings.Contains(string(configured), "nodeId: 23") ||
+		!strings.Contains(string(configured), "enabled: true") {
 		t.Fatalf("configured Tavern=%q err=%v", configured, err)
 	}
 }

@@ -194,7 +194,11 @@ func TestConfirmReplicaTakeoverAtomicallyPromotesImmutableHotStandby(t *testing.
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(4)))
 	mock.ExpectQuery(`SELECT user_id, writer_node_id`).WithArgs(p.GlobalUserID).
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}))
+		WillReturnRows(sqlmock.NewRows([]string{
+			"user_id", "writer_node_id", "session_id", "activity_epoch", "state", "lease_expires_at",
+			"last_page", "last_request", "reads", "writes", "generation", "updated_at",
+		}).AddRow(p.GlobalUserID, int64(8), "expired-session", int64(3), "active", now.Add(-time.Minute),
+			now.Add(-time.Minute), now.Add(-time.Minute), 0, 0, int64(4), now.Add(-time.Minute)))
 	mock.ExpectQuery(`(?s)SELECT copy.snapshot_id::text.*snapshot.user_id=\$2.*copy.published_at=\$4`).
 		WithArgs(int64(7), p.GlobalUserID, p.TargetNodeID, published).
 		WillReturnRows(sqlmock.NewRows([]string{"snapshot_id", "published_at"}).AddRow("snapshot", published))
@@ -203,6 +207,8 @@ func TestConfirmReplicaTakeoverAtomicallyPromotesImmutableHotStandby(t *testing.
 	mock.ExpectExec(`UPDATE user_replicas SET kind='home'`).WithArgs(int64(7), p.TargetNodeID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE users SET home_node_id`).WithArgs(int64(7), p.TargetNodeID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE user_activity_leases`).WithArgs(p.GlobalUserID, now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE control_tickets`).WithArgs(p.GlobalUserID, now).
 		WillReturnResult(sqlmock.NewResult(0, 2))
@@ -217,7 +223,7 @@ func TestConfirmReplicaTakeoverAtomicallyPromotesImmutableHotStandby(t *testing.
 		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec(`INSERT INTO replica_takeover_operations`).WithArgs(
 		p.OperationID, p.RequestDigest, p.GlobalUserID, int64(8), p.TargetNodeID,
-		"snapshot", published, nil, int64(4), now,
+		"snapshot", published, int64(3), int64(4), now,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO user_protection_states`).WithArgs(p.GlobalUserID, p.TargetNodeID, now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
