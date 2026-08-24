@@ -1,0 +1,31 @@
+2026-08-24T10:16:23+08:00
+## flash...origin/flash
+A  .dockerignore
+M  docker-compose.yml
+M  internal/agent/snapshot_publish_linux_test.go
+M  internal/agent/tavern_crossrepo_e2e_test.go
+M  internal/controller/agent.go
+M  internal/controller/ai_supervisor_test.go
+M  internal/controller/router.go
+M  internal/controller/snapshot_process_postgres_integration_linux_test.go
+M  internal/controller/user_data_fault_postgres_integration_test.go
+A  internal/store/admin_empty_lists_test.go
+M  internal/store/handoffs.go
+M  internal/store/leases.go
+M  internal/store/postgres_integration_test.go
+M  internal/store/protection.go
+M  internal/store/snapshots.go
+A  internal/store/transaction_retry.go
+A  internal/store/transaction_retry_test.go
+M  internal/store/users.go
+M  web/src/pages/Admin.backups.test.tsx
+M  web/src/pages/Admin.tsx
+A  "\346\234\215\345\212\241\345\231\250\346\265\213\350\257\225\351\252\214\350\257\201\347\273\223\346\236\234.md"
+?? scripts/clear-demo.sql
+?? scripts/seed-demo.sql
+?? server-test-evidence/
+?? "\346\234\215\345\212\241\345\231\250\346\265\213\350\257\225\346\270\205\345\215\225.md"
+HEAD=2f1ee68e6641d5d4b50bcca96bc55ac1a7bef93b
+origin_flash=2f1ee68e6641d5d4b50bcca96bc55ac1a7bef93b
+staged_files=21
+unstaged_tracked_files=0

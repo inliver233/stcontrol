@@ -1,0 +1,6 @@
+=== RUN   TestSnapshotPublishCrashHelper
+--- PASS: TestSnapshotPublishCrashHelper (0.00s)
+=== RUN   TestGoAgentCallsFullSillyTavernServerWithCSRF
+--- PASS: TestGoAgentCallsFullSillyTavernServerWithCSRF (31.22s)
+PASS
+ok  	stcontrol/internal/agent	31.231s

@@ -1,0 +1,2 @@
+Initializing transformers.js pipeline for task feature-extraction with model Xenova/all-MiniLM-L6-v2
+{"result":"PASS","dims":[1,384],"first":-0.000239}

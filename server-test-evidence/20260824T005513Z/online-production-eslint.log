@@ -1,0 +1,81 @@
+
+/root/Sillytarven-online/src/endpoints/oauth.js
+     9:5   error  'getUserAvatar' is defined but never used       no-unused-vars
+   683:52  error  Missing trailing comma                          comma-dangle
+   798:17  error  Unexpected lexical declaration in case block    no-case-declarations
+   801:17  error  Unexpected lexical declaration in case block    no-case-declarations
+  1007:1   error  Expected indentation of 12 spaces but found 8   indent
+  1008:1   error  Expected indentation of 12 spaces but found 8   indent
+  1009:1   error  Expected indentation of 12 spaces but found 8   indent
+  1010:1   error  Expected indentation of 12 spaces but found 8   indent
+  1011:1   error  Expected indentation of 16 spaces but found 12  indent
+  1012:1   error  Expected indentation of 16 spaces but found 12  indent
+  1013:1   error  Expected indentation of 12 spaces but found 8   indent
+  1015:1   error  Expected indentation of 12 spaces but found 8   indent
+  1016:1   error  Expected indentation of 12 spaces but found 8   indent
+  1017:1   error  Expected indentation of 12 spaces but found 8   indent
+  1018:1   error  Expected indentation of 16 spaces but found 12  indent
+  1019:1   error  Expected indentation of 12 spaces but found 8   indent
+  1021:1   error  Expected indentation of 12 spaces but found 8   indent
+  1022:1   error  Expected indentation of 12 spaces but found 8   indent
+  1023:1   error  Expected indentation of 16 spaces but found 12  indent
+  1024:1   error  Expected indentation of 16 spaces but found 12  indent
+  1025:1   error  Expected indentation of 16 spaces but found 12  indent
+  1026:1   error  Expected indentation of 16 spaces but found 12  indent
+  1027:1   error  Expected indentation of 16 spaces but found 12  indent
+  1028:1   error  Expected indentation of 16 spaces but found 12  indent
+  1029:1   error  Expected indentation of 16 spaces but found 12  indent
+  1030:1   error  Expected indentation of 16 spaces but found 12  indent
+  1031:1   error  Expected indentation of 16 spaces but found 12  indent
+  1032:1   error  Expected indentation of 16 spaces but found 12  indent
+  1033:1   error  Expected indentation of 16 spaces but found 12  indent
+  1034:1   error  Expected indentation of 16 spaces but found 12  indent
+  1035:1   error  Expected indentation of 16 spaces but found 12  indent
+  1036:1   error  Expected indentation of 12 spaces but found 8   indent
+  1038:1   error  Expected indentation of 12 spaces but found 8   indent
+  1039:1   error  Expected indentation of 16 spaces but found 12  indent
+  1040:1   error  Expected indentation of 16 spaces but found 12  indent
+  1041:1   error  Expected indentation of 12 spaces but found 8   indent
+  1043:1   error  Expected indentation of 12 spaces but found 8   indent
+  1044:1   error  Expected indentation of 12 spaces but found 8   indent
+  1046:1   error  Expected indentation of 12 spaces but found 8   indent
+  1047:1   error  Expected indentation of 12 spaces but found 8   indent
+  1048:1   error  Expected indentation of 16 spaces but found 12  indent
+  1049:1   error  Expected indentation of 12 spaces but found 8   indent
+  1051:1   error  Expected indentation of 12 spaces but found 8   indent
+  1052:1   error  Expected indentation of 12 spaces but found 8   indent
+  1053:1   error  Expected indentation of 12 spaces but found 8   indent
+  1054:1   error  Expected indentation of 16 spaces but found 12  indent
+  1055:1   error  Expected indentation of 16 spaces but found 12  indent
+  1056:1   error  Expected indentation of 20 spaces but found 16  indent
+  1057:1   error  Expected indentation of 16 spaces but found 12  indent
+  1058:1   error  Expected indentation of 16 spaces but found 12  indent
+  1059:1   error  Expected indentation of 12 spaces but found 8   indent
+  1061:1   error  Expected indentation of 12 spaces but found 8   indent
+  1062:1   error  Expected indentation of 12 spaces but found 8   indent
+  1063:1   error  Expected indentation of 12 spaces but found 8   indent
+  1064:1   error  Expected indentation of 12 spaces but found 8   indent
+  1065:1   error  Expected indentation of 12 spaces but found 8   indent
+  1066:1   error  Expected indentation of 12 spaces but found 8   indent
+  1067:1   error  Expected indentation of 16 spaces but found 12  indent
+  1068:1   error  Expected indentation of 20 spaces but found 16  indent
+  1069:1   error  Expected indentation of 16 spaces but found 12  indent
+  1070:1   error  Expected indentation of 12 spaces but found 8   indent
+  1071:1   error  Expected indentation of 12 spaces but found 8   indent
+  1072:1   error  Expected indentation of 12 spaces but found 8   indent
+  1073:1   error  Expected indentation of 12 spaces but found 8   indent
+  1075:1   error  Expected indentation of 12 spaces but found 8   indent
+  1076:1   error  Expected indentation of 12 spaces but found 8   indent
+  1077:1   error  Expected indentation of 16 spaces but found 12  indent
+  1079:1   error  Expected indentation of 16 spaces but found 12  indent
+  1080:1   error  Expected indentation of 16 spaces but found 12  indent
+  1081:1   error  Expected indentation of 16 spaces but found 12  indent
+  1082:1   error  Expected indentation of 16 spaces but found 12  indent
+  1083:1   error  Expected indentation of 12 spaces but found 8   indent
+
+/root/Sillytarven-online/src/users.js
+  163:21  error  Strings must use singlequote  quotes
+
+✖ 73 problems (73 errors, 0 warnings)
+  70 errors and 0 warnings potentially fixable with the `--fix` option.
+

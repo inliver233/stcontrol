@@ -71,6 +71,44 @@ func TestControllerSnapshotWorkflowThroughDurableAgentCommands(t *testing.T) {
 	cfg.Relay.RetentionMin = 30
 	server := New(cfg, st, secretKey)
 
+	t.Run("offline scanner queues only eligible users", func(t *testing.T) {
+		eligible := createControllerBackupUser(t, ctx, st, source.ID, "backup-scanner-eligible")
+		online := createControllerBackupUser(t, ctx, st, source.ID, "backup-scanner-online")
+		recent := createControllerBackupUser(t, ctx, st, source.ID, "backup-scanner-recent")
+		_ = createControllerBackupUser(t, ctx, st, source.ID, "backup-scanner-no-fact")
+		running := createControllerBackupUser(t, ctx, st, source.ID, "backup-scanner-running")
+		if err := st.CreateBackupJob(ctx, &store.BackupJob{
+			UserID: running.ID, SrcNodeID: source.ID, DstNodeID: target.ID,
+			Trigger: "offline", Status: "running",
+		}); err != nil {
+			t.Fatalf("create running scanner fixture: %v", err)
+		}
+		now := time.Now()
+		server.actMu.Lock()
+		server.activity[source.ID] = map[string]protocol.UserStatus{
+			eligible.Username: {Handle: eligible.Username, LastActivity: now.Add(-2 * time.Hour).UnixMilli()},
+			online.Username:   {Handle: online.Username, IsOnline: true, LastActivity: now.Add(-2 * time.Hour).UnixMilli()},
+			recent.Username:   {Handle: recent.Username, LastActivity: now.Add(-time.Minute).UnixMilli()},
+			running.Username:  {Handle: running.Username, LastActivity: now.Add(-2 * time.Hour).UnixMilli()},
+		}
+		server.actMu.Unlock()
+
+		server.scheduleOfflineBackups(ctx)
+		var workflows int
+		if err := st.DB.QueryRowContext(ctx, `
+			SELECT count(*) FROM workflows WHERE user_id=$1 AND workflow_type='snapshot'`, eligible.GlobalID).
+			Scan(&workflows); err != nil || workflows != 1 {
+			t.Fatalf("eligible scanner workflows=%d err=%v", workflows, err)
+		}
+		for _, skipped := range []*store.User{online, recent, running} {
+			if err := st.DB.QueryRowContext(ctx, `
+				SELECT count(*) FROM workflows WHERE user_id=$1 AND workflow_type='snapshot'`, skipped.GlobalID).
+				Scan(&workflows); err != nil || workflows != 0 {
+				t.Fatalf("skipped user %s workflows=%d err=%v", skipped.Username, workflows, err)
+			}
+		}
+	})
+
 	t.Run("normal publish is atomic and replay is idempotent", func(t *testing.T) {
 		user := createControllerBackupUser(t, ctx, st, source.ID, "backup-normal")
 		if err := server.TriggerUserBackup(ctx, user.ID, source.ID, "offline"); err != nil {
@@ -825,17 +863,20 @@ func (h *controllerBackupCommandHarness) handleRelaySource(
 	); err != nil {
 		return agentCommandSummary{}, false, fmt.Errorf("claim relay upload: %w", err)
 	}
-	if err := h.store.CompleteRelayUpload(
-		h.ctx, request.RelayTaskID, uploadHash[:], ciphertextDigest[:], 4352,
-		"relay-spool/"+request.RelayTaskID+".bin", now.Add(3*time.Millisecond),
-	); err != nil {
-		return agentCommandSummary{}, false, fmt.Errorf("complete relay upload: %w", err)
-	}
+	// The real source Agent publishes the causal transferring receipt before it
+	// uploads relay ciphertext. Keep the harness in that order so the target
+	// cannot observe stored ciphertext and race verifying ahead of transferring.
 	if err := h.store.SetSnapshotWorkflowProgress(
 		h.ctx, request.WorkflowID, request.SnapshotID, h.sourceNodeID,
-		"transferring", now.Add(4*time.Millisecond),
+		"transferring", now.Add(3*time.Millisecond),
 	); err != nil {
 		return agentCommandSummary{}, false, fmt.Errorf("persist relay transferring progress: %w", err)
+	}
+	if err := h.store.CompleteRelayUpload(
+		h.ctx, request.RelayTaskID, uploadHash[:], ciphertextDigest[:], 4352,
+		"relay-spool/"+request.RelayTaskID+".bin", now.Add(4*time.Millisecond),
+	); err != nil {
+		return agentCommandSummary{}, false, fmt.Errorf("complete relay upload: %w", err)
 	}
 	receipt := controllerBackupSnapshotReceipt(request.SnapshotID, true)
 	if request.Handle == "backup-relay-lost" {

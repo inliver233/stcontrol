@@ -1,0 +1,4 @@
+=== RUN   TestGoAgentCallsFullSillyTavernServerWithCSRF
+--- PASS: TestGoAgentCallsFullSillyTavernServerWithCSRF (11.04s)
+PASS
+ok  	stcontrol/internal/agent	11.045s

@@ -1,0 +1,158 @@
+# Warning: table ip filter is managed by iptables-nft, do not touch!
+table ip filter {
+	chain f2b-sshd {
+		ip saddr 57.129.15.177 counter packets 16 bytes 1280 reject
+		ip saddr 195.178.110.228 counter packets 105 bytes 6248 reject
+		ip saddr 217.60.255.130 counter packets 47 bytes 3188 reject
+		ip saddr 128.185.140.11 counter packets 19 bytes 2016 reject
+		ip saddr 59.26.33.16 counter packets 15 bytes 1512 reject
+		ip saddr 77.239.124.251 counter packets 12 bytes 1160 reject
+		ip saddr 45.148.10.141 counter packets 17 bytes 1408 reject
+		ip saddr 194.164.59.59 counter packets 63 bytes 4128 reject
+		ip saddr 36.133.214.135 counter packets 38 bytes 2508 reject
+		ip saddr 36.103.243.179 counter packets 65 bytes 4308 reject
+		ip saddr 101.53.236.155 counter packets 62 bytes 4124 reject
+		ip saddr 45.153.34.71 counter packets 520 bytes 31148 reject
+		ip saddr 45.148.10.157 counter packets 28 bytes 2068 reject
+		ip saddr 45.148.10.152 counter packets 22 bytes 1660 reject
+		ip saddr 163.7.9.194 counter packets 12 bytes 704 reject
+		ip saddr 39.130.240.253 counter packets 164 bytes 9840 reject
+		ip saddr 45.148.10.151 counter packets 28 bytes 2068 reject
+		counter packets 746661 bytes 66025001 return
+	}
+
+	chain INPUT {
+		type filter hook input priority filter; policy accept;
+		ip protocol tcp tcp dport 22 counter packets 769608 bytes 67546504 jump f2b-sshd
+	}
+
+	chain DOCKER {
+		ip daddr 172.17.0.2 iifname != "docker0" oifname "docker0" tcp dport 5432 counter packets 0 bytes 0 accept
+		ip daddr 172.18.0.2 iifname != "br-f36a7f52d4cb" oifname "br-f36a7f52d4cb" tcp dport 8443 counter packets 0 bytes 0 accept
+		iifname != "br-f36a7f52d4cb" oifname "br-f36a7f52d4cb" counter packets 0 bytes 0 drop
+		iifname != "docker0" oifname "docker0" counter packets 0 bytes 0 drop
+	}
+
+	chain DOCKER-FORWARD {
+		counter packets 80890 bytes 416854786 jump DOCKER-CT
+		counter packets 38113 bytes 2731457 jump DOCKER-INTERNAL
+		counter packets 38113 bytes 2731457 jump DOCKER-BRIDGE
+		iifname "br-f36a7f52d4cb" counter packets 0 bytes 0 accept
+		iifname "docker0" counter packets 38113 bytes 2731457 accept
+	}
+
+	chain DOCKER-BRIDGE {
+		oifname "br-f36a7f52d4cb" counter packets 0 bytes 0 jump DOCKER
+		oifname "docker0" counter packets 0 bytes 0 jump DOCKER
+	}
+
+	chain DOCKER-CT {
+		oifname "br-f36a7f52d4cb" ct state related,established counter packets 0 bytes 0 accept
+		oifname "docker0" ct state related,established counter packets 42777 bytes 414123329 accept
+	}
+
+	chain DOCKER-INTERNAL {
+	}
+
+	chain FORWARD {
+		type filter hook forward priority filter; policy drop;
+		counter packets 80890 bytes 416854786 jump DOCKER-USER
+		counter packets 80890 bytes 416854786 jump DOCKER-FORWARD
+	}
+
+	chain DOCKER-USER {
+	}
+}
+# Warning: table ip nat is managed by iptables-nft, do not touch!
+table ip nat {
+	chain DOCKER {
+		ip daddr 127.0.0.1 iifname != "br-f36a7f52d4cb" tcp dport 8443 counter packets 0 bytes 0 dnat to 172.18.0.2:8443
+		ip daddr 127.0.0.1 iifname != "docker0" tcp dport 55432 counter packets 0 bytes 0 dnat to 172.17.0.2:5432
+	}
+
+	chain PREROUTING {
+		type nat hook prerouting priority dstnat; policy accept;
+		fib daddr type local counter packets 198694 bytes 11142321 jump DOCKER
+	}
+
+	chain OUTPUT {
+		type nat hook output priority dstnat; policy accept;
+		ip daddr != 127.0.0.0/8 fib daddr type local counter packets 0 bytes 0 jump DOCKER
+	}
+
+	chain POSTROUTING {
+		type nat hook postrouting priority srcnat; policy accept;
+		ip saddr 172.17.0.0/16 oifname != "docker0" counter packets 158 bytes 9988 masquerade
+		ip saddr 172.18.0.0/16 oifname != "br-f36a7f52d4cb" counter packets 0 bytes 0 masquerade
+	}
+}
+# Warning: table ip6 nat is managed by iptables-nft, do not touch!
+table ip6 nat {
+	chain DOCKER {
+	}
+
+	chain PREROUTING {
+		type nat hook prerouting priority dstnat; policy accept;
+		fib daddr type local counter packets 24343 bytes 1774668 jump DOCKER
+	}
+
+	chain OUTPUT {
+		type nat hook output priority dstnat; policy accept;
+		ip6 daddr != ::1 fib daddr type local counter packets 0 bytes 0 jump DOCKER
+	}
+
+	chain POSTROUTING {
+		type nat hook postrouting priority srcnat; policy accept;
+		ip6 saddr fd00:dead:beef:c0::/80 oifname != "docker0" counter packets 28 bytes 2416 # Warning: XT target MASQUERADE not found
+xt target "MASQUERADE"
+	}
+}
+# Warning: table ip6 filter is managed by iptables-nft, do not touch!
+table ip6 filter {
+	chain DOCKER {
+		iifname != "docker0" oifname "docker0" counter packets 0 bytes 0 drop
+	}
+
+	chain DOCKER-FORWARD {
+		counter packets 135 bytes 24481 jump DOCKER-CT
+		counter packets 79 bytes 11469 jump DOCKER-INTERNAL
+		counter packets 79 bytes 11469 jump DOCKER-BRIDGE
+		iifname "docker0" counter packets 79 bytes 11469 accept
+	}
+
+	chain DOCKER-BRIDGE {
+		oifname "docker0" counter packets 0 bytes 0 jump DOCKER
+	}
+
+	chain DOCKER-CT {
+		oifname "docker0" ct state related,established counter packets 56 bytes 13012 accept
+	}
+
+	chain DOCKER-INTERNAL {
+	}
+
+	chain FORWARD {
+		type filter hook forward priority filter; policy drop;
+		counter packets 135 bytes 24481 jump DOCKER-USER
+		counter packets 135 bytes 24481 jump DOCKER-FORWARD
+	}
+
+	chain DOCKER-USER {
+	}
+}
+table ip raw {
+	chain PREROUTING {
+		type filter hook prerouting priority raw; policy accept;
+		ip daddr 172.18.0.3 iifname != "br-f36a7f52d4cb" counter packets 0 bytes 0 drop
+		ip daddr 172.18.0.2 iifname != "br-f36a7f52d4cb" counter packets 0 bytes 0 drop
+		ip daddr 127.0.0.1 iifname != "lo" tcp dport 8443 counter packets 0 bytes 0 drop
+		ip daddr 172.17.0.2 iifname != "docker0" counter packets 0 bytes 0 drop
+		ip daddr 127.0.0.1 iifname != "lo" tcp dport 55432 counter packets 0 bytes 0 drop
+	}
+}
+table ip6 raw {
+	chain PREROUTING {
+		type filter hook prerouting priority raw; policy accept;
+		ip6 daddr fd00:dead:beef:c0::2 iifname != "docker0" counter packets 0 bytes 0 drop
+	}
+}

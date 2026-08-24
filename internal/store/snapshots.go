@@ -823,6 +823,18 @@ func (s *Store) SetSnapshotWorkflowProgress(
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	return retrySerializable(ctx, func() error {
+		return s.setSnapshotWorkflowProgressOnce(ctx, workflowID, snapshotID, nodeID, toState, now)
+	})
+}
+
+func (s *Store) setSnapshotWorkflowProgressOnce(
+	ctx context.Context,
+	workflowID, snapshotID string,
+	nodeID int64,
+	toState string,
+	now time.Time,
+) error {
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return err

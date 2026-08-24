@@ -1,0 +1,17 @@
+
+> stcontrol-web@0.1.0 test
+> vitest run
+
+
+ RUN  v2.1.9 /root/stcontrol/web
+
+ ✓ src/pages/Account.test.tsx (3 tests) 43ms
+ ✓ src/pages/Admin.nodes.test.ts (2 tests) 23ms
+ ✓ src/pages/Admin.backups.test.tsx (17 tests) 181ms
+ ✓ src/pages/Conflict.test.tsx (3 tests) 12ms
+
+ Test Files  4 passed (4)
+      Tests  25 passed (25)
+   Start at  08:56:25
+   Duration  3.73s (transform 1.82s, setup 0ms, collect 6.72s, tests 259ms, environment 1ms, prepare 1.25s)
+

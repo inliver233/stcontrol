@@ -1,0 +1,425 @@
+TAP version 13
+# Subtest: stcontrol adapter persists fenced modes and serializes duplicate operations
+ok 1 - stcontrol adapter persists fenced modes and serializes duplicate operations
+  ---
+  duration_ms: 132.035589
+  ...
+# Subtest: stcontrol request encoding matches Go security escaping without corrupting literal escapes
+ok 2 - stcontrol request encoding matches Go security escaping without corrupting literal escapes
+  ---
+  duration_ms: 0.362569
+  ...
+# Subtest: legacy adapter state migrates out of the node-persist namespace
+ok 3 - legacy adapter state migrates out of the node-persist namespace
+  ---
+  duration_ms: 3.222102
+  ...
+# Subtest: v7 adapter state migrates successful data fault releases into durable scoped tombstones
+ok 4 - v7 adapter state migrates successful data fault releases into durable scoped tombstones
+  ---
+  duration_ms: 4.076755
+  ...
+# Subtest: process restart clears orphaned in-flight counters without discarding session fences
+ok 5 - process restart clears orphaned in-flight counters without discarding session fences
+  ---
+  duration_ms: 2.68256
+  ...
+# Subtest: managed activity timing is configurable and heartbeat intervals stay safely below the idle window
+ok 6 - managed activity timing is configurable and heartbeat intervals stay safely below the idle window
+  ---
+  duration_ms: 0.415879
+  ...
+# Subtest: idle sessions become durable tombstones, revoke only their exact lease, and cannot wake without login
+ok 7 - idle sessions become durable tombstones, revoke only their exact lease, and cannot wake without login
+  ---
+  duration_ms: 5.905814
+  ...
+# Subtest: a stale managed page remains readable but cannot write
+ok 8 - a stale managed page remains readable but cannot write
+  ---
+  duration_ms: 35.638125
+  ...
+# Subtest: Controller-confirmed lease snapshots revoke omissions and fence writes at the exact deadline
+ok 9 - Controller-confirmed lease snapshots revoke omissions and fence writes at the exact deadline
+  ---
+  duration_ms: 128.060706
+  ...
+# Subtest: multiple tabs sharing one fenced session keep exact concurrent request counters
+ok 10 - multiple tabs sharing one fenced session keep exact concurrent request counters
+  ---
+  duration_ms: 47.62433
+  ...
+# Subtest: snapshot gate leases expire safely and cover extension requests for only one user
+ok 11 - snapshot gate leases expire safely and cover extension requests for only one user
+  ---
+  duration_ms: 50.279719
+  ...
+# Subtest: a durable data fault gate blocks only writes with a machine-readable reason
+ok 12 - a durable data fault gate blocks only writes with a machine-readable reason
+  ---
+  duration_ms: 23.486279
+  ...
+# Subtest: independent reconciliation requires the exact durable marker and a drained session
+ok 13 - independent reconciliation requires the exact durable marker and a drained session
+  ---
+  duration_ms: 8.308089
+  ...
+# Subtest: outage clears managed leases but requires cross-node ownership before session conversion
+ok 14 - outage clears managed leases but requires cross-node ownership before session conversion
+  ---
+  duration_ms: 5.204599
+  ...
+# Subtest: ordinary managed heartbeat and request accounting stay volatile until a durable boundary is needed
+ok 15 - ordinary managed heartbeat and request accounting stay volatile until a durable boundary is needed
+  ---
+  duration_ms: 30.624373
+  ...
+# Subtest: managed mode rejects requests that lack a durable stcontrol envelope
+ok 16 - managed mode rejects requests that lack a durable stcontrol envelope
+  ---
+  duration_ms: 4.71444
+  ...
+# Subtest: independent mode rejects envelope minting when ownership proof is unavailable
+ok 17 - independent mode rejects envelope minting when ownership proof is unavailable
+  ---
+  duration_ms: 9.723172
+  ...
+# Subtest: ownership proof atomically promotes a managed durable session and persists the first independent write marker
+ok 18 - ownership proof atomically promotes a managed durable session and persists the first independent write marker
+  ---
+  duration_ms: 86.554357
+  ...
+# Subtest: activity checkpoints persist bounded freshness across reloads
+ok 19 - activity checkpoints persist bounded freshness across reloads
+  ---
+  duration_ms: 4.004689
+  ...
+# Subtest: controller recovery refuses DRAINING to MANAGED while independent sessions or pending sync remain
+ok 20 - controller recovery refuses DRAINING to MANAGED while independent sessions or pending sync remain
+  ---
+  duration_ms: 4.152607
+  ...
+# Subtest: managed recovery does not let an independent envelope bypass the managed lease fence
+ok 21 - managed recovery does not let an independent envelope bypass the managed lease fence
+  ---
+  duration_ms: 3.472942
+  ...
+# Subtest: stcontrol adapter is wired through authenticated, CSRF-safe integration points
+ok 22 - stcontrol adapter is wired through authenticated, CSRF-safe integration points
+  ---
+  duration_ms: 1.612955
+  ...
+# Subtest: independent mode requires ownership proof before minting a new envelope writer
+ok 23 - independent mode requires ownership proof before minting a new envelope writer
+  ---
+  duration_ms: 56.899362
+  ...
+# Subtest: an independent write requires a matching durable session, rejecting forged envelopes
+ok 24 - an independent write requires a matching durable session, rejecting forged envelopes
+  ---
+  duration_ms: 24.954232
+  ...
+# Subtest: stcontrol agent authentication rejects a replayed nonce
+ok 25 - stcontrol agent authentication rejects a replayed nonce
+  ---
+  duration_ms: 156.054157
+  ...
+# Subtest: stcontrol agent authentication fails closed when the nonce window is full
+ok 26 - stcontrol agent authentication fails closed when the nonce window is full
+  ---
+  duration_ms: 22.410252
+  ...
+# 创建系统监控数据目录: /tmp/sillytavern-disaster-login-ySHBCr/system-monitor
+# Login failed: Incorrect password for alice
+# User login recorded: alice at 2026-08-24T02:39:42.032Z
+# Login successful: alice from 127.0.0.1 at 8/24/2026, 10:39:42 AM
+# Subtest: disaster takeover verifies password, requires explicit risk confirmation, and opens only after Agent quorum
+ok 27 - disaster takeover verifies password, requires explicit risk confirmation, and opens only after Agent quorum
+  ---
+  duration_ms: 1924.439345
+  ...
+# Subtest: stcontrol keeps the page-presence heartbeat alive while standalone idle behavior is unchanged
+ok 28 - stcontrol keeps the page-presence heartbeat alive while standalone idle behavior is unchanged
+  ---
+  duration_ms: 4.326863
+  ...
+# Subtest: managed heartbeat applies public foreground/background timing and stops a stale sleeping page
+ok 29 - managed heartbeat applies public foreground/background timing and stops a stale sleeping page
+  ---
+  duration_ms: 3.984171
+  ...
+# Subtest: managed heartbeat keeps retrying transient network failures while standalone behavior is unchanged
+ok 30 - managed heartbeat keeps retrying transient network failures while standalone behavior is unchanged
+  ---
+  duration_ms: 1.599068
+  ...
+# Subtest: admin-only stcontrol pages do not auto-start user heartbeat and user.js imports the production entry
+ok 31 - admin-only stcontrol pages do not auto-start user heartbeat and user.js imports the production entry
+  ---
+  duration_ms: 2.871494
+  ...
+# 创建系统监控数据目录: /tmp/sillytavern-stcontrol-native-guards-M8WFEq/system-monitor
+# Subtest: every native account router installs its stcontrol guard before actual routes
+ok 32 - every native account router installs its stcontrol guard before actual routes
+  ---
+  duration_ms: 1736.07316
+  ...
+# Subtest: managed mode classifies every actual native account route without an identity bypass
+ok 33 - managed mode classifies every actual native account route without an identity bypass
+  ---
+  duration_ms: 16.402076
+  ...
+# Subtest: only independent mode exposes the explicit native login and all other identity entry points stay closed
+ok 34 - only independent mode exposes the explicit native login and all other identity entry points stay closed
+  ---
+  duration_ms: 11.365882
+  ...
+# Subtest: stcontrol disables every implicit auto-login path even during an independently confirmed outage
+ok 35 - stcontrol disables every implicit auto-login path even during an independently confirmed outage
+  ---
+  duration_ms: 1.815423
+  ...
+# Subtest: browser-facing login, register and LinuxDo compatibility callback use the same guards
+ok 36 - browser-facing login, register and LinuxDo compatibility callback use the same guards
+  ---
+  duration_ms: 0.935574
+  ...
+# 创建系统监控数据目录: /tmp/sillytavern-stcontrol-routes-WYQ0D7/system-monitor
+# Content file settings.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice
+# Content file themes/Dark Lite.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/themes
+# Content file themes/Cappuccino.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/themes
+# Content file themes/Celestial Macaron.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/themes
+# Content file themes/Dark V 1.0.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/themes
+# Content file themes/Azure.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/themes
+# Content file themes/zhaiker0118.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/themes
+# Content file themes/inliver.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/themes
+# Content file backgrounds/__transparent.png copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/inliver.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/_black.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/_white.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/bedroom clean.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/bedroom cyberpunk.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/bedroom red.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/bedroom tatami.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/cityscape medieval market.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/cityscape medieval night.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/cityscape postapoc.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/forest treehouse fireworks air baloons (by kallmeflocc).jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/japan classroom side.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/japan classroom.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/japan path cherry blossom.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/japan university.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/landscape autumn great tree.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/landscape beach day.png copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/landscape beach night.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/landscape mountain lake.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/landscape postapoc.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/landscape winter lake house.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/royal.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file backgrounds/tavern day.jpg copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/backgrounds
+# Content file default_Seraphina.png copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/characters
+# Content file Seraphina copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/characters
+# Content file Eldoria.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/worlds
+# Content file user-default.png copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/User Avatars
+# Content file Default_Comfy_Workflow.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/user/workflows
+# Content file Char_Avatar_Comfy_Workflow.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/user/workflows
+# Content file presets/kobold/Deterministic.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/KoboldAI Settings
+# Content file presets/kobold/Neutral.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/KoboldAI Settings
+# Content file presets/kobold/RecoveredRuins.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/KoboldAI Settings
+# Content file presets/kobold/Universal-Creative.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/KoboldAI Settings
+# Content file presets/kobold/Universal-Light.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/KoboldAI Settings
+# Content file presets/kobold/Universal-Super-Creative.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/KoboldAI Settings
+# Content file presets/novel/Asper-Kayra.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Blended-Coffee-Kayra.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Blook-Kayra.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Carefree-Kayra.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/CosmicCube-Kayra.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Edgewise-Clio.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Fresh-Coffee-Clio.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Fresh-Coffee-Kayra.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Green-Active-Writer-Kayra.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Keelback-Clio.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Long-Press-Clio.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Pilotfish-Kayra.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Pro_Writer-Kayra.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Stelenes-Kayra.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Talker-Chat-Clio.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Tea_Time-Kayra.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Tesseract-Kayra.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Vingt-Un-Clio.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Writers-Daemon-Kayra.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Erato-Dragonfruit.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Erato-Golden Arrow.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Erato-Shosetsu.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Erato-Wilder.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/novel/Erato-Zany Scribe.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/NovelAI Settings
+# Content file presets/textgen/Default.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/TextGen Settings
+# Content file presets/textgen/Deterministic.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/TextGen Settings
+# Content file presets/textgen/Neutral.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/TextGen Settings
+# Content file presets/textgen/Universal-Creative.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/TextGen Settings
+# Content file presets/textgen/Universal-Light.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/TextGen Settings
+# Content file presets/textgen/Universal-Super-Creative.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/TextGen Settings
+# Content file presets/openai/Default.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/OpenAI Settings
+# Content file presets/context/Adventure.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Alpaca-Single-Turn.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Alpaca.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/ChatML.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Default.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Libra-32B.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Lightning 1.1.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Llama 2 Chat.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Minimalist.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/NovelAI.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/OldDefault.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Metharme.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Story.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Synthia.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/simple-proxy-for-tavern.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Command R.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Llama 3 Instruct.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Llama 4 Instruct.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Phi.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/instruct/Adventure.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Alpaca-Single-Turn.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Alpaca.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/ChatML.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Koala.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Libra-32B.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Lightning 1.1.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Llama 2 Chat.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Metharme.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/OpenOrca-OpenChat.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Story.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Synthia.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Tulu.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/context/Tulu.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/instruct/Vicuna 1.0.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Vicuna 1.1.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/WizardLM-13B.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/WizardLM.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/simple-proxy-for-tavern.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Command R.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Llama 3 Instruct.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Llama 4 Instruct.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Phi.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/moving-ui/Default.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/movingUI
+# Content file presets/quick-replies/Default.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/QuickReplies
+# Content file presets/instruct/Llama-3-Instruct-Names.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/ChatML-Names.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/KoboldAI.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/context/Llama-3-Instruct-Names.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/ChatML-Names.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Gemma 2.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/instruct/Gemma 2.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/sysprompt/Actor.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/sysprompt
+# Content file presets/sysprompt/Assistant - Expert.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/sysprompt
+# Content file presets/sysprompt/Assistant - Simple.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/sysprompt
+# Content file presets/sysprompt/Chain of Thought.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/sysprompt
+# Content file presets/sysprompt/Roleplay - Detailed.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/sysprompt
+# Content file presets/sysprompt/Roleplay - Immersive.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/sysprompt
+# Content file presets/sysprompt/Roleplay - Simple.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/sysprompt
+# Content file presets/sysprompt/Text Adventure.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/sysprompt
+# Content file presets/sysprompt/Writer - Creative.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/sysprompt
+# Content file presets/sysprompt/Writer - Realistic.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/sysprompt
+# Content file presets/sysprompt/Blank.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/sysprompt
+# Content file presets/sysprompt/Neutral - Chat.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/sysprompt
+# Content file presets/sysprompt/Lightning 1.1.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/sysprompt
+# Content file presets/instruct/Mistral V1.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/context/Mistral V1.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/instruct/Mistral V2 & V3.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/context/Mistral V2 & V3.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/instruct/Mistral V3-Tekken.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/context/Mistral V3-Tekken.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/instruct/Mistral V7.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/context/Mistral V7.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/instruct/DeepSeek-V2.5.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/context/DeepSeek-V2.5.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/instruct/GLM-4.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/context/GLM-4.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/reasoning/DeepSeek.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/reasoning
+# Content file presets/reasoning/Blank.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/reasoning
+# Content file presets/instruct/Dots1.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/context/Dots1.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/Mistral V7-Tekken.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/instruct/Mistral V7-Tekken.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/Moonshot AI.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/context/Moonshot AI.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/context/OpenAI Harmony.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/context
+# Content file presets/instruct/OpenAI Harmony.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/instruct/OpenAI Harmony (Thinking).json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/instruct
+# Content file presets/reasoning/OpenAI Harmony.json copied to /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice/reasoning
+# Content file settings.json already exists in /tmp/sillytavern-stcontrol-routes-WYQ0D7/alice
+# Subtest: actual adapter route resumes provisioning after a lost idempotency receipt
+ok 37 - actual adapter route resumes provisioning after a lost idempotency receipt
+  ---
+  duration_ms: 1446.826716
+  ...
+# Subtest: account inventory pages beyond 500 users without gaps and fences revision drift
+ok 38 - account inventory pages beyond 500 users without gaps and fences revision drift
+  ---
+  duration_ms: 2281.191939
+  ...
+# User login recorded: alice at 2026-08-24T02:39:45.388Z
+# stcontrol handoff rejected: handoff_redeem_failed
+# stcontrol handoff rejected: invalid_handoff_claims
+# stcontrol handoff rejected: invalid_handoff_claims
+# stcontrol handoff rejected: global_user_binding_changed
+# Subtest: browser handoff uses the local Agent proxy and establishes a fenced session
+ok 39 - browser handoff uses the local Agent proxy and establishes a fenced session
+  ---
+  duration_ms: 113.134628
+  ...
+# User login recorded: alice at 2026-08-24T02:39:45.469Z
+# stcontrol handoff rejected: administrator_permission_changed
+# Subtest: administrator handoff rechecks the permission version and creates an isolated admin session
+ok 40 - administrator handoff rechecks the permission version and creates an isolated admin session
+  ---
+  duration_ms: 30.66464
+  ...
+# User login recorded: alice at 2026-08-24T02:39:45.504Z
+# User login recorded: alice at 2026-08-24T02:39:45.514Z
+# User login recorded: alice at 2026-08-24T02:39:45.523Z
+# Subtest: mixed admin/user handoffs clear the opposite marker and retire the prior managed session
+ok 41 - mixed admin/user handoffs clear the opposite marker and retire the prior managed session
+  ---
+  duration_ms: 39.791252
+  ...
+# Subtest: password sync accepts exact remove versions and rejects rollback or mixed payloads
+ok 42 - password sync accepts exact remove versions and rejects rollback or mixed payloads
+  ---
+  duration_ms: 51.21882
+  ...
+# Subtest: OAuth identity sync upgrades legacy records and fences per-provider drift and rollback
+ok 43 - OAuth identity sync upgrades legacy records and fences per-provider drift and rollback
+  ---
+  duration_ms: 345.579375
+  ...
+# Subtest: snapshot write gate drains one user and requires the exact release token
+ok 44 - snapshot write gate drains one user and requires the exact release token
+  ---
+  duration_ms: 31.305891
+  ...
+# Subtest: snapshot quiesce timeout releases only its own gate and stale release tokens cannot delete replacements
+ok 45 - snapshot quiesce timeout releases only its own gate and stale release tokens cannot delete replacements
+  ---
+  duration_ms: 173.614133
+  ...
+# Subtest: authoritative data fault gate is durable, scoped and idempotent
+ok 46 - authoritative data fault gate is durable, scoped and idempotent
+  ---
+  duration_ms: 132.309553
+  ...
+# Subtest: legacy v6 data fault gates only release when the bound global user id matches exactly
+ok 47 - legacy v6 data fault gates only release when the bound global user id matches exactly
+  ---
+  duration_ms: 11.765692
+  ...
+1..47
+# tests 47
+# suites 0
+# pass 47
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 6379.991965

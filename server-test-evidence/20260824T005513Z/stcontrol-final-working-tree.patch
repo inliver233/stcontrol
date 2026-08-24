@@ -1,0 +1,4032 @@
+diff --git a/.dockerignore b/.dockerignore
+new file mode 100644
+index 0000000..72a9777
+--- /dev/null
++++ b/.dockerignore
+@@ -0,0 +1,18 @@
++.git
++.env
++.env.*
++certs/
++controller.yaml
++controller.docker.yaml
++controller.livecheck.yaml
++agent.yaml
++
++**/node_modules/
++web/dist/
++bin/
++
++.workflow/
++.workflow_wip_diff.txt
++*.log
++*.dump
++coverage*
+diff --git a/Dockerfile.controller b/Dockerfile.controller
+index a37da3b..ccf621a 100644
+--- a/Dockerfile.controller
++++ b/Dockerfile.controller
+@@ -1,19 +1,19 @@
+ # 总控镜像: Go 后端 + React 前端
+-FROM node:20-alpine AS webbuild
++FROM node:24-alpine3.24@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS webbuild
+ WORKDIR /web
+ COPY web/package*.json ./
+-RUN npm install --no-audit --no-fund
++RUN npm ci --no-audit --no-fund
+ COPY web/ ./
+ RUN npm run build
+ 
+-FROM golang:1.22-alpine AS gobuild
++FROM golang:1.26.7-alpine3.24@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468 AS gobuild
+ WORKDIR /src
+ COPY go.mod go.sum ./
+ RUN go mod download
+ COPY . .
+ RUN CGO_ENABLED=0 go build -o /out/controller ./cmd/controller
+ 
+-FROM alpine:3.20
++FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+ RUN apk add --no-cache ca-certificates tzdata
+ WORKDIR /app
+ COPY --from=gobuild /out/controller /app/controller
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 0edc54e..a376fb6 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -28,7 +28,7 @@ services:
+       - ./controller.docker.yaml:/app/controller.yaml:ro
+       - ./certs:/run/stcontrol-tls:ro
+     ports:
+-      - "8443:8443"
++      - "127.0.0.1:8443:8443"
+     depends_on:
+       db:
+         condition: service_healthy
+diff --git a/go.mod b/go.mod
+index b8d2731..6d3e5d0 100644
+--- a/go.mod
++++ b/go.mod
+@@ -1,6 +1,8 @@
+ module stcontrol
+ 
+-go 1.22.5
++go 1.26.0
++
++toolchain go1.26.7
+ 
+ require (
+ 	github.com/DATA-DOG/go-sqlmock v1.5.2
+@@ -8,9 +10,9 @@ require (
+ 	github.com/klauspost/compress v1.17.9
+ 	github.com/lib/pq v1.10.9
+ 	github.com/shirou/gopsutil/v3 v3.24.5
+-	golang.org/x/crypto v0.31.0
+-	golang.org/x/sys v0.28.0
+-	golang.org/x/text v0.21.0
++	golang.org/x/crypto v0.55.0
++	golang.org/x/sys v0.47.0
++	golang.org/x/text v0.41.0
+ 	gopkg.in/yaml.v3 v3.0.1
+ )
+ 
+diff --git a/go.sum b/go.sum
+index c04078c..e476332 100644
+--- a/go.sum
++++ b/go.sum
+@@ -34,16 +34,16 @@ github.com/tklauser/numcpus v0.6.1 h1:ng9scYS7az0Bk4OZLvrNXNSAO2Pxr1XXRAPyjhIx+F
+ github.com/tklauser/numcpus v0.6.1/go.mod h1:1XfjsgE2zo8GVw7POkMbHENHzVg3GzmoZ9fESEdAacY=
+ github.com/yusufpapurcu/wmi v1.2.4 h1:zFUKzehAFReQwLys1b/iSMl+JQGSCSjtVqQn9bBrPo0=
+ github.com/yusufpapurcu/wmi v1.2.4/go.mod h1:SBZ9tNy3G9/m5Oi98Zks0QjeHVDvuK0qfxQmPyzfmi0=
+-golang.org/x/crypto v0.31.0 h1:ihbySMvVjLAeSH1IbfcRTkD/iNscyz8rGzjF/E5hV6U=
+-golang.org/x/crypto v0.31.0/go.mod h1:kDsLvtWBEx7MV9tJOj9bnXsPbxwJQ6csT/x4KIN4Ssk=
++golang.org/x/crypto v0.55.0 h1:+KWHjbgOaAQ66dh/YlkZKHlz9ZUlq61AFirAR9ntP8M=
++golang.org/x/crypto v0.55.0/go.mod h1:uq0V9dE/fzQuJtbnL+2EhWOE63vo164FY8xqEnV9xis=
+ golang.org/x/sys v0.0.0-20190916202348-b4ddaad3f8a3/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+ golang.org/x/sys v0.0.0-20201204225414-ed752295db88/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+ golang.org/x/sys v0.8.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.11.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+-golang.org/x/sys v0.28.0 h1:Fksou7UEQUWlKvIdsqzJmUmCX3cZuD2+P3XyyzwMhlA=
+-golang.org/x/sys v0.28.0/go.mod h1:/VUhepiaJMQUp4+oa/7Zr1D23ma6VTLIYjOOTFZPUcA=
+-golang.org/x/text v0.21.0 h1:zyQAAkrwaneQ066sspRyJaG9VNi/YJ1NfzcGB3hZ/qo=
+-golang.org/x/text v0.21.0/go.mod h1:4IBbMaMmOPCJ8SecivzSH54+73PCFmPWxNTLm+vZkEQ=
++golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
++golang.org/x/sys v0.47.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
++golang.org/x/text v0.41.0 h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=
++golang.org/x/text v0.41.0/go.mod h1:jvf1O8ajNzZqhSrQBPbutR/EB83Cc0CFrezNQIwbb5M=
+ golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
+ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+diff --git a/internal/agent/process_e2e_test.go b/internal/agent/process_e2e_test.go
+index ec9a9ff..b22c357 100644
+--- a/internal/agent/process_e2e_test.go
++++ b/internal/agent/process_e2e_test.go
+@@ -467,8 +467,9 @@ func startProcessE2ENode(t *testing.T, options processE2ENodeOptions) *processE2
+ 		tavernConfigPath: tavernConfigPath, adapterURL: adapterURL,
+ 		initialAgentPSK: agentConfig.AgentPSK, adapterProcess: adapterProcess,
+ 	}
++	startedAt := time.Now().UTC()
+ 	harness.agentProcess = harness.startAgent(t)
+-	waitForProcessE2ENodeReady(t, options.Store, node.ID, 45*time.Second)
++	waitForProcessE2ENodeReady(t, options.Store, node.ID, 45*time.Second, startedAt)
+ 	return harness
+ }
+ 
+@@ -551,10 +552,11 @@ func configureProcessE2EDisasterPeers(
+ 	}
+ 	primary.agentEnvironment = []string{secretEnv + "=" + secret}
+ 	secondary.agentEnvironment = []string{secretEnv + "=" + secret}
++	startedAt := time.Now().UTC()
+ 	primary.agentProcess = primary.startAgent(t)
+ 	secondary.agentProcess = secondary.startAgent(t)
+-	waitForProcessE2ENodeReady(t, st, primary.node.ID, 45*time.Second)
+-	waitForProcessE2ENodeReady(t, st, secondary.node.ID, 45*time.Second)
++	waitForProcessE2ENodeReady(t, st, primary.node.ID, 45*time.Second, startedAt)
++	waitForProcessE2ENodeReady(t, st, secondary.node.ID, 45*time.Second, startedAt)
+ }
+ 
+ // runProcessE2EManagedPartitionMatrix proves the bounded-grace single-writer
+@@ -729,8 +731,9 @@ func runProcessE2EManagedPartitionMatrix(
+ 			t.Fatalf("partition %s logout status=%d err=%v body=%s", node.node.Name, logout.status, err, logout.body)
+ 		}
+ 	}
++	startedAt := time.Now().UTC()
+ 	primary.agentProcess = primary.startAgent(t)
+-	waitForProcessE2ENodeReady(t, st, primary.node.ID, 45*time.Second)
++	waitForProcessE2ENodeReady(t, st, primary.node.ID, 45*time.Second, startedAt)
+ 	waitForProcessE2ECondition(t, 15*time.Second, func() (bool, error) {
+ 		var state string
+ 		err := st.DB.QueryRowContext(ctx, `SELECT state FROM user_activity_leases WHERE user_id=$1`, user.GlobalID).Scan(&state)
+@@ -1532,13 +1535,22 @@ func waitForProcessE2ECondition(
+ 	t.Fatalf("%s: %v", failure, lastErr)
+ }
+ 
+-func waitForProcessE2ENodeReady(t *testing.T, st *store.Store, nodeID int64, timeout time.Duration) {
++func waitForProcessE2ENodeReady(
++	t *testing.T,
++	st *store.Store,
++	nodeID int64,
++	timeout time.Duration,
++	seenAfter ...time.Time,
++) {
+ 	t.Helper()
+ 	waitForProcessE2ECondition(t, timeout, func() (bool, error) {
+ 		node, err := st.GetNodeByID(context.Background(), nodeID)
+ 		if err != nil || node == nil {
+ 			return false, err
+ 		}
++		if len(seenAfter) > 0 && (!node.LastSeenAt.Valid || !node.LastSeenAt.Time.After(seenAfter[0])) {
++			return false, nil
++		}
+ 		ready, err := st.IsControlPlaneReady(context.Background())
+ 		return node.ConnectivityState == "online" && node.OperationalState == "active" &&
+ 			node.CompatibilityState == "compatible" && node.TelemetrySource == "adapter" && ready, err
+diff --git a/internal/agent/snapshot_publish_linux_test.go b/internal/agent/snapshot_publish_linux_test.go
+index ae29687..42b54f0 100644
+--- a/internal/agent/snapshot_publish_linux_test.go
++++ b/internal/agent/snapshot_publish_linux_test.go
+@@ -26,7 +26,9 @@ const snapshotPublishCrashHelperEnv = "STCONTROL_SNAPSHOT_PUBLISH_CRASH_HELPER"
+ 
+ func TestSnapshotPublishCrashHelper(t *testing.T) {
+ 	if os.Getenv(snapshotPublishCrashHelperEnv) != "1" {
+-		t.Skip("snapshot publish crash helper")
++		// This is a subprocess entry point, not an acceptance case of its own.
++		// The parent crash-matrix test invokes it with the helper environment.
++		return
+ 	}
+ 	checkpoint := os.Getenv("STCONTROL_SNAPSHOT_PUBLISH_CHECKPOINT")
+ 	marker := os.Getenv("STCONTROL_SNAPSHOT_PUBLISH_MARKER")
+diff --git a/internal/agent/tavern_crossrepo_e2e_test.go b/internal/agent/tavern_crossrepo_e2e_test.go
+index 6836a67..bdaac2a 100644
+--- a/internal/agent/tavern_crossrepo_e2e_test.go
++++ b/internal/agent/tavern_crossrepo_e2e_test.go
+@@ -209,7 +209,10 @@ func TestGoAgentCallsFullSillyTavernServerWithCSRF(t *testing.T) {
+ 
+ 	baseURL := "http://127.0.0.1:" + strconv.Itoa(port)
+ 	readyClient := &http.Client{Timeout: time.Second}
+-	deadline := time.Now().Add(30 * time.Second)
++	// A cold production checkout may need to generate thumbnails and compile
++	// frontend libraries before it starts listening. Keep the deadline bounded,
++	// but do not confuse that legitimate first boot with a server failure.
++	deadline := time.Now().Add(90 * time.Second)
+ 	ready := false
+ 	for time.Now().Before(deadline) {
+ 		response, requestErr := readyClient.Get(baseURL + "/api/ping-public")
+diff --git a/internal/controller/agent.go b/internal/controller/agent.go
+index 3838755..ec15093 100644
+--- a/internal/controller/agent.go
++++ b/internal/controller/agent.go
+@@ -6,6 +6,7 @@ import (
+ 	"encoding/hex"
+ 	"encoding/json"
+ 	"fmt"
++	"log"
+ 	"math"
+ 	"net"
+ 	"net/http"
+@@ -721,7 +722,9 @@ func (s *Server) runNodeMaintenance(ctx context.Context, timeout time.Duration)
+ 	now := time.Now().UTC()
+ 	_ = s.Store.MarkStaleNodesOffline(ctx, timeout)
+ 	_, _ = s.Store.CleanupNodeMetricSamples(ctx, now.Add(-24*time.Hour))
+-	_, _ = s.Store.ReconcileProtectionStates(ctx, now, s.protectionAlertGrace())
++	if _, err := s.Store.ReconcileProtectionStates(ctx, now, s.protectionAlertGrace()); err != nil && ctx.Err() == nil {
++		log.Printf("reconcile user protection states: %v", err)
++	}
+ }
+ 
+ // backupScheduler 扫描离线用户并触发备份（详见 backup.go 的完整实现）。
+diff --git a/internal/controller/ai_supervisor_test.go b/internal/controller/ai_supervisor_test.go
+index 778afe7..94dd167 100644
+--- a/internal/controller/ai_supervisor_test.go
++++ b/internal/controller/ai_supervisor_test.go
+@@ -99,7 +99,10 @@ func TestBuildAIObservationProducesRedactedSnapshot(t *testing.T) {
+ 		t.Fatalf("protection aggregates=%+v, want real projection dimensions", decoded.Protection)
+ 	}
+ 	rawStr := string(raw)
+-	for _, forbidden := range []string{"http://internal", "fp", "alice", "11111111-1111-4111-8111-111111111111"} {
++	for _, forbidden := range []string{
++		"http://internal", `"compatibility_fingerprint"`, `"fp"`, "alice",
++		"11111111-1111-4111-8111-111111111111",
++	} {
+ 		if containsSubstring(rawStr, forbidden) {
+ 			t.Fatalf("observation leaked %q", forbidden)
+ 		}
+diff --git a/internal/controller/router.go b/internal/controller/router.go
+index cc0c90e..e579ec5 100644
+--- a/internal/controller/router.go
++++ b/internal/controller/router.go
+@@ -66,11 +66,11 @@ func (s *Server) routes(r *chi.Mux) {
+ 
+ 	// 认证（R21/R22：登录/注册端点限流 + 用户名锁定，防暴力破解）
+ 	r.Route("/api/auth", func(r chi.Router) {
+-		r.Use(s.loginRateLimitMiddleware, s.loginLockoutMiddleware)
+-		r.Post("/register", s.handleRegister)
++		r.Use(s.rateLimitMiddleware)
++		r.With(s.loginRateLimitMiddleware, s.loginLockoutMiddleware).Post("/register", s.handleRegister)
+ 		r.Get("/registration/status", s.handleRegistrationStatus)
+-		r.Post("/login", s.handleLogin)
+-		r.Post("/admin/login", s.handleAdminLogin)
++		r.With(s.loginRateLimitMiddleware, s.loginLockoutMiddleware).Post("/login", s.handleLogin)
++		r.With(s.loginRateLimitMiddleware, s.loginLockoutMiddleware).Post("/admin/login", s.handleAdminLogin)
+ 		// Keep logout inside this route tree. Mounting /api/auth/logout
+ 		// later under /api is shadowed by chi's existing /api/auth subtree
+ 		// and produces a 404 before the authenticated handler is reached.
+diff --git a/internal/controller/snapshot_process_postgres_integration_linux_test.go b/internal/controller/snapshot_process_postgres_integration_linux_test.go
+index a67279d..7d42491 100644
+--- a/internal/controller/snapshot_process_postgres_integration_linux_test.go
++++ b/internal/controller/snapshot_process_postgres_integration_linux_test.go
+@@ -35,7 +35,9 @@ const snapshotAgentProcessHelperEnv = "STCONTROL_SNAPSHOT_AGENT_PROCESS_HELPER"
+ // fields used by cmd/agent; no command or data-plane behavior is replaced.
+ func TestSnapshotAgentProcessHelper(t *testing.T) {
+ 	if os.Getenv(snapshotAgentProcessHelperEnv) != "1" {
+-		t.Skip("snapshot Agent process helper")
++		// This is a subprocess entry point, not an acceptance case of its own.
++		// The parent process-crash test invokes it with the helper environment.
++		return
+ 	}
+ 	nodeID, err := strconv.ParseInt(os.Getenv("STCONTROL_HELPER_NODE_ID"), 10, 64)
+ 	if err != nil || nodeID <= 0 {
+diff --git a/internal/controller/user_data_fault_postgres_integration_test.go b/internal/controller/user_data_fault_postgres_integration_test.go
+index d553905..2d0e559 100644
+--- a/internal/controller/user_data_fault_postgres_integration_test.go
++++ b/internal/controller/user_data_fault_postgres_integration_test.go
+@@ -296,22 +296,20 @@ func TestControllerUserDataFaultReleaseRetriesAfterNodeAndWorkerRestart(t *testi
+ 	}
+ 	first := New(config.DefaultController(), st, secretKey)
+ 	first.reconcileUserDataFaults(ctx)
+-	deadline := time.Now().Add(5 * time.Second)
+ 	var current *store.UserDataFaultStatus
+ 	var err error
++	firstAttemptDeadline := time.Now().Add(5 * time.Second)
+ 	for {
+ 		current, err = st.GetUserDataFaultByID(ctx, fault.ID)
+-		if err == nil && current != nil && current.ReleaseState == "retry_wait" {
++		if err == nil && current != nil && current.ReleaseState == "retry_wait" &&
++			current.ReleaseErrorCode == "agent_unavailable" && current.ReleaseAttempt == 1 {
+ 			break
+ 		}
+-		if time.Now().After(deadline) {
++		if time.Now().After(firstAttemptDeadline) {
+ 			t.Fatalf("first unavailable release attempt=%+v err=%v", current, err)
+ 		}
+ 		time.Sleep(10 * time.Millisecond)
+ 	}
+-	if current.ReleaseErrorCode != "agent_unavailable" || current.ReleaseAttempt != 1 {
+-		t.Fatalf("first unavailable release attempt=%+v", current)
+-	}
+ 	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET connectivity_state='online' WHERE id=$1`, node.ID); err != nil {
+ 		t.Fatalf("restore release node: %v", err)
+ 	}
+@@ -344,13 +342,13 @@ func TestControllerUserDataFaultReleaseRetriesAfterNodeAndWorkerRestart(t *testi
+ 	t.Cleanup(harness.stop)
+ 	restarted := New(config.DefaultController(), st, secretKey)
+ 	restarted.reconcileUserDataFaults(ctx)
+-	deadline = time.Now().Add(5 * time.Second)
++	releaseDeadline := time.Now().Add(5 * time.Second)
+ 	for {
+ 		current, err = st.GetUserDataFaultByID(ctx, fault.ID)
+ 		if err == nil && current != nil && current.ReleaseState == "released" && current.ReleaseReleasedAt != nil {
+ 			break
+ 		}
+-		if time.Now().After(deadline) {
++		if time.Now().After(releaseDeadline) {
+ 			t.Fatalf("restarted release did not converge: fault=%+v err=%v", current, err)
+ 		}
+ 		time.Sleep(10 * time.Millisecond)
+diff --git a/internal/store/admin_empty_lists_test.go b/internal/store/admin_empty_lists_test.go
+new file mode 100644
+index 0000000..e44aee2
+--- /dev/null
++++ b/internal/store/admin_empty_lists_test.go
+@@ -0,0 +1,53 @@
++package store
++
++import (
++	"context"
++	"encoding/json"
++	"testing"
++	"time"
++
++	"github.com/DATA-DOG/go-sqlmock"
++)
++
++func TestAdminEmptyListsEncodeAsJSONArrays(t *testing.T) {
++	t.Parallel()
++	st, mock, closeDB := newMockStore(t)
++	defer closeDB()
++	now := time.Date(2026, 8, 9, 2, 0, 0, 0, time.UTC)
++
++	mock.ExpectQuery(`FROM nodes ORDER BY id`).
++		WillReturnRows(sqlmock.NewRows([]string{"id"}))
++	nodes, err := st.ListNodes(context.Background())
++	assertJSONArray(t, "nodes", nodes, err)
++
++	mock.ExpectQuery(`FROM nodes node`).WithArgs(int64(1)).
++		WillReturnRows(sqlmock.NewRows([]string{"node_id"}))
++	links, err := st.ListAdminNodeLinks(context.Background(), 1)
++	assertJSONArray(t, "admin node links", links, err)
++
++	mock.ExpectQuery(`FROM alerts alert`).WithArgs(100, now).
++		WillReturnRows(sqlmock.NewRows([]string{"severity"}))
++	alerts, err := st.ListVisibleProtectionAlerts(context.Background(), 100, now)
++	assertJSONArray(t, "protection alerts", alerts, err)
++
++	mock.ExpectQuery(`FROM admins ORDER BY id`).
++		WillReturnRows(sqlmock.NewRows([]string{"id"}))
++	admins, err := st.ListAdmins(context.Background())
++	assertJSONArray(t, "admins", admins, err)
++
++	assertMockExpectations(t, mock)
++}
++
++func assertJSONArray(t *testing.T, name string, value any, err error) {
++	t.Helper()
++	if err != nil {
++		t.Fatalf("%s: %v", name, err)
++	}
++	encoded, err := json.Marshal(value)
++	if err != nil {
++		t.Fatalf("marshal %s: %v", name, err)
++	}
++	if string(encoded) != "[]" {
++		t.Fatalf("%s encoded as %s, want []", name, encoded)
++	}
++}
+diff --git a/internal/store/handoffs.go b/internal/store/handoffs.go
+index 19e07f6..73dc535 100644
+--- a/internal/store/handoffs.go
++++ b/internal/store/handoffs.go
+@@ -68,7 +68,16 @@ func (s *Store) CreateLoginHandoff(ctx context.Context, p CreateLoginHandoffPara
+ 	if p.Now.IsZero() {
+ 		p.Now = time.Now().UTC()
+ 	}
++	var result LoginHandoff
++	err := retrySerializable(ctx, func() error {
++		var attemptErr error
++		result, attemptErr = s.createLoginHandoffOnce(ctx, p)
++		return attemptErr
++	})
++	return result, err
++}
+ 
++func (s *Store) createLoginHandoffOnce(ctx context.Context, p CreateLoginHandoffParams) (LoginHandoff, error) {
+ 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+ 	if err != nil {
+ 		return LoginHandoff{}, err
+diff --git a/internal/store/leases.go b/internal/store/leases.go
+index 2ac19e1..18e9b43 100644
+--- a/internal/store/leases.go
++++ b/internal/store/leases.go
+@@ -107,7 +107,19 @@ func (s *Store) AcquireActivityLease(ctx context.Context, p AcquireActivityLease
+ 	if p.Now.IsZero() {
+ 		p.Now = time.Now().UTC()
+ 	}
++	var result AcquireActivityLeaseResult
++	err := retrySerializable(ctx, func() error {
++		var attemptErr error
++		result, attemptErr = s.acquireActivityLeaseOnce(ctx, p)
++		return attemptErr
++	})
++	return result, err
++}
+ 
++func (s *Store) acquireActivityLeaseOnce(
++	ctx context.Context,
++	p AcquireActivityLeaseParams,
++) (AcquireActivityLeaseResult, error) {
+ 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+ 	if err != nil {
+ 		return AcquireActivityLeaseResult{}, err
+diff --git a/internal/store/postgres_integration_test.go b/internal/store/postgres_integration_test.go
+index d11455a..cdd40e2 100644
+--- a/internal/store/postgres_integration_test.go
++++ b/internal/store/postgres_integration_test.go
+@@ -44,6 +44,12 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
+ 	}
+ 	recoveryNode := insertIntegrationNode(t, stores[0], "controller-rebuild")
+ 
++	t.Run("legacy admin user list qualifies joined columns", func(t *testing.T) {
++		if _, err := stores[0].ListUsers(ctx); err != nil {
++			t.Fatalf("ListUsers with normalized identity join: %v", err)
++		}
++	})
++
+ 	t.Run("controller promotion only permits heartbeat recovery before credential rotation", func(t *testing.T) {
+ 		generation = assertPostgresControllerRebuild(t, stores[0], recoveryNode, generation)
+ 	})
+@@ -60,6 +66,11 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
+ 		deferredOnline := insertIntegrationNode(t, stores[0], "controller-rebuild-online")
+ 		deferredOffline := insertIntegrationNode(t, stores[0], "controller-rebuild-offline")
+ 		generation = assertPostgresDeferredControllerRebuild(t, stores[0], deferredOnline, deferredOffline, generation)
++		if _, err := stores[0].DB.ExecContext(ctx, `
++			UPDATE nodes SET status='online',connectivity_state='online',controller_generation=$3
++			WHERE id IN ($1,$2)`, deferredOnline, deferredOffline, generation); err != nil {
++			t.Fatalf("restore deferred controller-rebuild fixtures: %v", err)
++		}
+ 	})
+ 
+ 	// Create the general-purpose fixtures after the promotion scenarios so
+diff --git a/internal/store/protection.go b/internal/store/protection.go
+index 531ac0a..a62ef01 100644
+--- a/internal/store/protection.go
++++ b/internal/store/protection.go
+@@ -88,6 +88,20 @@ func (s *Store) ReconcileProtectionStates(
+ 	if now.IsZero() {
+ 		now = time.Now().UTC()
+ 	}
++	var result ProtectionReconcileResult
++	err := retrySerializable(ctx, func() error {
++		var reconcileErr error
++		result, reconcileErr = s.reconcileProtectionStatesOnce(ctx, now, unprotectedGrace)
++		return reconcileErr
++	})
++	return result, err
++}
++
++func (s *Store) reconcileProtectionStatesOnce(
++	ctx context.Context,
++	now time.Time,
++	unprotectedGrace time.Duration,
++) (ProtectionReconcileResult, error) {
+ 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+ 	if err != nil {
+ 		return ProtectionReconcileResult{}, fmt.Errorf("begin user protection reconciliation: %w", err)
+diff --git a/internal/store/snapshots.go b/internal/store/snapshots.go
+index 0601f42..8a2d506 100644
+--- a/internal/store/snapshots.go
++++ b/internal/store/snapshots.go
+@@ -823,6 +823,18 @@ func (s *Store) SetSnapshotWorkflowProgress(
+ 	if now.IsZero() {
+ 		now = time.Now().UTC()
+ 	}
++	return retrySerializable(ctx, func() error {
++		return s.setSnapshotWorkflowProgressOnce(ctx, workflowID, snapshotID, nodeID, toState, now)
++	})
++}
++
++func (s *Store) setSnapshotWorkflowProgressOnce(
++	ctx context.Context,
++	workflowID, snapshotID string,
++	nodeID int64,
++	toState string,
++	now time.Time,
++) error {
+ 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+ 	if err != nil {
+ 		return err
+diff --git a/internal/store/transaction_retry.go b/internal/store/transaction_retry.go
+new file mode 100644
+index 0000000..4d0da45
+--- /dev/null
++++ b/internal/store/transaction_retry.go
+@@ -0,0 +1,28 @@
++package store
++
++import (
++	"context"
++	"errors"
++
++	"github.com/lib/pq"
++)
++
++const serializableRetryLimit = 5
++
++func retrySerializable(ctx context.Context, operation func() error) error {
++	var err error
++	for attempt := 0; attempt < serializableRetryLimit; attempt++ {
++		if err = operation(); err == nil || !isRetryableTransactionError(err) {
++			return err
++		}
++		if ctxErr := ctx.Err(); ctxErr != nil {
++			return ctxErr
++		}
++	}
++	return err
++}
++
++func isRetryableTransactionError(err error) bool {
++	var pqErr *pq.Error
++	return errors.As(err, &pqErr) && (pqErr.Code == "40001" || pqErr.Code == "40P01")
++}
+diff --git a/internal/store/transaction_retry_test.go b/internal/store/transaction_retry_test.go
+new file mode 100644
+index 0000000..b78a17d
+--- /dev/null
++++ b/internal/store/transaction_retry_test.go
+@@ -0,0 +1,61 @@
++package store
++
++import (
++	"context"
++	"errors"
++	"testing"
++
++	"github.com/lib/pq"
++)
++
++func TestRetrySerializableRetriesSerializationAndDeadlockFailures(t *testing.T) {
++	for _, code := range []pq.ErrorCode{"40001", "40P01"} {
++		t.Run(string(code), func(t *testing.T) {
++			attempts := 0
++			err := retrySerializable(context.Background(), func() error {
++				attempts++
++				if attempts < 3 {
++					return &pq.Error{Code: code}
++				}
++				return nil
++			})
++			if err != nil || attempts != 3 {
++				t.Fatalf("err=%v attempts=%d, want success after 3 attempts", err, attempts)
++			}
++		})
++	}
++}
++
++func TestRetrySerializableDoesNotRetryPermanentFailure(t *testing.T) {
++	want := errors.New("permanent")
++	attempts := 0
++	err := retrySerializable(context.Background(), func() error {
++		attempts++
++		return want
++	})
++	if !errors.Is(err, want) || attempts != 1 {
++		t.Fatalf("err=%v attempts=%d, want permanent failure after 1 attempt", err, attempts)
++	}
++}
++
++func TestRetrySerializableIsBoundedAndHonorsCancellation(t *testing.T) {
++	attempts := 0
++	err := retrySerializable(context.Background(), func() error {
++		attempts++
++		return &pq.Error{Code: "40001"}
++	})
++	if err == nil || attempts != serializableRetryLimit {
++		t.Fatalf("err=%v attempts=%d, want bounded retry limit %d", err, attempts, serializableRetryLimit)
++	}
++
++	ctx, cancel := context.WithCancel(context.Background())
++	attempts = 0
++	err = retrySerializable(ctx, func() error {
++		attempts++
++		cancel()
++		return &pq.Error{Code: "40001"}
++	})
++	if !errors.Is(err, context.Canceled) || attempts != 1 {
++		t.Fatalf("err=%v attempts=%d, want cancellation after 1 attempt", err, attempts)
++	}
++}
+diff --git a/internal/store/users.go b/internal/store/users.go
+index 7a8a92c..da42a30 100644
+--- a/internal/store/users.go
++++ b/internal/store/users.go
+@@ -454,7 +454,7 @@ func stagePasswordMaterialCount(
+ func (s *Store) ListUsers(ctx context.Context) ([]*User, error) {
+ 	rows, err := s.DB.QueryContext(ctx, `
+ 	  SELECT u.id, COALESCE(gu.id,0), u.uuid, u.username, u.display_name, u.password_enc, u.password_hash,
+-	    auth_provider, oauth_id, avatar_url, email, home_node_id, status, created_at
++	    u.auth_provider, u.oauth_id, u.avatar_url, u.email, u.home_node_id, u.status, u.created_at
+ 	  FROM users u LEFT JOIN global_users gu ON gu.legacy_user_id=u.id ORDER BY u.id`)
+ 	if err != nil {
+ 		return nil, err
+diff --git a/web/package-lock.json b/web/package-lock.json
+index bbbe8c7..5681ca7 100644
+--- a/web/package-lock.json
++++ b/web/package-lock.json
+@@ -10,876 +10,38 @@
+       "dependencies": {
+         "react": "^18.3.1",
+         "react-dom": "^18.3.1",
+-        "react-router-dom": "^6.26.0"
++        "react-router-dom": "7.18.2"
+       },
+       "devDependencies": {
+         "@types/react": "^18.3.3",
+         "@types/react-dom": "^18.3.0",
+-        "@vitejs/plugin-react": "^4.3.1",
++        "@vitejs/plugin-react": "6.1.0",
+         "typescript": "^5.5.4",
+-        "vite": "^5.4.2",
+-        "vitest": "^2.1.9"
+-      }
+-    },
+-    "node_modules/@babel/code-frame": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/code-frame/-/code-frame-7.29.7.tgz",
+-      "integrity": "sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/helper-validator-identifier": "^7.29.7",
+-        "js-tokens": "^4.0.0",
+-        "picocolors": "^1.1.1"
+-      },
+-      "engines": {
+-        "node": ">=6.9.0"
+-      }
+-    },
+-    "node_modules/@babel/compat-data": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/compat-data/-/compat-data-7.29.7.tgz",
+-      "integrity": "sha512-locTkQyKvwIEgBzVrn8693ebc97F2U8ZHjbXwDXJ5Fn2TCpNwTlKcaKLkdHop5c/icOFE7qt7Q9JC5hnKNa6Gg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=6.9.0"
+-      }
+-    },
+-    "node_modules/@babel/core": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/core/-/core-7.29.7.tgz",
+-      "integrity": "sha512-RgHBCvtjbOK2gXSNBNIkNoEc9qoVEtau3hj8gEqKQuL3HZAibKarWFEI3Lfm6EYKkLalOh8eSrj9b+ch9H/VBA==",
+-      "dev": true,
+-      "license": "MIT",
+-      "peer": true,
+-      "dependencies": {
+-        "@babel/code-frame": "^7.29.7",
+-        "@babel/generator": "^7.29.7",
+-        "@babel/helper-compilation-targets": "^7.29.7",
+-        "@babel/helper-module-transforms": "^7.29.7",
+-        "@babel/helpers": "^7.29.7",
+-        "@babel/parser": "^7.29.7",
+-        "@babel/template": "^7.29.7",
+-        "@babel/traverse": "^7.29.7",
+-        "@babel/types": "^7.29.7",
+-        "@jridgewell/remapping": "^2.3.5",
+-        "convert-source-map": "^2.0.0",
+-        "debug": "^4.1.0",
+-        "gensync": "^1.0.0-beta.2",
+-        "json5": "^2.2.3",
+-        "semver": "^6.3.1"
+-      },
+-      "engines": {
+-        "node": ">=6.9.0"
+-      },
+-      "funding": {
+-        "type": "opencollective",
+-        "url": "https://opencollective.com/babel"
+-      }
+-    },
+-    "node_modules/@babel/generator": {
+-      "version": "7.29.8",
+-      "resolved": "https://registry.npmmirror.com/@babel/generator/-/generator-7.29.8.tgz",
+-      "integrity": "sha512-gZbepsdh3WDtgZKWL+vTPh71LSBrm/Y4/QDZBVCcYfmeTEEuoOYwlSy+G1StfJg+/Zy550u/3TATbm7qDbbMtg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/parser": "^7.29.8",
+-        "@babel/types": "^7.29.8",
+-        "@jridgewell/gen-mapping": "^0.3.12",
+-        "@jridgewell/trace-mapping": "^0.3.28",
+-        "jsesc": "^3.0.2"
+-      },
+-      "engines": {
+-        "node": ">=6.9.0"
+-      }
+-    },
+-    "node_modules/@babel/helper-compilation-targets": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/helper-compilation-targets/-/helper-compilation-targets-7.29.7.tgz",
+-      "integrity": "sha512-wem6WaBj4NaVYVdNhLPPVacES6ZJ+KBBfSkTMD3YZxbP3rm3Di85tJU5ljaUNhaOynt+Aj0xruhYuzQBt8n71g==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/compat-data": "^7.29.7",
+-        "@babel/helper-validator-option": "^7.29.7",
+-        "browserslist": "^4.24.0",
+-        "lru-cache": "^5.1.1",
+-        "semver": "^6.3.1"
+-      },
+-      "engines": {
+-        "node": ">=6.9.0"
+-      }
+-    },
+-    "node_modules/@babel/helper-globals": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/helper-globals/-/helper-globals-7.29.7.tgz",
+-      "integrity": "sha512-3nQVUAtvkKH9zahfWgw96Jc/uFOmjACE1kQz82E2lqWmHBgjzbNlsC22nuQTfahmWeQtTq5nQ/4Nnd2A1wj4zA==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=6.9.0"
+-      }
+-    },
+-    "node_modules/@babel/helper-module-imports": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/helper-module-imports/-/helper-module-imports-7.29.7.tgz",
+-      "integrity": "sha512-ejHwrQQYcm9xnTivShn2IDOlIzInN34AXskvq9QicvCtEzq1Vzclu/tKF8Jq1Cg8JG2GL6/EmjgsCT7lXepE3g==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/traverse": "^7.29.7",
+-        "@babel/types": "^7.29.7"
+-      },
+-      "engines": {
+-        "node": ">=6.9.0"
+-      }
+-    },
+-    "node_modules/@babel/helper-module-transforms": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/helper-module-transforms/-/helper-module-transforms-7.29.7.tgz",
+-      "integrity": "sha512-UPUVSyXbOh627KiCIGQSgwWzGeBKLkaJ9PJEdrngIwMSzxLR4jS4+f1f1jb7VzBbg8nFLaYotvVPFCTqdrmTAg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/helper-module-imports": "^7.29.7",
+-        "@babel/helper-validator-identifier": "^7.29.7",
+-        "@babel/traverse": "^7.29.7"
+-      },
+-      "engines": {
+-        "node": ">=6.9.0"
+-      },
+-      "peerDependencies": {
+-        "@babel/core": "^7.0.0"
+-      }
+-    },
+-    "node_modules/@babel/helper-plugin-utils": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/helper-plugin-utils/-/helper-plugin-utils-7.29.7.tgz",
+-      "integrity": "sha512-G7sHYigPY17oO5SYWnfD/0MTBwVR781S/JI643e/JhUYgVgWE/61SoW3NH9KWUKyKq5LVh3npif99Wkt6j86Jw==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=6.9.0"
+-      }
+-    },
+-    "node_modules/@babel/helper-string-parser": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/helper-string-parser/-/helper-string-parser-7.29.7.tgz",
+-      "integrity": "sha512-Pb5ijPrZ89GDH8223L4UP8i6QApWxs04RbPQJTeWDV0/keR2E36MeKnyr6LYmUUvqRRI+Iv87SuF1W6ErINzYw==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=6.9.0"
+-      }
+-    },
+-    "node_modules/@babel/helper-validator-identifier": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/helper-validator-identifier/-/helper-validator-identifier-7.29.7.tgz",
+-      "integrity": "sha512-qehxGkRj55h/ff8EMaJ+cYhyaKlHIxqYDn682wQD7RNp9UujOQsHog2uS0r2vzr4pW+sXf90NeeayjcNaX3fFg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=6.9.0"
+-      }
+-    },
+-    "node_modules/@babel/helper-validator-option": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/helper-validator-option/-/helper-validator-option-7.29.7.tgz",
+-      "integrity": "sha512-N9ZErrD+yW5geCDtBqnOoxmR8+tNKiGuxKlDpuJxfsqpa2dFcexaziGAE/qoHLiDDreVNMupxGmSoNlyvsA3gw==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=6.9.0"
+-      }
+-    },
+-    "node_modules/@babel/helpers": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/helpers/-/helpers-7.29.7.tgz",
+-      "integrity": "sha512-1k2lAGRMfHTcwuNYcCNUmaUffmQv8KWMfh2iJUUeRlwlwH4FdNG7mfPI10NPfLHJFThE4Tyr4mv7kTNZOiPuBg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/template": "^7.29.7",
+-        "@babel/types": "^7.29.7"
+-      },
+-      "engines": {
+-        "node": ">=6.9.0"
+-      }
+-    },
+-    "node_modules/@babel/parser": {
+-      "version": "7.29.8",
+-      "resolved": "https://registry.npmmirror.com/@babel/parser/-/parser-7.29.8.tgz",
+-      "integrity": "sha512-E8lTAYNB1KW+FH+VGJuZM1ioAx2E6oVlvQFRrf5P8ZZmsiJXYAD9vTFV7yyEURNzgh1dFqMZuO6tUwcARbqFCA==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/types": "^7.29.8"
+-      },
+-      "bin": {
+-        "parser": "bin/babel-parser.js"
+-      },
+-      "engines": {
+-        "node": ">=6.0.0"
+-      }
+-    },
+-    "node_modules/@babel/plugin-transform-react-jsx-self": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/plugin-transform-react-jsx-self/-/plugin-transform-react-jsx-self-7.29.7.tgz",
+-      "integrity": "sha512-TL0hMc9xzy86VD31nUiwzd5otRAcyEPcsegCxolO0PvcXuH1v0kECe/UIznYFihpkvU5wg/jk4v0TTEFfm53fw==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/helper-plugin-utils": "^7.29.7"
+-      },
+-      "engines": {
+-        "node": ">=6.9.0"
+-      },
+-      "peerDependencies": {
+-        "@babel/core": "^7.0.0-0"
+-      }
+-    },
+-    "node_modules/@babel/plugin-transform-react-jsx-source": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/plugin-transform-react-jsx-source/-/plugin-transform-react-jsx-source-7.29.7.tgz",
+-      "integrity": "sha512-06IyK09H3wi4cGbhDBwp5gUGo0IKtnYa8tyTiephirPCK6fbobVGiXMMI5zLQ4aKEYP3wZ3ArU44o+8KMrSG/Q==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/helper-plugin-utils": "^7.29.7"
+-      },
+-      "engines": {
+-        "node": ">=6.9.0"
+-      },
+-      "peerDependencies": {
+-        "@babel/core": "^7.0.0-0"
+-      }
+-    },
+-    "node_modules/@babel/template": {
+-      "version": "7.29.7",
+-      "resolved": "https://registry.npmmirror.com/@babel/template/-/template-7.29.7.tgz",
+-      "integrity": "sha512-puq+Gf35oI24FeN11LkoUQFqv9uwNeWpxXZi/Ji3rRIoKAzKnxRaZ+Gkj0vKS9ZCiTESfng1N9LyOyXvo+m+Gg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/code-frame": "^7.29.7",
+-        "@babel/parser": "^7.29.7",
+-        "@babel/types": "^7.29.7"
+-      },
+-      "engines": {
+-        "node": ">=6.9.0"
+-      }
+-    },
+-    "node_modules/@babel/traverse": {
+-      "version": "7.29.8",
+-      "resolved": "https://registry.npmmirror.com/@babel/traverse/-/traverse-7.29.8.tgz",
+-      "integrity": "sha512-I5z7H3bf/41ktsNVLtpN0wAa336HkqIHQ5BuPLEhTkt1jVSyZpeNKIzTgEWmlxjdg81R0IgUCcaE+Ok3NvrfZg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/code-frame": "^7.29.7",
+-        "@babel/generator": "^7.29.8",
+-        "@babel/helper-globals": "^7.29.7",
+-        "@babel/parser": "^7.29.8",
+-        "@babel/template": "^7.29.7",
+-        "@babel/types": "^7.29.8",
+-        "debug": "^4.3.1"
+-      },
+-      "engines": {
+-        "node": ">=6.9.0"
+-      }
+-    },
+-    "node_modules/@babel/types": {
+-      "version": "7.29.8",
+-      "resolved": "https://registry.npmmirror.com/@babel/types/-/types-7.29.8.tgz",
+-      "integrity": "sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/helper-string-parser": "^7.29.7",
+-        "@babel/helper-validator-identifier": "^7.29.7"
+-      },
+-      "engines": {
+-        "node": ">=6.9.0"
+-      }
+-    },
+-    "node_modules/@esbuild/aix-ppc64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/aix-ppc64/-/aix-ppc64-0.21.5.tgz",
+-      "integrity": "sha512-1SDgH6ZSPTlggy1yI6+Dbkiz8xzpHJEVAlF/AM1tHPLsf5STom9rwtjE4hKAF20FfXXNTFqEYXyJNWh1GiZedQ==",
+-      "cpu": [
+-        "ppc64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "aix"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/android-arm": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/android-arm/-/android-arm-0.21.5.tgz",
+-      "integrity": "sha512-vCPvzSjpPHEi1siZdlvAlsPxXl7WbOVUBBAowWug4rJHb68Ox8KualB+1ocNvT5fjv6wpkX6o/iEpbDrf68zcg==",
+-      "cpu": [
+-        "arm"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "android"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/android-arm64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/android-arm64/-/android-arm64-0.21.5.tgz",
+-      "integrity": "sha512-c0uX9VAUBQ7dTDCjq+wdyGLowMdtR/GoC2U5IYk/7D1H1JYC0qseD7+11iMP2mRLN9RcCMRcjC4YMclCzGwS/A==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "android"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/android-x64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/android-x64/-/android-x64-0.21.5.tgz",
+-      "integrity": "sha512-D7aPRUUNHRBwHxzxRvp856rjUHRFW1SdQATKXH2hqA0kAZb1hKmi02OpYRacl0TxIGz/ZmXWlbZgjwWYaCakTA==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "android"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/darwin-arm64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/darwin-arm64/-/darwin-arm64-0.21.5.tgz",
+-      "integrity": "sha512-DwqXqZyuk5AiWWf3UfLiRDJ5EDd49zg6O9wclZ7kUMv2WRFr4HKjXp/5t8JZ11QbQfUS6/cRCKGwYhtNAY88kQ==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "darwin"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/darwin-x64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/darwin-x64/-/darwin-x64-0.21.5.tgz",
+-      "integrity": "sha512-se/JjF8NlmKVG4kNIuyWMV/22ZaerB+qaSi5MdrXtd6R08kvs2qCN4C09miupktDitvh8jRFflwGFBQcxZRjbw==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "darwin"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/freebsd-arm64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/freebsd-arm64/-/freebsd-arm64-0.21.5.tgz",
+-      "integrity": "sha512-5JcRxxRDUJLX8JXp/wcBCy3pENnCgBR9bN6JsY4OmhfUtIHe3ZW0mawA7+RDAcMLrMIZaf03NlQiX9DGyB8h4g==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "freebsd"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/freebsd-x64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/freebsd-x64/-/freebsd-x64-0.21.5.tgz",
+-      "integrity": "sha512-J95kNBj1zkbMXtHVH29bBriQygMXqoVQOQYA+ISs0/2l3T9/kj42ow2mpqerRBxDJnmkUDCaQT/dfNXWX/ZZCQ==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "freebsd"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/linux-arm": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/linux-arm/-/linux-arm-0.21.5.tgz",
+-      "integrity": "sha512-bPb5AHZtbeNGjCKVZ9UGqGwo8EUu4cLq68E95A53KlxAPRmUyYv2D6F0uUI65XisGOL1hBP5mTronbgo+0bFcA==",
+-      "cpu": [
+-        "arm"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/linux-arm64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/linux-arm64/-/linux-arm64-0.21.5.tgz",
+-      "integrity": "sha512-ibKvmyYzKsBeX8d8I7MH/TMfWDXBF3db4qM6sy+7re0YXya+K1cem3on9XgdT2EQGMu4hQyZhan7TeQ8XkGp4Q==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/linux-ia32": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/linux-ia32/-/linux-ia32-0.21.5.tgz",
+-      "integrity": "sha512-YvjXDqLRqPDl2dvRODYmmhz4rPeVKYvppfGYKSNGdyZkA01046pLWyRKKI3ax8fbJoK5QbxblURkwK/MWY18Tg==",
+-      "cpu": [
+-        "ia32"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/linux-loong64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/linux-loong64/-/linux-loong64-0.21.5.tgz",
+-      "integrity": "sha512-uHf1BmMG8qEvzdrzAqg2SIG/02+4/DHB6a9Kbya0XDvwDEKCoC8ZRWI5JJvNdUjtciBGFQ5PuBlpEOXQj+JQSg==",
+-      "cpu": [
+-        "loong64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/linux-mips64el": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/linux-mips64el/-/linux-mips64el-0.21.5.tgz",
+-      "integrity": "sha512-IajOmO+KJK23bj52dFSNCMsz1QP1DqM6cwLUv3W1QwyxkyIWecfafnI555fvSGqEKwjMXVLokcV5ygHW5b3Jbg==",
+-      "cpu": [
+-        "mips64el"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/linux-ppc64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/linux-ppc64/-/linux-ppc64-0.21.5.tgz",
+-      "integrity": "sha512-1hHV/Z4OEfMwpLO8rp7CvlhBDnjsC3CttJXIhBi+5Aj5r+MBvy4egg7wCbe//hSsT+RvDAG7s81tAvpL2XAE4w==",
+-      "cpu": [
+-        "ppc64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/linux-riscv64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/linux-riscv64/-/linux-riscv64-0.21.5.tgz",
+-      "integrity": "sha512-2HdXDMd9GMgTGrPWnJzP2ALSokE/0O5HhTUvWIbD3YdjME8JwvSCnNGBnTThKGEB91OZhzrJ4qIIxk/SBmyDDA==",
+-      "cpu": [
+-        "riscv64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/linux-s390x": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/linux-s390x/-/linux-s390x-0.21.5.tgz",
+-      "integrity": "sha512-zus5sxzqBJD3eXxwvjN1yQkRepANgxE9lgOW2qLnmr8ikMTphkjgXu1HR01K4FJg8h1kEEDAqDcZQtbrRnB41A==",
+-      "cpu": [
+-        "s390x"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/linux-x64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/linux-x64/-/linux-x64-0.21.5.tgz",
+-      "integrity": "sha512-1rYdTpyv03iycF1+BhzrzQJCdOuAOtaqHTWJZCWvijKD2N5Xu0TtVC8/+1faWqcP9iBCWOmjmhoH94dH82BxPQ==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/netbsd-x64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/netbsd-x64/-/netbsd-x64-0.21.5.tgz",
+-      "integrity": "sha512-Woi2MXzXjMULccIwMnLciyZH4nCIMpWQAs049KEeMvOcNADVxo0UBIQPfSmxB3CWKedngg7sWZdLvLczpe0tLg==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "netbsd"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/openbsd-x64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/openbsd-x64/-/openbsd-x64-0.21.5.tgz",
+-      "integrity": "sha512-HLNNw99xsvx12lFBUwoT8EVCsSvRNDVxNpjZ7bPn947b8gJPzeHWyNVhFsaerc0n3TsbOINvRP2byTZ5LKezow==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "openbsd"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/sunos-x64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/sunos-x64/-/sunos-x64-0.21.5.tgz",
+-      "integrity": "sha512-6+gjmFpfy0BHU5Tpptkuh8+uw3mnrvgs+dSPQXQOv3ekbordwnzTVEb4qnIvQcYXq6gzkyTnoZ9dZG+D4garKg==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "sunos"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/win32-arm64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/win32-arm64/-/win32-arm64-0.21.5.tgz",
+-      "integrity": "sha512-Z0gOTd75VvXqyq7nsl93zwahcTROgqvuAcYDUr+vOv8uHhNSKROyU961kgtCD1e95IqPKSQKH7tBTslnS3tA8A==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "win32"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/win32-ia32": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/win32-ia32/-/win32-ia32-0.21.5.tgz",
+-      "integrity": "sha512-SWXFF1CL2RVNMaVs+BBClwtfZSvDgtL//G/smwAc5oVK/UPu2Gu9tIaRgFmYFFKrmg3SyAjSrElf0TiJ1v8fYA==",
+-      "cpu": [
+-        "ia32"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "win32"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@esbuild/win32-x64": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/@esbuild/win32-x64/-/win32-x64-0.21.5.tgz",
+-      "integrity": "sha512-tQd/1efJuzPC6rCFwEvLtci/xNFcTZknmXs98FYDfGE4wP9ClFV98nyKrzJKVPMhdDnjzLhdUyMX4PsQAPjwIw==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "win32"
+-      ],
+-      "engines": {
+-        "node": ">=12"
+-      }
+-    },
+-    "node_modules/@jridgewell/gen-mapping": {
+-      "version": "0.3.13",
+-      "resolved": "https://registry.npmmirror.com/@jridgewell/gen-mapping/-/gen-mapping-0.3.13.tgz",
+-      "integrity": "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@jridgewell/sourcemap-codec": "^1.5.0",
+-        "@jridgewell/trace-mapping": "^0.3.24"
+-      }
+-    },
+-    "node_modules/@jridgewell/remapping": {
+-      "version": "2.3.5",
+-      "resolved": "https://registry.npmmirror.com/@jridgewell/remapping/-/remapping-2.3.5.tgz",
+-      "integrity": "sha512-LI9u/+laYG4Ds1TDKSJW2YPrIlcVYOwi2fUC6xB43lueCjgxV4lffOCZCtYFiH6TNOX+tQKXx97T4IKHbhyHEQ==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@jridgewell/gen-mapping": "^0.3.5",
+-        "@jridgewell/trace-mapping": "^0.3.24"
+-      }
+-    },
+-    "node_modules/@jridgewell/resolve-uri": {
+-      "version": "3.1.2",
+-      "resolved": "https://registry.npmmirror.com/@jridgewell/resolve-uri/-/resolve-uri-3.1.2.tgz",
+-      "integrity": "sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=6.0.0"
++        "vite": "8.2.2",
++        "vitest": "4.1.11"
+       }
+     },
+     "node_modules/@jridgewell/sourcemap-codec": {
+       "version": "1.5.5",
+-      "resolved": "https://registry.npmmirror.com/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.5.5.tgz",
++      "resolved": "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.5.5.tgz",
+       "integrity": "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==",
+       "dev": true,
+-      "license": "MIT"
+-    },
+-    "node_modules/@jridgewell/trace-mapping": {
+-      "version": "0.3.31",
+-      "resolved": "https://registry.npmmirror.com/@jridgewell/trace-mapping/-/trace-mapping-0.3.31.tgz",
+-      "integrity": "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@jridgewell/resolve-uri": "^3.1.0",
+-        "@jridgewell/sourcemap-codec": "^1.4.14"
+-      }
+-    },
+-    "node_modules/@napi-rs/lzma-linux-x64-gnu": {
+-      "version": "1.5.1",
+-      "resolved": "https://registry.npmmirror.com/@napi-rs/lzma-linux-x64-gnu/-/lzma-linux-x64-gnu-1.5.1.tgz",
+-      "integrity": "sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "engines": {
+-        "node": "^22.20 || ^24.12 || >=25"
+-      }
+-    },
+-    "node_modules/@remix-run/router": {
+-      "version": "1.23.3",
+-      "resolved": "https://registry.npmmirror.com/@remix-run/router/-/router-1.23.3.tgz",
+-      "integrity": "sha512-4An71tdz9X8+3sI4Qqqd2LWd9vS39J7sqd9EU4Scw7TJE/qB10Flv/UuqbPVgfQV9XoK8Np6jNquZitnZq5i+Q==",
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=14.0.0"
+-      }
+-    },
+-    "node_modules/@rolldown/pluginutils": {
+-      "version": "1.0.0-beta.27",
+-      "resolved": "https://registry.npmmirror.com/@rolldown/pluginutils/-/pluginutils-1.0.0-beta.27.tgz",
+-      "integrity": "sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA==",
+-      "dev": true,
+-      "license": "MIT"
+-    },
+-    "node_modules/@rollup/rollup-android-arm-eabi": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-android-arm-eabi/-/rollup-android-arm-eabi-4.62.4.tgz",
+-      "integrity": "sha512-RrPokAb7dmbxFoeO3TloqHyOjgye8RkBhSqmp4aJMIex4c9r46ZstPnleDQOq1t46VOVjwIuwNogIqbodV1Vvg==",
+-      "cpu": [
+-        "arm"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "android"
+-      ]
+-    },
+-    "node_modules/@rollup/rollup-android-arm64": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-android-arm64/-/rollup-android-arm64-4.62.4.tgz",
+-      "integrity": "sha512-JKuJc+pnpks2pjy7L/N3v/cAkZxYlnmuZoD840ldbMI5KDbC4iO9NKwPKYdjYFCMAIIlBzYSFHxIJVYzRo2/8A==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "android"
+-      ]
+-    },
+-    "node_modules/@rollup/rollup-darwin-arm64": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-darwin-arm64/-/rollup-darwin-arm64-4.62.4.tgz",
+-      "integrity": "sha512-krw5uS2STmvJ02x0uTXHbqQNuz+9eZ1iw+qXk9dmW2gvV4jV7O2hEoOnuhFrpOPiel1mBFtqbxYZZtC46hXLOw==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "darwin"
+-      ]
+-    },
+-    "node_modules/@rollup/rollup-darwin-x64": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-darwin-x64/-/rollup-darwin-x64-4.62.4.tgz",
+-      "integrity": "sha512-wsTxtgApb4PrOsNJIm0FZ1h3WvCC+k9uxLJ4ad75hgoS4NiRes2SoJFlDAyMwiUY8IssDqGcHbXuN0sx1tfF1A==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "darwin"
+-      ]
+-    },
+-    "node_modules/@rollup/rollup-freebsd-arm64": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-freebsd-arm64/-/rollup-freebsd-arm64-4.62.4.tgz",
+-      "integrity": "sha512-GUOnQlyZe3yAXhWOtOMsn5Qkrv5E5mZXa0thbARWi5Ei2szlVXJFQhddZ4HbAzh8q92w5twp+CQvs/eFanz9YQ==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "freebsd"
+-      ]
+-    },
+-    "node_modules/@rollup/rollup-freebsd-x64": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-freebsd-x64/-/rollup-freebsd-x64-4.62.4.tgz",
+-      "integrity": "sha512-/Y7f3QuxjzPKsjA/rfEDa3+0vXqyjmJ50Ln8dPpCmWkKTrUoWHG1cWhTqaAMLob2m2nESWuC7yGrREz019Ztqg==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "freebsd"
+-      ]
++      "license": "MIT"
+     },
+-    "node_modules/@rollup/rollup-linux-arm-gnueabihf": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-linux-arm-gnueabihf/-/rollup-linux-arm-gnueabihf-4.62.4.tgz",
+-      "integrity": "sha512-81wiiX3v7aqy+T+bT61TJ78yJjRquqFFTTbAPt08imfQQzkPIW8t6aJbkTagtCCrXMNc9D66+geqlK7ydLPNqA==",
+-      "cpu": [
+-        "arm"
+-      ],
++    "node_modules/@oxc-project/types": {
++      "version": "0.146.0",
++      "resolved": "https://registry.npmjs.org/@oxc-project/types/-/types-0.146.0.tgz",
++      "integrity": "sha512-XC0QsnnhVe7sLIWmYmdPw7x5P0h4W8vUU3Nv1ySgWXtvCz8NizoAEpGXA0sOYoJQV2Rl13LgURAHQ5cI5ILCSA==",
+       "dev": true,
+       "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ]
++      "funding": {
++        "url": "https://github.com/sponsors/Boshen"
++      }
+     },
+-    "node_modules/@rollup/rollup-linux-arm-musleabihf": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-linux-arm-musleabihf/-/rollup-linux-arm-musleabihf-4.62.4.tgz",
+-      "integrity": "sha512-9kmDIvNZqdoHOBZgNtpTBeLWYO/LVipM3H/j62P8848/l/VPEQL6N3uxU9pvP1oZAsXyC2MEnFP3ovRjo7WYNQ==",
++    "node_modules/@rolldown/binding-android-arm-eabi": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-android-arm-eabi/-/binding-android-arm-eabi-1.2.5.tgz",
++      "integrity": "sha512-DLe/i+l8ynIBY7XEQ191TeZvCoowIGa18R+dIV30GW7DiOtp74i/xX8hs8GUjW5ARV7VZuie3d6AumSmCwbeRA==",
+       "cpu": [
+         "arm"
+       ],
+@@ -887,13 +49,16 @@
+       "license": "MIT",
+       "optional": true,
+       "os": [
+-        "linux"
+-      ]
++        "android"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@rollup/rollup-linux-arm64-gnu": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-linux-arm64-gnu/-/rollup-linux-arm64-gnu-4.62.4.tgz",
+-      "integrity": "sha512-CcnXHWnXg69g+DX5VWL3FHts3qMRN2uVEHX+BZvGLdd07/gXkn3ePjYtO1LDJvxkGKVHMclKBRa1QUTH+6toYQ==",
++    "node_modules/@rolldown/binding-android-arm64": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-android-arm64/-/binding-android-arm64-1.2.5.tgz",
++      "integrity": "sha512-zXcwKlQApYAOELHd8PwKDFkagYF9Wy4e0RJ+0qnzl9Pjnpj75TEG8ufv40p2J7kCEfwZAsNiuzRIyNNMWT38ig==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -901,13 +66,16 @@
+       "license": "MIT",
+       "optional": true,
+       "os": [
+-        "linux"
+-      ]
++        "android"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@rollup/rollup-linux-arm64-musl": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-linux-arm64-musl/-/rollup-linux-arm64-musl-4.62.4.tgz",
+-      "integrity": "sha512-iFOibiHnTRuhrWLlRsOQFdZJJIa7S8OwkneJr4ocALP16u5yk6lWLINFwhHaEqBFMsKDUZofLkGos7+CPzGB3g==",
++    "node_modules/@rolldown/binding-darwin-arm64": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-darwin-arm64/-/binding-darwin-arm64-1.2.5.tgz",
++      "integrity": "sha512-dK4QakI42nzWgJT5sm4y4y/O//D4OxM75/cH28RLV+nzIN9AY+YsbuUVrUTjlLjXR6vpyxFbSsbmNuJ6BP9sww==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -915,97 +83,118 @@
+       "license": "MIT",
+       "optional": true,
+       "os": [
+-        "linux"
+-      ]
++        "darwin"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@rollup/rollup-linux-loong64-gnu": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-linux-loong64-gnu/-/rollup-linux-loong64-gnu-4.62.4.tgz",
+-      "integrity": "sha512-XnWYMI7euHlb5a871xPja+Gm7DRCFU+FGRrtS2sMq9N8FvqtpagUy6gD4YOemC5MRk9xbh8+jYMEJbigFQwsgA==",
++    "node_modules/@rolldown/binding-darwin-x64": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-darwin-x64/-/binding-darwin-x64-1.2.5.tgz",
++      "integrity": "sha512-fqSALaUu1Wjd1nK2uW2kJDWdLCc8lx1IcY+MTY26Aurfdx19anlzhqXOgCFbBFQnlFDTn4TC1/7Nz4Bl2mLP3A==",
+       "cpu": [
+-        "loong64"
++        "x64"
+       ],
+       "dev": true,
+       "license": "MIT",
+       "optional": true,
+       "os": [
+-        "linux"
+-      ]
++        "darwin"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@rollup/rollup-linux-loong64-musl": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-linux-loong64-musl/-/rollup-linux-loong64-musl-4.62.4.tgz",
+-      "integrity": "sha512-qGDAlO0U8xedCcsdRm9oaoQY8DAx/QT7uIxJWhCdx0ceIWX783UC9QSYkdpzAe29wNiVfp24+bZdQmn49o45SQ==",
++    "node_modules/@rolldown/binding-freebsd-x64": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-freebsd-x64/-/binding-freebsd-x64-1.2.5.tgz",
++      "integrity": "sha512-/vCnNxlkxs9tKxNDcyWUePpJ/PgTzxIaVhoM5SmG8UV+GR/IcPam4VYxi7GIMo7PSDuNqlJqvprqii9NqqVCMw==",
+       "cpu": [
+-        "loong64"
++        "x64"
+       ],
+       "dev": true,
+       "license": "MIT",
+       "optional": true,
+       "os": [
+-        "linux"
+-      ]
++        "freebsd"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@rollup/rollup-linux-ppc64-gnu": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-linux-ppc64-gnu/-/rollup-linux-ppc64-gnu-4.62.4.tgz",
+-      "integrity": "sha512-ru4H6ezD7ysA5EiEK6qkkaEb4modH8CTej6kUy/gQi20u3kB3G7Zn8snXXkeJSCOFKG/rbPPtM/+9Wgas1961w==",
++    "node_modules/@rolldown/binding-linux-arm-gnueabihf": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm-gnueabihf/-/binding-linux-arm-gnueabihf-1.2.5.tgz",
++      "integrity": "sha512-abk0NLA519LxRCszmbE0jYKuQ9YPocOXTiOXOo6Yr+YAT95VH+PtqYAjOJvGKt3viEd/x4qzabAlwd5bHOOARg==",
+       "cpu": [
+-        "ppc64"
++        "arm"
+       ],
+       "dev": true,
+       "license": "MIT",
+       "optional": true,
+       "os": [
+         "linux"
+-      ]
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@rollup/rollup-linux-ppc64-musl": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-linux-ppc64-musl/-/rollup-linux-ppc64-musl-4.62.4.tgz",
+-      "integrity": "sha512-2W4MO5WQVJnbJaZdvDb9rhBDuFU1nKIepPFpJUBsTh2k1YY2g+ODViaWuyOAjQ5cOP7NvrvLzt3wvHOoiAvc7w==",
++    "node_modules/@rolldown/binding-linux-arm64-gnu": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm64-gnu/-/binding-linux-arm64-gnu-1.2.5.tgz",
++      "integrity": "sha512-Y7eALiJ8lr0M2HH103Js+g7V34wf6snlpZLAsHI90uLhr3PVlNsbFVAXJC9d/V6BnPyKtpSwI+NcB/RLxsQxuA==",
+       "cpu": [
+-        "ppc64"
++        "arm64"
+       ],
+       "dev": true,
+       "license": "MIT",
+       "optional": true,
+       "os": [
+         "linux"
+-      ]
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@rollup/rollup-linux-riscv64-gnu": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-linux-riscv64-gnu/-/rollup-linux-riscv64-gnu-4.62.4.tgz",
+-      "integrity": "sha512-+fxjfuoAmVMCYV5QyjoIpu0cp5DOiOTeqYFk1AVaxGr+/ravWLX89XfQmptsoWcaVy/TGf2hexzbUOrCQIL1CQ==",
++    "node_modules/@rolldown/binding-linux-arm64-musl": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm64-musl/-/binding-linux-arm64-musl-1.2.5.tgz",
++      "integrity": "sha512-xMvZgnbZg4YVnR/AX2b3oOPDTFYJvUVaJg5FedA/LuvexAtXibZQej4cnTkw3rjsJ/ggUROB64TdtETiim+FYA==",
+       "cpu": [
+-        "riscv64"
++        "arm64"
+       ],
+       "dev": true,
+       "license": "MIT",
+       "optional": true,
+       "os": [
+         "linux"
+-      ]
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@rollup/rollup-linux-riscv64-musl": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-linux-riscv64-musl/-/rollup-linux-riscv64-musl-4.62.4.tgz",
+-      "integrity": "sha512-jTn8JfHGL4djjFxPuM06LmNUJDsst2jeVlsd9OmIH6zc5sC9K6rIuO4YajXatLUpBmBKl6b35ro1QZocLi+tcA==",
++    "node_modules/@rolldown/binding-linux-ppc64-gnu": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-ppc64-gnu/-/binding-linux-ppc64-gnu-1.2.5.tgz",
++      "integrity": "sha512-GRjeqTUDHTo5GwntsLaAMcBahG3nlpjftXWZLN73HiYQlhwEowvarFgQnRnQZtIp4keXX7quXFbG38uPZBa2EA==",
+       "cpu": [
+-        "riscv64"
++        "ppc64"
+       ],
+       "dev": true,
+       "license": "MIT",
+       "optional": true,
+       "os": [
+         "linux"
+-      ]
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@rollup/rollup-linux-s390x-gnu": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-linux-s390x-gnu/-/rollup-linux-s390x-gnu-4.62.4.tgz",
+-      "integrity": "sha512-oCJCJL4pXsoDcP2QZ+JVlPTIRc6266zsIaeJJsWImmF7HO0W8nb6HuSgZlMWxJwaPf8ehbSw8yo0EUw925hKsA==",
++    "node_modules/@rolldown/binding-linux-s390x-gnu": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-s390x-gnu/-/binding-linux-s390x-gnu-1.2.5.tgz",
++      "integrity": "sha512-vLNTR45F2Uwc8AufkNXPmB4VliaXs+FvcheEogIzOXzO4l+LzieXF5A/TWxLy5HtqpsRCHUfd0lPVrrdgXdLHQ==",
+       "cpu": [
+         "s390x"
+       ],
+@@ -1014,12 +203,15 @@
+       "optional": true,
+       "os": [
+         "linux"
+-      ]
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@rollup/rollup-linux-x64-gnu": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-linux-x64-gnu/-/rollup-linux-x64-gnu-4.62.4.tgz",
+-      "integrity": "sha512-W69hukhZ3KKNRCaMIEzKvcFye42hh0FE1+YoYaf5+Ikacuftoco6yO/xouz0hc5d5W/s3yBro5jRiuEE/Q5vUw==",
++    "node_modules/@rolldown/binding-linux-x64-gnu": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-x64-gnu/-/binding-linux-x64-gnu-1.2.5.tgz",
++      "integrity": "sha512-Mgj59/HTuYeK9Gz2MA+mBWKnHsAgkBSec15ZMb1st3oIfFbX7gCjOae7GydHhzcyQi9Z/7M1QuN9bR3oFqF0jQ==",
+       "cpu": [
+         "x64"
+       ],
+@@ -1028,12 +220,15 @@
+       "optional": true,
+       "os": [
+         "linux"
+-      ]
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@rollup/rollup-linux-x64-musl": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-linux-x64-musl/-/rollup-linux-x64-musl-4.62.4.tgz",
+-      "integrity": "sha512-qiXbGG2jkjXhzXpsFZSR2Xpb8DN/UaxYsbb/STbuR/6fpaDgRmmaq1B/LmtF2wQFOFOSsK2jdE0RZ3a0zHn4QA==",
++    "node_modules/@rolldown/binding-linux-x64-musl": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-x64-musl/-/binding-linux-x64-musl-1.2.5.tgz",
++      "integrity": "sha512-mY8AP0/ichsbhAxGnLa3d3+MwV0EfgrPND2bplI3Ym8T6R2pJ0N87bvrKVwNXmdy3jnr6eQBecdqx/HMknBmpA==",
+       "cpu": [
+         "x64"
+       ],
+@@ -1042,26 +237,15 @@
+       "optional": true,
+       "os": [
+         "linux"
+-      ]
+-    },
+-    "node_modules/@rollup/rollup-openbsd-x64": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-openbsd-x64/-/rollup-openbsd-x64-4.62.4.tgz",
+-      "integrity": "sha512-nWeM//hxv8mIo6jD7Hu4o48DVmV9pbV6gsKaWU+4NFyqHoPKwrkRiZGLKUhOBk8qNmDmpwFtPKg80Bo/Tn4xiQ==",
+-      "cpu": [
+-        "x64"
+       ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "openbsd"
+-      ]
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@rollup/rollup-openharmony-arm64": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-openharmony-arm64/-/rollup-openharmony-arm64-4.62.4.tgz",
+-      "integrity": "sha512-s62SQ/vgsRSvMwDkOEfTqfgASF0f26ZNaQuTA6Aok5lrikf89yI2W0gFHvZb2Jpgc6N8JnOKZgCK2iciO3CsxQ==",
++    "node_modules/@rolldown/binding-openharmony-arm64": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-openharmony-arm64/-/binding-openharmony-arm64-1.2.5.tgz",
++      "integrity": "sha512-8SLssA2oweAxyRgDp789ACfRb/3P+zNRJpzZxSizxF9m8NUDQ4+3xjo8ttjhVGGw6Qxb70oZiEtIjaKikCO7Yw==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -1070,12 +254,15 @@
+       "optional": true,
+       "os": [
+         "openharmony"
+-      ]
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@rollup/rollup-win32-arm64-msvc": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-win32-arm64-msvc/-/rollup-win32-arm64-msvc-4.62.4.tgz",
+-      "integrity": "sha512-J6wGf8TVGbXJq+HH+ttTvrcfNKPbuZecV6KT1B8I18BC5IURUh5kl4Yl5OEP5eFIUoI5BWxCsyYMhFsDx8kekw==",
++    "node_modules/@rolldown/binding-win32-arm64-msvc": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-win32-arm64-msvc/-/binding-win32-arm64-msvc-1.2.5.tgz",
++      "integrity": "sha512-vGbruD5zquhoc8D9SViXgN2FBJtNdTyQ4DtG+SWiEGlJiAzoKcZ2xp+xuXCffhubVdt0NJlTZqkeRuERy7g8Cw==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -1084,26 +271,15 @@
+       "optional": true,
+       "os": [
+         "win32"
+-      ]
+-    },
+-    "node_modules/@rollup/rollup-win32-ia32-msvc": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-win32-ia32-msvc/-/rollup-win32-ia32-msvc-4.62.4.tgz",
+-      "integrity": "sha512-zmfrQd/0wu6oJs8Vq8KwY/YtsKSsLtKe/HwAP4Wqy8LhWjeT55fHRAkOhYQ12wI3ayS4Tt12d5CDRD7N96SAYQ==",
+-      "cpu": [
+-        "ia32"
+       ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "win32"
+-      ]
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@rollup/rollup-win32-x64-gnu": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-win32-x64-gnu/-/rollup-win32-x64-gnu-4.62.4.tgz",
+-      "integrity": "sha512-qPzHqdj9rfUD+w79dtE07zi/kFwKyCJqplp5K5ygeLTp7jLpAoc16OAH39HSmRC9UpozaecsleI8uAdEj6v2yw==",
++    "node_modules/@rolldown/binding-win32-x64-msvc": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-win32-x64-msvc/-/binding-win32-x64-msvc-1.2.5.tgz",
++      "integrity": "sha512-e/SXpgISz+IoqVcSSI0rx/d/he8zqLex+/rCWpnHpmVfmPIUjag9H6P7zotf0gJHwPUhQxZ/mF8tr6acebT9yw==",
+       "cpu": [
+         "x64"
+       ],
+@@ -1112,66 +288,42 @@
+       "optional": true,
+       "os": [
+         "win32"
+-      ]
+-    },
+-    "node_modules/@rollup/rollup-win32-x64-msvc": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/@rollup/rollup-win32-x64-msvc/-/rollup-win32-x64-msvc-4.62.4.tgz",
+-      "integrity": "sha512-zD6NdeWEByGE9QF9vCrlJ5YQB4oq9q91kPZS37Jwj5hOkvR1lTBSpsKhKDw4IJtbQ35LsTS1HD9DZYGKIshU1Q==",
+-      "cpu": [
+-        "x64"
+       ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "win32"
+-      ]
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
+     },
+-    "node_modules/@types/babel__core": {
+-      "version": "7.20.5",
+-      "resolved": "https://registry.npmmirror.com/@types/babel__core/-/babel__core-7.20.5.tgz",
+-      "integrity": "sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA==",
++    "node_modules/@rolldown/pluginutils": {
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.1.tgz",
++      "integrity": "sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==",
+       "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/parser": "^7.20.7",
+-        "@babel/types": "^7.20.7",
+-        "@types/babel__generator": "*",
+-        "@types/babel__template": "*",
+-        "@types/babel__traverse": "*"
+-      }
++      "license": "MIT"
+     },
+-    "node_modules/@types/babel__generator": {
+-      "version": "7.27.0",
+-      "resolved": "https://registry.npmmirror.com/@types/babel__generator/-/babel__generator-7.27.0.tgz",
+-      "integrity": "sha512-ufFd2Xi92OAVPYsy+P4n7/U7e68fex0+Ee8gSG9KX7eo084CWiQ4sdxktvdl0bOPupXtVJPY19zk6EwWqUQ8lg==",
++    "node_modules/@standard-schema/spec": {
++      "version": "1.1.0",
++      "resolved": "https://registry.npmjs.org/@standard-schema/spec/-/spec-1.1.0.tgz",
++      "integrity": "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==",
+       "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/types": "^7.0.0"
+-      }
++      "license": "MIT"
+     },
+-    "node_modules/@types/babel__template": {
+-      "version": "7.4.4",
+-      "resolved": "https://registry.npmmirror.com/@types/babel__template/-/babel__template-7.4.4.tgz",
+-      "integrity": "sha512-h/NUaSyG5EyxBIp8YRxo4RMe2/qQgvyowRwVMzhYhBCONbW8PUsg4lkFMrhgZhUe5z3L3MiLDuvyJ/CaPa2A8A==",
++    "node_modules/@types/chai": {
++      "version": "5.2.3",
++      "resolved": "https://registry.npmjs.org/@types/chai/-/chai-5.2.3.tgz",
++      "integrity": "sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@babel/parser": "^7.1.0",
+-        "@babel/types": "^7.0.0"
++        "@types/deep-eql": "*",
++        "assertion-error": "^2.0.1"
+       }
+     },
+-    "node_modules/@types/babel__traverse": {
+-      "version": "7.28.0",
+-      "resolved": "https://registry.npmmirror.com/@types/babel__traverse/-/babel__traverse-7.28.0.tgz",
+-      "integrity": "sha512-8PvcXf70gTDZBgt9ptxJ8elBeBjcLOAcOtoO/mPJjtji1+CdGbHgm77om1GrsPxsiE+uXIpNSK64UYaIwQXd4Q==",
++    "node_modules/@types/deep-eql": {
++      "version": "4.0.2",
++      "resolved": "https://registry.npmjs.org/@types/deep-eql/-/deep-eql-4.0.2.tgz",
++      "integrity": "sha512-c9h9dVVMigMPc4bwTvC5dxqtqJZwQPePsWjPlpSOnojbor6pGqdk541lfA7AqFQr5pB1BRdq0juY9db81BwyFw==",
+       "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/types": "^7.28.2"
+-      }
++      "license": "MIT"
+     },
+     "node_modules/@types/estree": {
+       "version": "1.0.9",
+@@ -1193,7 +345,6 @@
+       "integrity": "sha512-vfEqpXTvwT91yhmwdfouStN2hSKwTvyRs8qpLfADyrq/kxDw0hZM7Wk9Ug1FELj8hIby+S/+kQCSRFF32nv2Qw==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "@types/prop-types": "*",
+         "csstype": "^3.2.2"
+@@ -1210,59 +361,70 @@
+       }
+     },
+     "node_modules/@vitejs/plugin-react": {
+-      "version": "4.7.0",
+-      "resolved": "https://registry.npmmirror.com/@vitejs/plugin-react/-/plugin-react-4.7.0.tgz",
+-      "integrity": "sha512-gUu9hwfWvvEDBBmgtAowQCojwZmJ5mcLn3aufeCsitijs3+f2NsrPtlAWIR6OPiqljl96GVCUbLe0HyqIpVaoA==",
++      "version": "6.1.0",
++      "resolved": "https://registry.npmjs.org/@vitejs/plugin-react/-/plugin-react-6.1.0.tgz",
++      "integrity": "sha512-qd2BzUBehkov86WFhg0JkEFEYyCLG9uPCe6qWTY/kRlss9OvJrOF2UbIWT7p+8IzZHkEu0DNGHc4HSv+JdDLsw==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@babel/core": "^7.28.0",
+-        "@babel/plugin-transform-react-jsx-self": "^7.27.1",
+-        "@babel/plugin-transform-react-jsx-source": "^7.27.1",
+-        "@rolldown/pluginutils": "1.0.0-beta.27",
+-        "@types/babel__core": "^7.20.5",
+-        "react-refresh": "^0.17.0"
++        "@rolldown/pluginutils": "^1.0.1"
+       },
+       "engines": {
+-        "node": "^14.18.0 || >=16.0.0"
++        "node": "^20.19.0 || >=22.12.0"
+       },
+       "peerDependencies": {
+-        "vite": "^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0"
++        "@rolldown/plugin-babel": "^0.1.7 || ^0.2.0",
++        "babel-plugin-react-compiler": "^1.0.0",
++        "oxc-transform-react": "^0.145.0",
++        "vite": "^8.0.0"
++      },
++      "peerDependenciesMeta": {
++        "@rolldown/plugin-babel": {
++          "optional": true
++        },
++        "babel-plugin-react-compiler": {
++          "optional": true
++        },
++        "oxc-transform-react": {
++          "optional": true
++        }
+       }
+     },
+     "node_modules/@vitest/expect": {
+-      "version": "2.1.9",
+-      "resolved": "https://registry.npmjs.org/@vitest/expect/-/expect-2.1.9.tgz",
+-      "integrity": "sha512-UJCIkTBenHeKT1TTlKMJWy1laZewsRIzYighyYiJKZreqtdxSos/S1t+ktRMQWu2CKqaarrkeszJx1cgC5tGZw==",
++      "version": "4.1.11",
++      "resolved": "https://registry.npmjs.org/@vitest/expect/-/expect-4.1.11.tgz",
++      "integrity": "sha512-VX2x5vNJXET47KAFzwERI+KRMtTTCSWTfSMKsW7JsUsXV4psq++e3DvZpuTDOpHcxytiDs6p2nhVb2tVDiiUYw==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@vitest/spy": "2.1.9",
+-        "@vitest/utils": "2.1.9",
+-        "chai": "^5.1.2",
+-        "tinyrainbow": "^1.2.0"
++        "@standard-schema/spec": "^1.1.0",
++        "@types/chai": "^5.2.2",
++        "@vitest/spy": "4.1.11",
++        "@vitest/utils": "4.1.11",
++        "chai": "^6.2.2",
++        "tinyrainbow": "^3.1.0"
+       },
+       "funding": {
+         "url": "https://opencollective.com/vitest"
+       }
+     },
+     "node_modules/@vitest/mocker": {
+-      "version": "2.1.9",
+-      "resolved": "https://registry.npmjs.org/@vitest/mocker/-/mocker-2.1.9.tgz",
+-      "integrity": "sha512-tVL6uJgoUdi6icpxmdrn5YNo3g3Dxv+IHJBr0GXHaEdTcw3F+cPKnsXFhli6nO+f/6SDKPHEK1UN+k+TQv0Ehg==",
++      "version": "4.1.11",
++      "resolved": "https://registry.npmjs.org/@vitest/mocker/-/mocker-4.1.11.tgz",
++      "integrity": "sha512-2XJVD55d1o5AZous5CCGKS74g/riOj9odEt2bQpCVZeblHyHdnMeFl4jl0XjU21stf4mbjUkew2eXQZt65g5CQ==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@vitest/spy": "2.1.9",
++        "@vitest/spy": "4.1.11",
+         "estree-walker": "^3.0.3",
+-        "magic-string": "^0.30.12"
++        "magic-string": "^0.30.21"
+       },
+       "funding": {
+         "url": "https://opencollective.com/vitest"
+       },
+       "peerDependencies": {
+         "msw": "^2.4.9",
+-        "vite": "^5.0.0"
++        "vite": "^6.0.0 || ^7.0.0 || ^8.0.0"
+       },
+       "peerDependenciesMeta": {
+         "msw": {
+@@ -1274,70 +436,68 @@
+       }
+     },
+     "node_modules/@vitest/pretty-format": {
+-      "version": "2.1.9",
+-      "resolved": "https://registry.npmjs.org/@vitest/pretty-format/-/pretty-format-2.1.9.tgz",
+-      "integrity": "sha512-KhRIdGV2U9HOUzxfiHmY8IFHTdqtOhIzCpd8WRdJiE7D/HUcZVD0EgQCVjm+Q9gkUXWgBvMmTtZgIG48wq7sOQ==",
++      "version": "4.1.11",
++      "resolved": "https://registry.npmjs.org/@vitest/pretty-format/-/pretty-format-4.1.11.tgz",
++      "integrity": "sha512-yiZzPbGTS9Sr/JpFl8zHrcIkAofNbFV6k21vIgQN/cY/oxZeXhJv5sc/MBJ5jFKWmWs+oJHw0UXLZjmf931+Vw==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "tinyrainbow": "^1.2.0"
++        "tinyrainbow": "^3.1.0"
+       },
+       "funding": {
+         "url": "https://opencollective.com/vitest"
+       }
+     },
+     "node_modules/@vitest/runner": {
+-      "version": "2.1.9",
+-      "resolved": "https://registry.npmjs.org/@vitest/runner/-/runner-2.1.9.tgz",
+-      "integrity": "sha512-ZXSSqTFIrzduD63btIfEyOmNcBmQvgOVsPNPe0jYtESiXkhd8u2erDLnMxmGrDCwHCCHE7hxwRDCT3pt0esT4g==",
++      "version": "4.1.11",
++      "resolved": "https://registry.npmjs.org/@vitest/runner/-/runner-4.1.11.tgz",
++      "integrity": "sha512-LztvUgdwMNJMIkj3hQnnxiC2Xy1zNxq928W/xhjCLaNCzqTZOudjwbQf6v9IntZGPw132i2Lq2rgTRZHD3JHNw==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@vitest/utils": "2.1.9",
+-        "pathe": "^1.1.2"
++        "@vitest/utils": "4.1.11",
++        "pathe": "^2.0.3"
+       },
+       "funding": {
+         "url": "https://opencollective.com/vitest"
+       }
+     },
+     "node_modules/@vitest/snapshot": {
+-      "version": "2.1.9",
+-      "resolved": "https://registry.npmjs.org/@vitest/snapshot/-/snapshot-2.1.9.tgz",
+-      "integrity": "sha512-oBO82rEjsxLNJincVhLhaxxZdEtV0EFHMK5Kmx5sJ6H9L183dHECjiefOAdnqpIgT5eZwT04PoggUnW88vOBNQ==",
++      "version": "4.1.11",
++      "resolved": "https://registry.npmjs.org/@vitest/snapshot/-/snapshot-4.1.11.tgz",
++      "integrity": "sha512-pN7ikn1ON7h8ee4gIAp4AzyK+zBtJPzVbqOgu5LCEh4VaJVbPQcgYQYJIMGQPXVeJJq1fnfazis7a5pFNPahog==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@vitest/pretty-format": "2.1.9",
+-        "magic-string": "^0.30.12",
+-        "pathe": "^1.1.2"
++        "@vitest/pretty-format": "4.1.11",
++        "@vitest/utils": "4.1.11",
++        "magic-string": "^0.30.21",
++        "pathe": "^2.0.3"
+       },
+       "funding": {
+         "url": "https://opencollective.com/vitest"
+       }
+     },
+     "node_modules/@vitest/spy": {
+-      "version": "2.1.9",
+-      "resolved": "https://registry.npmjs.org/@vitest/spy/-/spy-2.1.9.tgz",
+-      "integrity": "sha512-E1B35FwzXXTs9FHNK6bDszs7mtydNi5MIfUWpceJ8Xbfb1gBMscAnwLbEu+B44ed6W3XjL9/ehLPHR1fkf1KLQ==",
++      "version": "4.1.11",
++      "resolved": "https://registry.npmjs.org/@vitest/spy/-/spy-4.1.11.tgz",
++      "integrity": "sha512-apNa/prQy2qCeywhnixOHPRCgGNhvg7T4Dapfl1GahLp/R+uhBm5cPyFoNVyqsNd2h1nJxL6BqqdIjiABL60YA==",
+       "dev": true,
+       "license": "MIT",
+-      "dependencies": {
+-        "tinyspy": "^3.0.2"
+-      },
+       "funding": {
+         "url": "https://opencollective.com/vitest"
+       }
+     },
+     "node_modules/@vitest/utils": {
+-      "version": "2.1.9",
+-      "resolved": "https://registry.npmjs.org/@vitest/utils/-/utils-2.1.9.tgz",
+-      "integrity": "sha512-v0psaMSkNJ3A2NMrUEHFRzJtDPFn+/VWZ5WxImB21T9fjucJRmS7xCS3ppEnARb9y11OAzaD+P2Ps+b+BGX5iQ==",
++      "version": "4.1.11",
++      "resolved": "https://registry.npmjs.org/@vitest/utils/-/utils-4.1.11.tgz",
++      "integrity": "sha512-zTCVGpyFsGWBhllOyKlTw/vnr6D9qxsfSDyfbyZmTyjHw5N/VuvzHpHoQjm2ZJzn4RJgx5w4r7V0er69CmLgPQ==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@vitest/pretty-format": "2.1.9",
+-        "loupe": "^3.1.2",
+-        "tinyrainbow": "^1.2.0"
++        "@vitest/pretty-format": "4.1.11",
++        "convert-source-map": "^2.0.0",
++        "tinyrainbow": "^3.1.0"
+       },
+       "funding": {
+         "url": "https://opencollective.com/vitest"
+@@ -1353,292 +513,378 @@
+         "node": ">=12"
+       }
+     },
+-    "node_modules/baseline-browser-mapping": {
+-      "version": "2.11.12",
+-      "resolved": "https://registry.npmmirror.com/baseline-browser-mapping/-/baseline-browser-mapping-2.11.12.tgz",
+-      "integrity": "sha512-r7WnVImvVCeFpf2DOXfy41aPWzeNg3H/A2X4dKmy1QL0MSyyk/e7z8ihJ3N6Nn2PsdhkVlqnEfnUE4a05P2aTA==",
++    "node_modules/chai": {
++      "version": "6.2.2",
++      "resolved": "https://registry.npmjs.org/chai/-/chai-6.2.2.tgz",
++      "integrity": "sha512-NUPRluOfOiTKBKvWPtSD4PhFvWCqOi0BGStNWs57X9js7XGTprSmFoz5F0tWhR4WPjNeR9jXqdC7/UpSJTnlRg==",
+       "dev": true,
+-      "license": "Apache-2.0",
+-      "bin": {
+-        "baseline-browser-mapping": "dist/cli.cjs"
+-      },
++      "license": "MIT",
+       "engines": {
+-        "node": ">=6.0.0"
++        "node": ">=18"
+       }
+     },
+-    "node_modules/browserslist": {
+-      "version": "4.28.7",
+-      "resolved": "https://registry.npmmirror.com/browserslist/-/browserslist-4.28.7.tgz",
+-      "integrity": "sha512-JxV13hNrFxqjOc8alRbq9dK1MM79NEXYpma2B2J4wAtpWS5zIEIKqWPGCl7N4o7Uc7B7itylh7SuDujATRyyTw==",
++    "node_modules/convert-source-map": {
++      "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/convert-source-map/-/convert-source-map-2.0.0.tgz",
++      "integrity": "sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==",
+       "dev": true,
+-      "funding": [
+-        {
+-          "type": "opencollective",
+-          "url": "https://opencollective.com/browserslist"
+-        },
+-        {
+-          "type": "tidelift",
+-          "url": "https://tidelift.com/funding/github/npm/browserslist"
+-        },
+-        {
+-          "type": "github",
+-          "url": "https://github.com/sponsors/ai"
+-        }
+-      ],
++      "license": "MIT"
++    },
++    "node_modules/cookie": {
++      "version": "1.1.1",
++      "resolved": "https://registry.npmjs.org/cookie/-/cookie-1.1.1.tgz",
++      "integrity": "sha512-ei8Aos7ja0weRpFzJnEA9UHJ/7XQmqglbRwnf2ATjcB9Wq874VKH9kfjjirM6UhU2/E5fFYadylyhFldcqSidQ==",
+       "license": "MIT",
+-      "peer": true,
+-      "dependencies": {
+-        "baseline-browser-mapping": "^2.10.44",
+-        "caniuse-lite": "^1.0.30001806",
+-        "electron-to-chromium": "^1.5.393",
+-        "node-releases": "^2.0.51",
+-        "update-browserslist-db": "^1.2.3"
+-      },
+-      "bin": {
+-        "browserslist": "cli.js"
+-      },
+       "engines": {
+-        "node": "^6 || ^7 || ^8 || ^9 || ^10 || ^11 || ^12 || >=13.7"
++        "node": ">=18"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/express"
+       }
+     },
+-    "node_modules/cac": {
+-      "version": "6.7.14",
+-      "resolved": "https://registry.npmjs.org/cac/-/cac-6.7.14.tgz",
+-      "integrity": "sha512-b6Ilus+c3RrdDk+JhLKUAQfzzgLEPy6wcXqS7f/xe1EETvsDP6GORG7SFuOs6cID5YkqchW/LXZbX5bc8j7ZcQ==",
++    "node_modules/csstype": {
++      "version": "3.2.3",
++      "resolved": "https://registry.npmmirror.com/csstype/-/csstype-3.2.3.tgz",
++      "integrity": "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==",
+       "dev": true,
+-      "license": "MIT",
++      "license": "MIT"
++    },
++    "node_modules/detect-libc": {
++      "version": "2.1.2",
++      "resolved": "https://registry.npmjs.org/detect-libc/-/detect-libc-2.1.2.tgz",
++      "integrity": "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==",
++      "dev": true,
++      "license": "Apache-2.0",
+       "engines": {
+         "node": ">=8"
+       }
+     },
+-    "node_modules/caniuse-lite": {
+-      "version": "1.0.30001807",
+-      "resolved": "https://registry.npmmirror.com/caniuse-lite/-/caniuse-lite-1.0.30001807.tgz",
+-      "integrity": "sha512-daRXJ9EB/rdRgu7kV+TTl1YUKtlsMWblPl2sLnpg9DZae16QCegol6A1SmCE31Lm9mXC1sRWGt/krouH+/dl7Q==",
++    "node_modules/es-module-lexer": {
++      "version": "2.3.2",
++      "resolved": "https://registry.npmjs.org/es-module-lexer/-/es-module-lexer-2.3.2.tgz",
++      "integrity": "sha512-poHGpORABojJJucnV9KbOavETW8lBVnphkW77ER5/BQ5Fz7oXSoCNek7IH3vR5nRjdsEz926ibFYX8KtLQmdyw==",
+       "dev": true,
+-      "funding": [
+-        {
+-          "type": "opencollective",
+-          "url": "https://opencollective.com/browserslist"
+-        },
+-        {
+-          "type": "tidelift",
+-          "url": "https://tidelift.com/funding/github/npm/caniuse-lite"
+-        },
+-        {
+-          "type": "github",
+-          "url": "https://github.com/sponsors/ai"
+-        }
+-      ],
+-      "license": "CC-BY-4.0"
++      "license": "MIT"
+     },
+-    "node_modules/chai": {
+-      "version": "5.3.3",
+-      "resolved": "https://registry.npmjs.org/chai/-/chai-5.3.3.tgz",
+-      "integrity": "sha512-4zNhdJD/iOjSH0A05ea+Ke6MU5mmpQcbQsSOkgdaUMJ9zTlDTD/GYlwohmIE2u0gaxHYiVHEn1Fw9mZ/ktJWgw==",
++    "node_modules/estree-walker": {
++      "version": "3.0.3",
++      "resolved": "https://registry.npmjs.org/estree-walker/-/estree-walker-3.0.3.tgz",
++      "integrity": "sha512-7RUKfXgSMMkzt6ZuXmqapOurLGPPfgj6l9uRZ7lRGolvk0y2yocc35LdcxKC5PQZdn2DMqioAQ2NoWcrTKmm6g==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "assertion-error": "^2.0.1",
+-        "check-error": "^2.1.1",
+-        "deep-eql": "^5.0.1",
+-        "loupe": "^3.1.0",
+-        "pathval": "^2.0.0"
+-      },
++        "@types/estree": "^1.0.0"
++      }
++    },
++    "node_modules/expect-type": {
++      "version": "1.4.0",
++      "resolved": "https://registry.npmjs.org/expect-type/-/expect-type-1.4.0.tgz",
++      "integrity": "sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==",
++      "dev": true,
++      "license": "Apache-2.0",
+       "engines": {
+-        "node": ">=18"
++        "node": ">=12.0.0"
+       }
+     },
+-    "node_modules/check-error": {
+-      "version": "2.1.3",
+-      "resolved": "https://registry.npmjs.org/check-error/-/check-error-2.1.3.tgz",
+-      "integrity": "sha512-PAJdDJusoxnwm1VwW07VWwUN1sl7smmC3OKggvndJFadxxDRyFJBX/ggnu/KE4kQAB7a3Dp8f/YXC1FlUprWmA==",
++    "node_modules/fdir": {
++      "version": "6.5.0",
++      "resolved": "https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz",
++      "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
+       "dev": true,
+       "license": "MIT",
+       "engines": {
+-        "node": ">= 16"
++        "node": ">=12.0.0"
++      },
++      "peerDependencies": {
++        "picomatch": "^3 || ^4"
++      },
++      "peerDependenciesMeta": {
++        "picomatch": {
++          "optional": true
++        }
+       }
+     },
+-    "node_modules/convert-source-map": {
+-      "version": "2.0.0",
+-      "resolved": "https://registry.npmmirror.com/convert-source-map/-/convert-source-map-2.0.0.tgz",
+-      "integrity": "sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==",
++    "node_modules/fsevents": {
++      "version": "2.3.3",
++      "resolved": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz",
++      "integrity": "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==",
+       "dev": true,
++      "hasInstallScript": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": "^8.16.0 || ^10.6.0 || >=11.0.0"
++      }
++    },
++    "node_modules/js-tokens": {
++      "version": "4.0.0",
++      "resolved": "https://registry.npmmirror.com/js-tokens/-/js-tokens-4.0.0.tgz",
++      "integrity": "sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==",
+       "license": "MIT"
+     },
+-    "node_modules/csstype": {
+-      "version": "3.2.3",
+-      "resolved": "https://registry.npmmirror.com/csstype/-/csstype-3.2.3.tgz",
+-      "integrity": "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==",
++    "node_modules/lightningcss": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss/-/lightningcss-1.33.0.tgz",
++      "integrity": "sha512-WkUDrojuJs0xkgGf2udWxa3yGBRxPtxUkB79i6aCZLRgc7PM8fZe9TosfPDcvEpQZbuFASnHYmRLBLUbmLOIIA==",
+       "dev": true,
+-      "license": "MIT"
++      "license": "MPL-2.0",
++      "dependencies": {
++        "detect-libc": "^2.0.3"
++      },
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      },
++      "optionalDependencies": {
++        "lightningcss-android-arm64": "1.33.0",
++        "lightningcss-darwin-arm64": "1.33.0",
++        "lightningcss-darwin-x64": "1.33.0",
++        "lightningcss-freebsd-x64": "1.33.0",
++        "lightningcss-linux-arm-gnueabihf": "1.33.0",
++        "lightningcss-linux-arm64-gnu": "1.33.0",
++        "lightningcss-linux-arm64-musl": "1.33.0",
++        "lightningcss-linux-x64-gnu": "1.33.0",
++        "lightningcss-linux-x64-musl": "1.33.0",
++        "lightningcss-win32-arm64-msvc": "1.33.0",
++        "lightningcss-win32-x64-msvc": "1.33.0"
++      }
++    },
++    "node_modules/lightningcss-android-arm64": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-android-arm64/-/lightningcss-android-arm64-1.33.0.tgz",
++      "integrity": "sha512-gEpRTalKdosp4Bb8qWtc2iOgE5SeIHlpS1up9bFq2wAyYhl1UdTObYiHe98zEM9SQvSoqQZ1IQD0JNpg3Ml5pg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
+     },
+-    "node_modules/debug": {
+-      "version": "4.4.3",
+-      "resolved": "https://registry.npmmirror.com/debug/-/debug-4.4.3.tgz",
+-      "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
++    "node_modules/lightningcss-darwin-arm64": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-darwin-arm64/-/lightningcss-darwin-arm64-1.33.0.tgz",
++      "integrity": "sha512-Sciaz8eenNTKn9b3t7+xr0ipTp9YxKQY4npwQ3mrRuL0BAVHBLyZxofhaKBAVtzmtRZ/zTyo0/to4B1uWG/Djg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-darwin-x64": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-darwin-x64/-/lightningcss-darwin-x64-1.33.0.tgz",
++      "integrity": "sha512-Z5UPAxzrjlWNNyGy6i65cJzzvgJ5D3T6wMvs+gWpY9d7qRhANrxqAp6LhxIgZhWEw18RfJTGcRxjuLIBr+m8XQ==",
++      "cpu": [
++        "x64"
++      ],
+       "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "ms": "^2.1.3"
+-      },
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
+       "engines": {
+-        "node": ">=6.0"
++        "node": ">= 12.0.0"
+       },
+-      "peerDependenciesMeta": {
+-        "supports-color": {
+-          "optional": true
+-        }
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
+       }
+     },
+-    "node_modules/deep-eql": {
+-      "version": "5.0.2",
+-      "resolved": "https://registry.npmjs.org/deep-eql/-/deep-eql-5.0.2.tgz",
+-      "integrity": "sha512-h5k/5U50IJJFpzfL6nO9jaaumfjO/f2NjK/oYB2Djzm4p9L+3T9qWpZqZ2hAbLPuuYq9wrU08WQyBTL5GbPk5Q==",
++    "node_modules/lightningcss-freebsd-x64": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-freebsd-x64/-/lightningcss-freebsd-x64-1.33.0.tgz",
++      "integrity": "sha512-QQM/Ti/hQajJwCY+RiWuCZ9sdtI/XQk7nDK5vC8kkdwixezOlDgvDx7+RT+QjK6FcFT4MpsuoBnHIo/O3StRRg==",
++      "cpu": [
++        "x64"
++      ],
+       "dev": true,
+-      "license": "MIT",
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
+       "engines": {
+-        "node": ">=6"
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
+       }
+     },
+-    "node_modules/electron-to-chromium": {
+-      "version": "1.5.402",
+-      "resolved": "https://registry.npmmirror.com/electron-to-chromium/-/electron-to-chromium-1.5.402.tgz",
+-      "integrity": "sha512-/oOpMaPT6Yg+6/1XQhyIPlzgj7Ye9zf+nNM2Uh6OcE2G2oNptWazFa+qB2Pdqqbsc9KnIDzgAntoYN0dbwOXwA==",
+-      "dev": true,
+-      "license": "ISC"
+-    },
+-    "node_modules/es-module-lexer": {
+-      "version": "1.7.0",
+-      "resolved": "https://registry.npmjs.org/es-module-lexer/-/es-module-lexer-1.7.0.tgz",
+-      "integrity": "sha512-jEQoCwk8hyb2AZziIOLhDqpm5+2ww5uIE6lkO/6jcOCusfk6LhMHpXXfBLXTZ7Ydyt0j4VoUQv6uGNYbdW+kBA==",
+-      "dev": true,
+-      "license": "MIT"
+-    },
+-    "node_modules/esbuild": {
+-      "version": "0.21.5",
+-      "resolved": "https://registry.npmmirror.com/esbuild/-/esbuild-0.21.5.tgz",
+-      "integrity": "sha512-mg3OPMV4hXywwpoDxu3Qda5xCKQi+vCTZq8S9J/EpkhB2HzKXq4SNFZE3+NK93JYxc8VMSep+lOUSC/RVKaBqw==",
++    "node_modules/lightningcss-linux-arm-gnueabihf": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm-gnueabihf/-/lightningcss-linux-arm-gnueabihf-1.33.0.tgz",
++      "integrity": "sha512-N7FVBe6iS24MlM6R/4RBTxGhQheZGs7tiQ9U32UtF75NzP5Q7xWPRqLBCKxlRQRk3rY1jCIPLzx7WzOhuUIRLQ==",
++      "cpu": [
++        "arm"
++      ],
+       "dev": true,
+-      "hasInstallScript": true,
+-      "license": "MIT",
+-      "bin": {
+-        "esbuild": "bin/esbuild"
+-      },
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
+       "engines": {
+-        "node": ">=12"
++        "node": ">= 12.0.0"
+       },
+-      "optionalDependencies": {
+-        "@esbuild/aix-ppc64": "0.21.5",
+-        "@esbuild/android-arm": "0.21.5",
+-        "@esbuild/android-arm64": "0.21.5",
+-        "@esbuild/android-x64": "0.21.5",
+-        "@esbuild/darwin-arm64": "0.21.5",
+-        "@esbuild/darwin-x64": "0.21.5",
+-        "@esbuild/freebsd-arm64": "0.21.5",
+-        "@esbuild/freebsd-x64": "0.21.5",
+-        "@esbuild/linux-arm": "0.21.5",
+-        "@esbuild/linux-arm64": "0.21.5",
+-        "@esbuild/linux-ia32": "0.21.5",
+-        "@esbuild/linux-loong64": "0.21.5",
+-        "@esbuild/linux-mips64el": "0.21.5",
+-        "@esbuild/linux-ppc64": "0.21.5",
+-        "@esbuild/linux-riscv64": "0.21.5",
+-        "@esbuild/linux-s390x": "0.21.5",
+-        "@esbuild/linux-x64": "0.21.5",
+-        "@esbuild/netbsd-x64": "0.21.5",
+-        "@esbuild/openbsd-x64": "0.21.5",
+-        "@esbuild/sunos-x64": "0.21.5",
+-        "@esbuild/win32-arm64": "0.21.5",
+-        "@esbuild/win32-ia32": "0.21.5",
+-        "@esbuild/win32-x64": "0.21.5"
+-      }
+-    },
+-    "node_modules/escalade": {
+-      "version": "3.2.0",
+-      "resolved": "https://registry.npmmirror.com/escalade/-/escalade-3.2.0.tgz",
+-      "integrity": "sha512-WUj2qlxaQtO4g6Pq5c29GTcWGDyd8itL8zTlipgECz3JesAiiOKotd8JU6otB3PACgG6xkJUyVhboMS+bje/jA==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=6"
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
+       }
+     },
+-    "node_modules/estree-walker": {
+-      "version": "3.0.3",
+-      "resolved": "https://registry.npmjs.org/estree-walker/-/estree-walker-3.0.3.tgz",
+-      "integrity": "sha512-7RUKfXgSMMkzt6ZuXmqapOurLGPPfgj6l9uRZ7lRGolvk0y2yocc35LdcxKC5PQZdn2DMqioAQ2NoWcrTKmm6g==",
++    "node_modules/lightningcss-linux-arm64-gnu": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm64-gnu/-/lightningcss-linux-arm64-gnu-1.33.0.tgz",
++      "integrity": "sha512-j2v/itmy4HlNxlc6voKXYgBqNi0Ng2LShg4z7GufpEgs05P+2suBVyi9I6YHq5uoVFx9ETin3eCEhLVyXGQnKg==",
++      "cpu": [
++        "arm64"
++      ],
+       "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@types/estree": "^1.0.0"
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
+       }
+     },
+-    "node_modules/expect-type": {
+-      "version": "1.4.0",
+-      "resolved": "https://registry.npmjs.org/expect-type/-/expect-type-1.4.0.tgz",
+-      "integrity": "sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==",
++    "node_modules/lightningcss-linux-arm64-musl": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm64-musl/-/lightningcss-linux-arm64-musl-1.33.0.tgz",
++      "integrity": "sha512-yiO5ROMuYQgXbC60yjZU5CYSFZGKXL0HFATXt9mHJn1+zW55oCtMI9NfcVhYLMFDL7gV7oBPon/EmMMGg2OvtQ==",
++      "cpu": [
++        "arm64"
++      ],
+       "dev": true,
+-      "license": "Apache-2.0",
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
+       "engines": {
+-        "node": ">=12.0.0"
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
+       }
+     },
+-    "node_modules/fsevents": {
+-      "version": "2.3.3",
+-      "resolved": "https://registry.npmmirror.com/fsevents/-/fsevents-2.3.3.tgz",
+-      "integrity": "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==",
++    "node_modules/lightningcss-linux-x64-gnu": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-x64-gnu/-/lightningcss-linux-x64-gnu-1.33.0.tgz",
++      "integrity": "sha512-ar+Ju7LmcN0Jo4FpL4hpFybwNG9/3A/Br5KW2n2jyODg3MEZXaDYADdemoNS+BDNfMgKvylJLj4S5tyRActuAg==",
++      "cpu": [
++        "x64"
++      ],
+       "dev": true,
+-      "hasInstallScript": true,
+-      "license": "MIT",
++      "license": "MPL-2.0",
+       "optional": true,
+       "os": [
+-        "darwin"
++        "linux"
+       ],
+       "engines": {
+-        "node": "^8.16.0 || ^10.6.0 || >=11.0.0"
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
+       }
+     },
+-    "node_modules/gensync": {
+-      "version": "1.0.0-beta.2",
+-      "resolved": "https://registry.npmmirror.com/gensync/-/gensync-1.0.0-beta.2.tgz",
+-      "integrity": "sha512-3hN7NaskYvMDLQY55gnW3NQ+mesEAepTqlg+VEbj7zzqEMBVNhzcGYYeqFo/TlYz6eQiFcp1HcsCZO+nGgS8zg==",
++    "node_modules/lightningcss-linux-x64-musl": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-x64-musl/-/lightningcss-linux-x64-musl-1.33.0.tgz",
++      "integrity": "sha512-RYiYbkokw0trfKqqzfF55lginwEPrD3OJDfTuJzFs1MK6iFnDenaz1fqLLtX4ITG3OktJQXOeTaw1awrBAlZPw==",
++      "cpu": [
++        "x64"
++      ],
+       "dev": true,
+-      "license": "MIT",
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
+       "engines": {
+-        "node": ">=6.9.0"
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
+       }
+     },
+-    "node_modules/js-tokens": {
+-      "version": "4.0.0",
+-      "resolved": "https://registry.npmmirror.com/js-tokens/-/js-tokens-4.0.0.tgz",
+-      "integrity": "sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==",
+-      "license": "MIT"
+-    },
+-    "node_modules/jsesc": {
+-      "version": "3.1.0",
+-      "resolved": "https://registry.npmmirror.com/jsesc/-/jsesc-3.1.0.tgz",
+-      "integrity": "sha512-/sM3dO2FOzXjKQhJuo0Q173wf2KOo8t4I8vHy6lF9poUp7bKT0/NHE8fPX23PwfhnykfqnC2xRxOnVw5XuGIaA==",
++    "node_modules/lightningcss-win32-arm64-msvc": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-win32-arm64-msvc/-/lightningcss-win32-arm64-msvc-1.33.0.tgz",
++      "integrity": "sha512-1K+MPfLSFVpphzpdbfkhlWk6wBrTObBzS2T6db10PNOZgR9GoVsAWzwNyuhUYYbTp23j+4RrncfujZ4uAzXvwA==",
++      "cpu": [
++        "arm64"
++      ],
+       "dev": true,
+-      "license": "MIT",
+-      "bin": {
+-        "jsesc": "bin/jsesc"
+-      },
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
+       "engines": {
+-        "node": ">=6"
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
+       }
+     },
+-    "node_modules/json5": {
+-      "version": "2.2.3",
+-      "resolved": "https://registry.npmmirror.com/json5/-/json5-2.2.3.tgz",
+-      "integrity": "sha512-XmOWe7eyHYH14cLdVPoyg+GOH3rYX++KpzrylJwSW98t3Nk+U8XOl8FWKOgwtzdb8lXGf6zYwDUzeHMWfxasyg==",
++    "node_modules/lightningcss-win32-x64-msvc": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-win32-x64-msvc/-/lightningcss-win32-x64-msvc-1.33.0.tgz",
++      "integrity": "sha512-OlEICDx/Xl0FqSp4bry8zFnCvGpig3Gl4gCquvYwHuqJKEC1+n9NgDniFvqHGmMv1ZkqDJrDqKKSykTDX+ehuA==",
++      "cpu": [
++        "x64"
++      ],
+       "dev": true,
+-      "license": "MIT",
+-      "bin": {
+-        "json5": "lib/cli.js"
+-      },
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
+       "engines": {
+-        "node": ">=6"
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
+       }
+     },
+     "node_modules/loose-envify": {
+@@ -1653,23 +899,6 @@
+         "loose-envify": "cli.js"
+       }
+     },
+-    "node_modules/loupe": {
+-      "version": "3.2.1",
+-      "resolved": "https://registry.npmjs.org/loupe/-/loupe-3.2.1.tgz",
+-      "integrity": "sha512-CdzqowRJCeLU72bHvWqwRBBlLcMEtIvGrlvef74kMnV2AolS9Y8xUv1I0U/MNAWMhBlKIoyuEgoJ0t/bbwHbLQ==",
+-      "dev": true,
+-      "license": "MIT"
+-    },
+-    "node_modules/lru-cache": {
+-      "version": "5.1.1",
+-      "resolved": "https://registry.npmmirror.com/lru-cache/-/lru-cache-5.1.1.tgz",
+-      "integrity": "sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w==",
+-      "dev": true,
+-      "license": "ISC",
+-      "dependencies": {
+-        "yallist": "^3.0.2"
+-      }
+-    },
+     "node_modules/magic-string": {
+       "version": "0.30.21",
+       "resolved": "https://registry.npmjs.org/magic-string/-/magic-string-0.30.21.tgz",
+@@ -1680,17 +909,10 @@
+         "@jridgewell/sourcemap-codec": "^1.5.5"
+       }
+     },
+-    "node_modules/ms": {
+-      "version": "2.1.3",
+-      "resolved": "https://registry.npmmirror.com/ms/-/ms-2.1.3.tgz",
+-      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
+-      "dev": true,
+-      "license": "MIT"
+-    },
+     "node_modules/nanoid": {
+-      "version": "3.3.17",
+-      "resolved": "https://registry.npmmirror.com/nanoid/-/nanoid-3.3.17.tgz",
+-      "integrity": "sha512-xQLf0A3HOMlgHq0n247/LRuAOYmB7dXJ/DvAxGvsSBij45XtBSmQycu+F8ODbHwns/XyFZagyL1+J0Offw1E0g==",
++      "version": "3.3.18",
++      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.18.tgz",
++      "integrity": "sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w==",
+       "dev": true,
+       "funding": [
+         {
+@@ -1706,33 +928,27 @@
+         "node": "^10 || ^12 || ^13.7 || ^14 || >=15.0.1"
+       }
+     },
+-    "node_modules/node-releases": {
+-      "version": "2.0.53",
+-      "resolved": "https://registry.npmmirror.com/node-releases/-/node-releases-2.0.53.tgz",
+-      "integrity": "sha512-D9UOmYG3UH1V+ENW56t5QXBwJw1YEY18ruVeus89Rw+SyIgjPkCO84bRzO3uNIYosJbNwiabWVn48o3uJLjxFQ==",
++    "node_modules/obug": {
++      "version": "2.1.4",
++      "resolved": "https://registry.npmjs.org/obug/-/obug-2.1.4.tgz",
++      "integrity": "sha512-4a+OsYv9UktOJKE+l1A4OufDgdRF9PifWj+tJnHURo/P+WOxpG4GzUFL9qCalmWauao6ogiG+QvnCovwPoyAWA==",
+       "dev": true,
++      "funding": [
++        "https://github.com/sponsors/sxzz",
++        "https://opencollective.com/debug"
++      ],
+       "license": "MIT",
+       "engines": {
+-        "node": ">=18"
++        "node": ">=12.20.0"
+       }
+     },
+     "node_modules/pathe": {
+-      "version": "1.1.2",
+-      "resolved": "https://registry.npmjs.org/pathe/-/pathe-1.1.2.tgz",
+-      "integrity": "sha512-whLdWMYL2TwI08hn8/ZqAbrVemu0LNaNNJZX73O6qaIdCTfXutsLhMkjdENX0qhsQ9uIimo4/aQOmXkoon2nDQ==",
++      "version": "2.0.3",
++      "resolved": "https://registry.npmjs.org/pathe/-/pathe-2.0.3.tgz",
++      "integrity": "sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==",
+       "dev": true,
+       "license": "MIT"
+     },
+-    "node_modules/pathval": {
+-      "version": "2.0.1",
+-      "resolved": "https://registry.npmjs.org/pathval/-/pathval-2.0.1.tgz",
+-      "integrity": "sha512-//nshmD55c46FuFw26xV/xFAaB5HF9Xdap7HJBBnrKdAd6/GxDBaNA1870O79+9ueg61cZLSVc+OaFlfmObYVQ==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">= 14.16"
+-      }
+-    },
+     "node_modules/picocolors": {
+       "version": "1.1.1",
+       "resolved": "https://registry.npmmirror.com/picocolors/-/picocolors-1.1.1.tgz",
+@@ -1740,6 +956,19 @@
+       "dev": true,
+       "license": "ISC"
+     },
++    "node_modules/picomatch": {
++      "version": "4.0.5",
++      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.5.tgz",
++      "integrity": "sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=12"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/jonschlinkert"
++      }
++    },
+     "node_modules/postcss": {
+       "version": "8.5.26",
+       "resolved": "https://registry.npmmirror.com/postcss/-/postcss-8.5.26.tgz",
+@@ -1774,7 +1003,6 @@
+       "resolved": "https://registry.npmmirror.com/react/-/react-18.3.1.tgz",
+       "integrity": "sha512-wS+hAgJShR0KhEvPJArfuPVN1+Hz1t0Y6n5jLrGQbkb4urgPE/0Rve+1kMB1v/oWgHgm4WIcV+i7F2pTVj+2iQ==",
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "loose-envify": "^1.1.0"
+       },
+@@ -1787,7 +1015,6 @@
+       "resolved": "https://registry.npmmirror.com/react-dom/-/react-dom-18.3.1.tgz",
+       "integrity": "sha512-5m4nQKp+rZRb09LNH59GM4BxTh9251/ylbKIbpe7TpGxfJ+9kv6BLkLBXIjjspbgbnIBNqlI23tRnTWT0snUIw==",
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "loose-envify": "^1.1.0",
+         "scheduler": "^0.23.2"
+@@ -1796,92 +1023,76 @@
+         "react": "^18.3.1"
+       }
+     },
+-    "node_modules/react-refresh": {
+-      "version": "0.17.0",
+-      "resolved": "https://registry.npmmirror.com/react-refresh/-/react-refresh-0.17.0.tgz",
+-      "integrity": "sha512-z6F7K9bV85EfseRCp2bzrpyQ0Gkw1uLoCel9XBVWPg/TjRj94SkJzUTGfOa4bs7iJvBWtQG0Wq7wnI0syw3EBQ==",
+-      "dev": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">=0.10.0"
+-      }
+-    },
+     "node_modules/react-router": {
+-      "version": "6.30.4",
+-      "resolved": "https://registry.npmmirror.com/react-router/-/react-router-6.30.4.tgz",
+-      "integrity": "sha512-SVUsDe+DybHM/WmYKIVYhZh1o5Dcuf16yM6WjG02Q9XVFMZIJyHYhwrr6bFBXZkVP6z69kNkMyBCujt8FaFLJA==",
++      "version": "7.18.2",
++      "resolved": "https://registry.npmjs.org/react-router/-/react-router-7.18.2.tgz",
++      "integrity": "sha512-aUVMjFm3GAPTTZL7oYr5E7ETiqfQCHRLH+B+5afnICvf0r7kkK4eR6SMuwbSTJw/7t+12khT/Kahij49fqOCIg==",
+       "license": "MIT",
+       "dependencies": {
+-        "@remix-run/router": "1.23.3"
++        "cookie": "^1.0.1",
++        "set-cookie-parser": "^2.6.0"
+       },
+       "engines": {
+-        "node": ">=14.0.0"
++        "node": ">=20.0.0"
+       },
+       "peerDependencies": {
+-        "react": ">=16.8"
++        "react": ">=18",
++        "react-dom": ">=18"
++      },
++      "peerDependenciesMeta": {
++        "react-dom": {
++          "optional": true
++        }
+       }
+     },
+     "node_modules/react-router-dom": {
+-      "version": "6.30.4",
+-      "resolved": "https://registry.npmmirror.com/react-router-dom/-/react-router-dom-6.30.4.tgz",
+-      "integrity": "sha512-q4HvNl+mmDdkS0g+MqiBZNteQJCuimWoOyHMy4T/RQLAn9Z29+E91QXRaxOujeMl2HTzRSS0KFPd7lxX3PjV0Q==",
++      "version": "7.18.2",
++      "resolved": "https://registry.npmjs.org/react-router-dom/-/react-router-dom-7.18.2.tgz",
++      "integrity": "sha512-AIKJ/jgGlFb3EbfCXk5Gzshiwt+l3mqbCrNjmEWMMjqQxNJ3svBa6bgzFyCC2Sw3RA0VWF1kg3uQf2OFhxb8hw==",
+       "license": "MIT",
+       "dependencies": {
+-        "@remix-run/router": "1.23.3",
+-        "react-router": "6.30.4"
++        "react-router": "7.18.2"
+       },
+       "engines": {
+-        "node": ">=14.0.0"
++        "node": ">=20.0.0"
+       },
+       "peerDependencies": {
+-        "react": ">=16.8",
+-        "react-dom": ">=16.8"
++        "react": ">=18",
++        "react-dom": ">=18"
+       }
+     },
+-    "node_modules/rollup": {
+-      "version": "4.62.4",
+-      "resolved": "https://registry.npmmirror.com/rollup/-/rollup-4.62.4.tgz",
+-      "integrity": "sha512-RXOqwaPsBGjMNMa4sQjDjHieHEZDFoj/Rdr46l2MU5DfEs16wHJPC2RPTPHWhNl+M3aI472LLqFkFKut4SblOg==",
++    "node_modules/rolldown": {
++      "version": "1.2.5",
++      "resolved": "https://registry.npmjs.org/rolldown/-/rolldown-1.2.5.tgz",
++      "integrity": "sha512-VD2IE5PUG4Oj8zz2VGykiYd5wbnjdIiSsNQb8Qu5B+noEp+A78mu2iVvpp27g8es14Tk9rofNs5Tku9iQCS4fA==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@types/estree": "1.0.9"
++        "@oxc-project/types": "=0.146.0",
++        "@rolldown/pluginutils": "^1.0.0"
+       },
+       "bin": {
+-        "rollup": "dist/bin/rollup"
++        "rolldown": "bin/cli.mjs"
+       },
+       "engines": {
+-        "node": ">=18.0.0",
+-        "npm": ">=8.0.0"
++        "node": "^20.19.0 || >=22.12.0"
+       },
+       "optionalDependencies": {
+-        "@napi-rs/lzma-linux-x64-gnu": "1.5.1",
+-        "@rollup/rollup-android-arm-eabi": "4.62.4",
+-        "@rollup/rollup-android-arm64": "4.62.4",
+-        "@rollup/rollup-darwin-arm64": "4.62.4",
+-        "@rollup/rollup-darwin-x64": "4.62.4",
+-        "@rollup/rollup-freebsd-arm64": "4.62.4",
+-        "@rollup/rollup-freebsd-x64": "4.62.4",
+-        "@rollup/rollup-linux-arm-gnueabihf": "4.62.4",
+-        "@rollup/rollup-linux-arm-musleabihf": "4.62.4",
+-        "@rollup/rollup-linux-arm64-gnu": "4.62.4",
+-        "@rollup/rollup-linux-arm64-musl": "4.62.4",
+-        "@rollup/rollup-linux-loong64-gnu": "4.62.4",
+-        "@rollup/rollup-linux-loong64-musl": "4.62.4",
+-        "@rollup/rollup-linux-ppc64-gnu": "4.62.4",
+-        "@rollup/rollup-linux-ppc64-musl": "4.62.4",
+-        "@rollup/rollup-linux-riscv64-gnu": "4.62.4",
+-        "@rollup/rollup-linux-riscv64-musl": "4.62.4",
+-        "@rollup/rollup-linux-s390x-gnu": "4.62.4",
+-        "@rollup/rollup-linux-x64-gnu": "4.62.4",
+-        "@rollup/rollup-linux-x64-musl": "4.62.4",
+-        "@rollup/rollup-openbsd-x64": "4.62.4",
+-        "@rollup/rollup-openharmony-arm64": "4.62.4",
+-        "@rollup/rollup-win32-arm64-msvc": "4.62.4",
+-        "@rollup/rollup-win32-ia32-msvc": "4.62.4",
+-        "@rollup/rollup-win32-x64-gnu": "4.62.4",
+-        "@rollup/rollup-win32-x64-msvc": "4.62.4",
+-        "fsevents": "~2.3.2"
++        "@rolldown/binding-android-arm-eabi": "1.2.5",
++        "@rolldown/binding-android-arm64": "1.2.5",
++        "@rolldown/binding-darwin-arm64": "1.2.5",
++        "@rolldown/binding-darwin-x64": "1.2.5",
++        "@rolldown/binding-freebsd-x64": "1.2.5",
++        "@rolldown/binding-linux-arm-gnueabihf": "1.2.5",
++        "@rolldown/binding-linux-arm64-gnu": "1.2.5",
++        "@rolldown/binding-linux-arm64-musl": "1.2.5",
++        "@rolldown/binding-linux-ppc64-gnu": "1.2.5",
++        "@rolldown/binding-linux-s390x-gnu": "1.2.5",
++        "@rolldown/binding-linux-x64-gnu": "1.2.5",
++        "@rolldown/binding-linux-x64-musl": "1.2.5",
++        "@rolldown/binding-openharmony-arm64": "1.2.5",
++        "@rolldown/binding-win32-arm64-msvc": "1.2.5",
++        "@rolldown/binding-win32-x64-msvc": "1.2.5"
+       }
+     },
+     "node_modules/scheduler": {
+@@ -1893,15 +1104,11 @@
+         "loose-envify": "^1.1.0"
+       }
+     },
+-    "node_modules/semver": {
+-      "version": "6.3.1",
+-      "resolved": "https://registry.npmmirror.com/semver/-/semver-6.3.1.tgz",
+-      "integrity": "sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==",
+-      "dev": true,
+-      "license": "ISC",
+-      "bin": {
+-        "semver": "bin/semver.js"
+-      }
++    "node_modules/set-cookie-parser": {
++      "version": "2.7.2",
++      "resolved": "https://registry.npmjs.org/set-cookie-parser/-/set-cookie-parser-2.7.2.tgz",
++      "integrity": "sha512-oeM1lpU/UvhTxw+g3cIfxXHyJRc/uidd3yK1P242gzHds0udQBYzs3y8j4gCCW+ZJ7ad0yctld8RYO+bdurlvw==",
++      "license": "MIT"
+     },
+     "node_modules/siginfo": {
+       "version": "2.0.0",
+@@ -1928,9 +1135,9 @@
+       "license": "MIT"
+     },
+     "node_modules/std-env": {
+-      "version": "3.10.0",
+-      "resolved": "https://registry.npmjs.org/std-env/-/std-env-3.10.0.tgz",
+-      "integrity": "sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==",
++      "version": "4.2.0",
++      "resolved": "https://registry.npmjs.org/std-env/-/std-env-4.2.0.tgz",
++      "integrity": "sha512-oCUKSupKTHX53EyjDtuZQ64pjLJ6yYCtpmEw0goYxtjG9KpbRe8KAsl2tBUGU9DyMcJ0RwJ8GqJAFzMXcXW1Rw==",
+       "dev": true,
+       "license": "MIT"
+     },
+@@ -1942,36 +1149,36 @@
+       "license": "MIT"
+     },
+     "node_modules/tinyexec": {
+-      "version": "0.3.2",
+-      "resolved": "https://registry.npmjs.org/tinyexec/-/tinyexec-0.3.2.tgz",
+-      "integrity": "sha512-KQQR9yN7R5+OSwaK0XQoj22pwHoTlgYqmUscPYoknOoWCWfj/5/ABTMRi69FrKU5ffPVh5QcFikpWJI/P1ocHA==",
+-      "dev": true,
+-      "license": "MIT"
+-    },
+-    "node_modules/tinypool": {
+-      "version": "1.1.1",
+-      "resolved": "https://registry.npmjs.org/tinypool/-/tinypool-1.1.1.tgz",
+-      "integrity": "sha512-Zba82s87IFq9A9XmjiX5uZA/ARWDrB03OHlq+Vw1fSdt0I+4/Kutwy8BP4Y/y/aORMo61FQ0vIb5j44vSo5Pkg==",
++      "version": "1.3.0",
++      "resolved": "https://registry.npmjs.org/tinyexec/-/tinyexec-1.3.0.tgz",
++      "integrity": "sha512-QKAl9m8gWWGHV8jZcPeym6j+XULi6tOf1mT83WYJ4Lk2ytW/uwAWkrP0uFsdoYMdueVJ0qs26wZ+23xeB4ibNQ==",
+       "dev": true,
+       "license": "MIT",
+       "engines": {
+-        "node": "^18.0.0 || >=20.0.0"
++        "node": ">=18"
+       }
+     },
+-    "node_modules/tinyrainbow": {
+-      "version": "1.2.0",
+-      "resolved": "https://registry.npmjs.org/tinyrainbow/-/tinyrainbow-1.2.0.tgz",
+-      "integrity": "sha512-weEDEq7Z5eTHPDh4xjX789+fHfF+P8boiFB+0vbWzpbnbsEr/GRaohi/uMKxg8RZMXnl1ItAi/IUHWMsjDV7kQ==",
++    "node_modules/tinyglobby": {
++      "version": "0.2.17",
++      "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.17.tgz",
++      "integrity": "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==",
+       "dev": true,
+       "license": "MIT",
++      "dependencies": {
++        "fdir": "^6.5.0",
++        "picomatch": "^4.0.4"
++      },
+       "engines": {
+-        "node": ">=14.0.0"
++        "node": ">=12.0.0"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/SuperchupuDev"
+       }
+     },
+-    "node_modules/tinyspy": {
+-      "version": "3.0.2",
+-      "resolved": "https://registry.npmjs.org/tinyspy/-/tinyspy-3.0.2.tgz",
+-      "integrity": "sha512-n1cw8k1k0x4pgA2+9XrOkFydTerNcJ1zWCO5Nn9scWHTD+5tp8dghT2x1uduQePZTZgd3Tupf+x9BxJjeJi77Q==",
++    "node_modules/tinyrainbow": {
++      "version": "3.1.1",
++      "resolved": "https://registry.npmjs.org/tinyrainbow/-/tinyrainbow-3.1.1.tgz",
++      "integrity": "sha512-yau8yJdTt989Mm0Bd/236QnzEiPf2xLLTqUZRUJOo/3CB078LSwzei343DgtJVmfJKJE3TMINY1u42SQsP6mXw==",
+       "dev": true,
+       "license": "MIT",
+       "engines": {
+@@ -1992,54 +1199,24 @@
+         "node": ">=14.17"
+       }
+     },
+-    "node_modules/update-browserslist-db": {
+-      "version": "1.2.3",
+-      "resolved": "https://registry.npmmirror.com/update-browserslist-db/-/update-browserslist-db-1.2.3.tgz",
+-      "integrity": "sha512-Js0m9cx+qOgDxo0eMiFGEueWztz+d4+M3rGlmKPT+T4IS/jP4ylw3Nwpu6cpTTP8R1MAC1kF4VbdLt3ARf209w==",
+-      "dev": true,
+-      "funding": [
+-        {
+-          "type": "opencollective",
+-          "url": "https://opencollective.com/browserslist"
+-        },
+-        {
+-          "type": "tidelift",
+-          "url": "https://tidelift.com/funding/github/npm/browserslist"
+-        },
+-        {
+-          "type": "github",
+-          "url": "https://github.com/sponsors/ai"
+-        }
+-      ],
+-      "license": "MIT",
+-      "dependencies": {
+-        "escalade": "^3.2.0",
+-        "picocolors": "^1.1.1"
+-      },
+-      "bin": {
+-        "update-browserslist-db": "cli.js"
+-      },
+-      "peerDependencies": {
+-        "browserslist": ">= 4.21.0"
+-      }
+-    },
+     "node_modules/vite": {
+-      "version": "5.4.21",
+-      "resolved": "https://registry.npmmirror.com/vite/-/vite-5.4.21.tgz",
+-      "integrity": "sha512-o5a9xKjbtuhY6Bi5S3+HvbRERmouabWbyUcpXXUA1u+GNUKoROi9byOJ8M0nHbHYHkYICiMlqxkg1KkYmm25Sw==",
++      "version": "8.2.2",
++      "resolved": "https://registry.npmjs.org/vite/-/vite-8.2.2.tgz",
++      "integrity": "sha512-cFKLV/PRgAUlIRm5WjMjJ86jrftzpqcgH+Us+DS8mI3CDNiH30Whrz8uHL3+MOLPAgqbMBAqWdAHAphOAM+z/Q==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+-        "esbuild": "^0.21.3",
+-        "postcss": "^8.4.43",
+-        "rollup": "^4.20.0"
++        "lightningcss": "^1.33.0",
++        "picomatch": "^4.0.5",
++        "postcss": "^8.5.26",
++        "rolldown": "~1.2.4",
++        "tinyglobby": "^0.2.17"
+       },
+       "bin": {
+         "vite": "bin/vite.js"
+       },
+       "engines": {
+-        "node": "^18.0.0 || >=20.0.0"
++        "node": "^20.19.0 || >=22.12.0"
+       },
+       "funding": {
+         "url": "https://github.com/vitejs/vite?sponsor=1"
+@@ -2048,23 +1225,33 @@
+         "fsevents": "~2.3.3"
+       },
+       "peerDependencies": {
+-        "@types/node": "^18.0.0 || >=20.0.0",
+-        "less": "*",
+-        "lightningcss": "^1.21.0",
+-        "sass": "*",
+-        "sass-embedded": "*",
+-        "stylus": "*",
+-        "sugarss": "*",
+-        "terser": "^5.4.0"
++        "@types/node": "^20.19.0 || >=22.12.0",
++        "@vitejs/devtools": "^0.4.0 || ^0.5.0",
++        "esbuild": "^0.27.0 || ^0.28.0",
++        "jiti": ">=1.21.0",
++        "less": "^4.0.0",
++        "sass": "^1.70.0",
++        "sass-embedded": "^1.70.0",
++        "stylus": ">=0.54.8",
++        "sugarss": "^5.0.0",
++        "terser": "^5.16.0",
++        "tsx": "^4.8.1",
++        "yaml": "^2.4.2"
+       },
+       "peerDependenciesMeta": {
+         "@types/node": {
+           "optional": true
+         },
+-        "less": {
++        "@vitejs/devtools": {
++          "optional": true
++        },
++        "esbuild": {
++          "optional": true
++        },
++        "jiti": {
+           "optional": true
+         },
+-        "lightningcss": {
++        "less": {
+           "optional": true
+         },
+         "sass": {
+@@ -2081,85 +1268,89 @@
+         },
+         "terser": {
+           "optional": true
++        },
++        "tsx": {
++          "optional": true
++        },
++        "yaml": {
++          "optional": true
+         }
+       }
+     },
+-    "node_modules/vite-node": {
+-      "version": "2.1.9",
+-      "resolved": "https://registry.npmjs.org/vite-node/-/vite-node-2.1.9.tgz",
+-      "integrity": "sha512-AM9aQ/IPrW/6ENLQg3AGY4K1N2TGZdR5e4gu/MmmR2xR3Ll1+dib+nook92g4TV3PXVyeyxdWwtaCAiUL0hMxA==",
+-      "dev": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "cac": "^6.7.14",
+-        "debug": "^4.3.7",
+-        "es-module-lexer": "^1.5.4",
+-        "pathe": "^1.1.2",
+-        "vite": "^5.0.0"
+-      },
+-      "bin": {
+-        "vite-node": "vite-node.mjs"
+-      },
+-      "engines": {
+-        "node": "^18.0.0 || >=20.0.0"
+-      },
+-      "funding": {
+-        "url": "https://opencollective.com/vitest"
+-      }
+-    },
+     "node_modules/vitest": {
+-      "version": "2.1.9",
+-      "resolved": "https://registry.npmjs.org/vitest/-/vitest-2.1.9.tgz",
+-      "integrity": "sha512-MSmPM9REYqDGBI8439mA4mWhV5sKmDlBKWIYbA3lRb2PTHACE0mgKwA8yQ2xq9vxDTuk4iPrECBAEW2aoFXY0Q==",
++      "version": "4.1.11",
++      "resolved": "https://registry.npmjs.org/vitest/-/vitest-4.1.11.tgz",
++      "integrity": "sha512-fhACrNXUidIbGSBr5FlbuBkO7VWC1ZyLl0DO4CU2DrQoAPxX84Ysxs+HeGQpii5lZWV1Q4gBZTTu49mF+A6Edw==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+-        "@vitest/expect": "2.1.9",
+-        "@vitest/mocker": "2.1.9",
+-        "@vitest/pretty-format": "^2.1.9",
+-        "@vitest/runner": "2.1.9",
+-        "@vitest/snapshot": "2.1.9",
+-        "@vitest/spy": "2.1.9",
+-        "@vitest/utils": "2.1.9",
+-        "chai": "^5.1.2",
+-        "debug": "^4.3.7",
+-        "expect-type": "^1.1.0",
+-        "magic-string": "^0.30.12",
+-        "pathe": "^1.1.2",
+-        "std-env": "^3.8.0",
++        "@vitest/expect": "4.1.11",
++        "@vitest/mocker": "4.1.11",
++        "@vitest/pretty-format": "4.1.11",
++        "@vitest/runner": "4.1.11",
++        "@vitest/snapshot": "4.1.11",
++        "@vitest/spy": "4.1.11",
++        "@vitest/utils": "4.1.11",
++        "es-module-lexer": "^2.0.0",
++        "expect-type": "^1.3.0",
++        "magic-string": "^0.30.21",
++        "obug": "^2.1.1",
++        "pathe": "^2.0.3",
++        "picomatch": "^4.0.3",
++        "std-env": "^4.0.0-rc.1",
+         "tinybench": "^2.9.0",
+-        "tinyexec": "^0.3.1",
+-        "tinypool": "^1.0.1",
+-        "tinyrainbow": "^1.2.0",
+-        "vite": "^5.0.0",
+-        "vite-node": "2.1.9",
++        "tinyexec": "^1.0.2",
++        "tinyglobby": "^0.2.15",
++        "tinyrainbow": "^3.1.0",
++        "vite": "^6.0.0 || ^7.0.0 || ^8.0.0",
+         "why-is-node-running": "^2.3.0"
+       },
+       "bin": {
+         "vitest": "vitest.mjs"
+       },
+       "engines": {
+-        "node": "^18.0.0 || >=20.0.0"
++        "node": "^20.0.0 || ^22.0.0 || >=24.0.0"
+       },
+       "funding": {
+         "url": "https://opencollective.com/vitest"
+       },
+       "peerDependencies": {
+         "@edge-runtime/vm": "*",
+-        "@types/node": "^18.0.0 || >=20.0.0",
+-        "@vitest/browser": "2.1.9",
+-        "@vitest/ui": "2.1.9",
++        "@opentelemetry/api": "^1.9.0",
++        "@types/node": "^20.0.0 || ^22.0.0 || >=24.0.0",
++        "@vitest/browser-playwright": "4.1.11",
++        "@vitest/browser-preview": "4.1.11",
++        "@vitest/browser-webdriverio": "4.1.11",
++        "@vitest/coverage-istanbul": "4.1.11",
++        "@vitest/coverage-v8": "4.1.11",
++        "@vitest/ui": "4.1.11",
+         "happy-dom": "*",
+-        "jsdom": "*"
++        "jsdom": "*",
++        "vite": "^6.0.0 || ^7.0.0 || ^8.0.0"
+       },
+       "peerDependenciesMeta": {
+         "@edge-runtime/vm": {
+           "optional": true
+         },
++        "@opentelemetry/api": {
++          "optional": true
++        },
+         "@types/node": {
+           "optional": true
+         },
+-        "@vitest/browser": {
++        "@vitest/browser-playwright": {
++          "optional": true
++        },
++        "@vitest/browser-preview": {
++          "optional": true
++        },
++        "@vitest/browser-webdriverio": {
++          "optional": true
++        },
++        "@vitest/coverage-istanbul": {
++          "optional": true
++        },
++        "@vitest/coverage-v8": {
+           "optional": true
+         },
+         "@vitest/ui": {
+@@ -2170,6 +1361,9 @@
+         },
+         "jsdom": {
+           "optional": true
++        },
++        "vite": {
++          "optional": false
+         }
+       }
+     },
+@@ -2189,13 +1383,6 @@
+       "engines": {
+         "node": ">=8"
+       }
+-    },
+-    "node_modules/yallist": {
+-      "version": "3.1.1",
+-      "resolved": "https://registry.npmmirror.com/yallist/-/yallist-3.1.1.tgz",
+-      "integrity": "sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==",
+-      "dev": true,
+-      "license": "ISC"
+     }
+   }
+ }
+diff --git a/web/package.json b/web/package.json
+index 045b4fd..2f0f15b 100644
+--- a/web/package.json
++++ b/web/package.json
+@@ -12,14 +12,14 @@
+   "dependencies": {
+     "react": "^18.3.1",
+     "react-dom": "^18.3.1",
+-    "react-router-dom": "^6.26.0"
++    "react-router-dom": "7.18.2"
+   },
+   "devDependencies": {
+     "@types/react": "^18.3.3",
+     "@types/react-dom": "^18.3.0",
+-    "@vitejs/plugin-react": "^4.3.1",
++    "@vitejs/plugin-react": "6.1.0",
+     "typescript": "^5.5.4",
+-    "vite": "^5.4.2",
+-    "vitest": "^2.1.9"
++    "vite": "8.2.2",
++    "vitest": "4.1.11"
+   }
+ }
+diff --git a/web/src/pages/Admin.backups.test.tsx b/web/src/pages/Admin.backups.test.tsx
+index 42f8a04..6dbf672 100644
+--- a/web/src/pages/Admin.backups.test.tsx
++++ b/web/src/pages/Admin.backups.test.tsx
+@@ -1,7 +1,15 @@
+ import { renderToStaticMarkup } from 'react-dom/server'
+ import { describe, expect, it, vi } from 'vitest'
+ 
+-import { BackupJobRow, backupWorkflowStateLabel, StatusBadge } from './Admin'
++import { BackupJobRow, backupWorkflowStateLabel, listOrEmpty, StatusBadge } from './Admin'
++
++describe('admin list response normalization', () => {
++  it('turns nullish API lists into render-safe empty arrays', () => {
++    expect(listOrEmpty(null)).toEqual([])
++    expect(listOrEmpty(undefined)).toEqual([])
++    expect(listOrEmpty([{ id: 1 }])).toEqual([{ id: 1 }])
++  })
++})
+ 
+ describe('backup workflow presentation', () => {
+   it('labels every durable snapshot phase deterministically', () => {
+@@ -118,4 +126,3 @@ describe('node composite status presentation', () => {
+     expect(html).not.toContain('最后上报')
+   })
+ })
+-
+diff --git a/web/src/pages/Admin.tsx b/web/src/pages/Admin.tsx
+index 4caef12..eaade2a 100644
+--- a/web/src/pages/Admin.tsx
++++ b/web/src/pages/Admin.tsx
+@@ -30,6 +30,10 @@ import type {
+   UserDataFaultStatus,
+ } from '../adminTypes'
+ 
++export function listOrEmpty<T>(items: T[] | null | undefined): T[] {
++  return items ?? []
++}
++
+ function readCookie(name: string): string {
+   const prefix = `${encodeURIComponent(name)}=`
+   for (const part of document.cookie.split(';')) {
+@@ -409,9 +413,10 @@ function NodesAdmin() {
+   const load = () => Promise.all([adminApi.nodes(), adminApi.nodeLinks()])
+     .then(async ([nodeData, linkData]) => {
+       setLoadError('')
+-      setNodes(nodeData.nodes ?? [])
+-      setNodeLinks(linkData.links || [])
+-      const tracked = (nodeData.nodes ?? []).filter((node: AdminNode) =>
++      const loadedNodes = listOrEmpty(nodeData.nodes)
++      setNodes(loadedNodes)
++      setNodeLinks(listOrEmpty(linkData.links))
++      const tracked = loadedNodes.filter((node: AdminNode) =>
+         ['draining', 'retiring', 'decommissioned'].includes(node.operational_state))
+       const results = await Promise.allSettled(tracked.map((node: AdminNode) => adminApi.retirement(node.id)))
+       const progress: Record<number, NodeRetirement> = {}
+@@ -420,7 +425,7 @@ function NodesAdmin() {
+         if (result.status === 'fulfilled') progress[node.id] = result.value
+       })
+       setRetirements(progress)
+-      const compatibilityTracked = (nodeData.nodes ?? []).filter((node: AdminNode) => node.compatibility_state !== 'compatible')
++      const compatibilityTracked = loadedNodes.filter((node: AdminNode) => node.compatibility_state !== 'compatible')
+       const compatibilityResults = await Promise.allSettled(
+         compatibilityTracked.map((node: AdminNode) => adminApi.compatibilityIncident(node.id)),
+       )
+@@ -925,7 +930,7 @@ function UsersAdmin() {
+     setLoading(true)
+     return adminApi.users(pageCursor, pageQuery, pageStatus)
+       .then(d => {
+-        setUsers(d.users); setHasMore(d.has_more); setNextCursor(d.next_cursor); setError('')
++        setUsers(listOrEmpty(d.users)); setHasMore(d.has_more); setNextCursor(d.next_cursor); setError('')
+       })
+       .catch(e => setError(e.message))
+       .finally(() => setLoading(false))
+@@ -1275,7 +1280,7 @@ export function BackupsAdmin() {
+   const load = (pageCursor = cursor, pageStatus = status, pageUserID = userID) => {
+     setLoading(true)
+     return adminApi.backups(pageCursor, pageStatus, pageUserID)
+-      .then(d => { setJobs(d.backups); setHasMore(d.has_more); setNextCursor(d.next_cursor); setError('') })
++      .then(d => { setJobs(listOrEmpty(d.backups)); setHasMore(d.has_more); setNextCursor(d.next_cursor); setError('') })
+       .catch(e => setError(e.message))
+       .finally(() => setLoading(false))
+   }
+@@ -1355,7 +1360,7 @@ function ProtectionAlertsAdmin() {
+   const [alerts, setAlerts] = useState<ProtectionAlert[]>([])
+   const [error, setError] = useState('')
+   const load = () => adminApi.protectionAlerts()
+-    .then(data => { setAlerts(data.alerts ?? []); setError('') })
++    .then(data => { setAlerts(listOrEmpty(data.alerts)); setError('') })
+     .catch(err => setError(err.message))
+   useEffect(() => { load(); const timer = setInterval(load, 30000); return () => clearInterval(timer) }, [])
+ 
+@@ -1497,7 +1502,7 @@ function AdminsAdmin() {
+   const [error, setError] = useState('')
+   const [message, setMessage] = useState('')
+ 
+-  const load = () => adminApi.admins().then(data => setAdmins(data.admins ?? [])).catch(err => setError(err.message))
++  const load = () => adminApi.admins().then(data => setAdmins(listOrEmpty(data.admins))).catch(err => setError(err.message))
+   useEffect(() => { load() }, [])
+ 
+   const create = async (event: React.FormEvent) => {
+diff --git "a/\346\234\215\345\212\241\345\231\250\346\265\213\350\257\225\351\252\214\350\257\201\347\273\223\346\236\234.md" "b/\346\234\215\345\212\241\345\231\250\346\265\213\350\257\225\351\252\214\350\257\201\347\273\223\346\236\234.md"
+new file mode 100644
+index 0000000..9cc01e2
+--- /dev/null
++++ "b/\346\234\215\345\212\241\345\231\250\346\265\213\350\257\225\351\252\214\350\257\201\347\273\223\346\236\234.md"
+@@ -0,0 +1,524 @@
++# stcontrol / SillyTavern-online 服务器测试验证结果
++
++## 1. 结论
++
++验收结论：**FAIL — 当前版本不得直接发布到生产环境。**
++
++本轮已经把 stcontrol 的 `flash` 同步到 GitHub 最新提交，完成了真实 PostgreSQL、真实 `pg_dump`、Go race detector、Linux 原子发布/磁盘满/进程崩溃、跨仓 adapter、完整 SillyTavern 冷启动、Web、镜像构建、TLS、日志、秘密、依赖漏洞和部分负载测试。功能自动化在本轮修复后全部通过，且最终全量 PostgreSQL 回归为 0 fail / 0 skip。
++
++但是，以下发布硬门禁仍未满足：
++
++1. 清单要求的全仓覆盖率至少 80%，严格口径实际为 **67.1%**。
++2. SillyTavern-online 生产依赖的 Critical/High 已清零，但仍有 **6 个 Moderate**，其中 Showdown 的 XSS/ReDoS 无上游修复；ONNX/protobuf 通过受控 override 修复，仍需真实模型推理矩阵确认兼容性。
++3. Git 历史存在一个无占位标记的 44 字节 Controller secret 形态值；虽然不等于当前线上密钥，仍必须按历史泄露处置。
++4. Nginx 和 Cloudflare 公网入口实际接受 TLS 1.2，不符合本清单“仅 TLS 1.3”的要求。
++5. Nginx 使用默认 access log，已保存 887 条带 query 的请求；参数名统计中出现 `username`、`psd`，不符合“URL/query/access log 不含秘密”。
++6. 系统显示 `System clock synchronized: no`，不满足节点时钟同步前置条件。
++7. 真实多服务器/NAT/网络分区、1,000 并发登录与心跳、三浏览器矩阵、72 小时 soak 和上一版本滚动升级没有合格环境证据。
++8. 线上运行容器仍是旧二进制，并非本次最新源码和修复后的镜像。
++
++因此，本报告不能签署“生产可用”。第 11 节给出了逐项修复和复验条件；只有所有 P0/P1 阻断关闭，并重新完整执行清单后，才能发布。
++
++## 2. 验收范围与固定版本
++
++验收时间：2026-08-24，时区 Asia/Shanghai。
++
++| 项目 | 固定值 | 最终远端复核 |
++|---|---|---|
++| stcontrol 分支 | `flash` | `HEAD == origin/flash` |
++| stcontrol SHA | `2f1ee68e6641d5d4b50bcca96bc55ac1a7bef93b` | ahead/behind `0/0` |
++| SillyTavern-online 分支 | `online` | `HEAD == origin/online` |
++| SillyTavern-online 基线 SHA | `b4dd65b47c178ea87ea42f56ac1b7ef1a8a934cd` | ahead/behind `0/0`；其上有本轮未提交安全修复 |
++| PostgreSQL 测试服务 | PostgreSQL 17.10，独立容器、独立数据库 | 未复用生产数据库 |
++| 主机 | Debian 13.6，Linux 7.1.8 x86_64 | 4 CPU，约 5.8 GiB RAM |
++| 验收工具 | Go 1.26.7 / Node 20.20.2 / npm 10.8.2 | 工具可用 |
++| Controller 构建/运行镜像 | Go 1.26.7 / Node 24 / Alpine 3.24.1 | 三个基础镜像均固定 patch/tag 与 digest |
++
++最终 SHA 证据：`server-test-evidence/20260824T005513Z/final-remote-sha-verification.txt`。
++
++同步前存在本地验收改动，已先保存为安全 stash，再 fast-forward 到远端 `flash`，随后语义合并。安全备份仍保留为：
++
++- `stash@{0}: preserve server acceptance work before updating origin/flash 2026-08-24`
++- 原有 `stash@{1}` 未改动。
++
++本轮没有 commit、push 或部署。相关源码/测试修复已暂存；证据、清单和用户的 `scripts/seed-demo.sql`、`scripts/clear-demo.sql` 没有纳入提交。线上容器未重启、未替换、未执行写入型管理操作。
++
++## 3. 隔离与证据
++
++证据根目录：`server-test-evidence/20260824T005513Z/`，最终共 209 个证据文件，清单见 `evidence-index.txt`。
++
++隔离措施：
++
++- 测试 PostgreSQL：`stcontrol-acceptance-pg-20260824`，仅绑定 `127.0.0.1:55432`，使用可丢弃测试数据。
++- 生产 PostgreSQL `stcontrol-db-1` 未暴露宿主端口，测试套件未连接该库。
++- 生产 Controller 仅做 HTTPS、证书、日志、进程、镜像哈希和数据库健康的只读检查。
++- 跨仓测试先使用 `/root/Sillytarven-online` 的固定 SHA 建立基线；发现依赖/ESLint 问题后，在该仓库工作区加入未提交修复并完成回归，未 push、未部署。
++- 测试 DSN 和生成测试凭据没有写入本报告；秘密扫描报告使用 100% redaction。
++
++## 4. 总体结果矩阵
++
++| 类别 | 结果 | 核心结论 | 主要证据 |
++|---|---|---|---|
++| 仓库/构建/基础测试 | PASS（已执行部分） | Go/Web/adapter 测试、相关 ESLint 与镜像构建通过 | `go-1.26.7-static.log`、`web-test-upgraded.log`、`online-stcontrol-tests-after-eslint.log`、`online-stcontrol-eslint-fixed.log` |
++| PostgreSQL/迁移 | PASS（测试环境） | 最终 901 RUN、0 fail、0 skip，真实 pg_dump 通过 | `go-full-postgres-final-zero-skip.log` |
++| Linux/Race/覆盖率 | FAIL | Go 1.26.7 race 0；Linux 故障矩阵通过；覆盖率 67.1% < 80% | `go-race-postgres-final-go1267.log`、`linux-agent-filesystem.log`、`coverage-final-func.txt` |
++| TLS/控制通道 | FAIL | Origin 为 TLS 1.3；Nginx/Cloudflare 可协商 TLS 1.2 | `tls13-handshake.txt`、`tls12-rejection.txt`、`nginx-tls12-handshake.txt`、`public-edge-tls12.txt` |
++| 身份/浏览器 | BLOCKED | HTTP/身份自动化通过；无三浏览器、真实 OAuth 和响应式矩阵 | `go-full-postgres-final-zero-skip.log`、`web-test-final-upgraded.log` |
++| 快照/恢复/冲突 | PASS（自动化） | 原子发布、ENOSPC、大归档、恢复、冲突、data-fault 全绿 | `linux-agent-filesystem.log`、`go-full-postgres-final-zero-skip.log` |
++| 灾难/分区/恢复 | PARTIAL | 真实本机多进程恢复通过；无真实三服务器网络分区/NAT | `process-e2e-fresh-heartbeat-fix.log`、`go-full-postgres-final-zero-skip.log` |
++| 容量/性能 | PARTIAL FAIL | 10k 候选、1k 在线事实通过；1k 静态 HTTPS 通过；未做 1k 登录/心跳 | `go-full-postgres-final-zero-skip.log`、`ab-https-static-c1000-n10000.log` |
++| 安全/隐私 | FAIL | Controller 与 Web Critical/High 已清零；仍有 adapter Moderate、历史 secret、query 日志和缺少安全头 | `trivy-controller-go1267.log`、`govulncheck-go1267.log`、`online-npm-audit-production-secure.log`、`gitleaks-findings-safe.json` |
++| 长稳/升级 | BLOCKED | 未完成 72 小时 soak、三轮滚动重启和上一版本升级 | 无合格证据 |
++
++## 5. 已通过的测试
++
++### 5.1 源码、构建与单元测试
++
++最终结果：
++
++- `go mod verify`：PASS。
++- `go vet ./...`：PASS。
++- `go build ./...`：PASS。
++- `go test -short -count=1 ./...`：PASS。
++- Web `npm test`：4 个文件、25 个测试全部 PASS。
++- Web `npm run build`：PASS；Vite 生产产物成功生成。
++- Docker Compose `config --quiet`：PASS。
++- Controller 镜像从干净上下文构建：PASS。
++- 两仓库 `git fsck --no-dangling`：PASS。
++- 非 Markdown 源码冲突标记扫描：PASS。
++
++证据：
++
++- `go-final-static-short-go1267.log`
++- `web-test-final-upgraded.log`、`web-build-final-upgraded.log`、`web-audit-final.log`
++- `docker-compose-config-final.log`、`docker-build-final-secure.log`
++- `git-fsck.txt`、`conflict-marker-scan.txt`
++
++### 5.2 SillyTavern-online adapter
++
++指定六套 adapter 测试结果：**47 pass、0 fail、0 skip**。
++
++覆盖了 adapter 路由、Agent 签名认证、灾难登录、心跳、原生入口保护和 stcontrol 路由。跨仓 Go E2E 还分别调用了真实 adapter 和完整 SillyTavern server。
++
++证据：`online-stcontrol-tests-final-secure-deps.log`、`go-full-postgres-final-zero-skip.log`。
++
++相关 10 文件 ESLint 也已为 0 error；生产依赖 Critical/High 已清零，剩余 Moderate 见第 8 节。
++
++### 5.3 真实 PostgreSQL 全量测试
++
++最终命令使用 `-p 1 -count=1 -v ./...`，并设置独立 PostgreSQL DSN、真实 `pg_dump` 路径和固定 SillyTavern 根目录。
++
++最终日志统计：
++
++- `=== RUN` 事件 901 个。
++- 0 `FAIL`。
++- 0 `SKIP`。
++- 0 panic。
++- 0 race marker。
++- 退出码 0。
++
++关键实测：
++
++- 迁移从 0001 到最新版本连续应用。
++- 真实 `pg_dump` 灾备与 master-key 恢复演练通过。
++- 并发 writer lease、handoff 单次消费、Controller generation fence 通过。
++- HTTP 管理员、Agent、OAuth、注册、账号导入、密码/OAuth 收敛通过。
++- snapshot、restore、conflict、replica cleanup/integrity、retirement、data-fault 状态机通过。
++- 10,000 个导入候选持久建立并分页，无遗漏；最终一轮耗时约 44.73 秒。
++- 1,000 在线事实下容量拒绝路径通过。
++
++证据：`go-full-postgres-final-zero-skip.log`。
++
++### 5.4 Race、Linux 文件系统与真实进程
++
++`go test -race -p 1 -count=1 ./...`：所有包 PASS，0 race report，退出码 0。
++
++Race 下主要包耗时：
++
++- Agent：253.194 秒。
++- Controller：199.309 秒。
++- Store：69.646 秒。
++
++Linux/进程矩阵通过：
++
++- `RENAME_EXCHANGE` 三个崩溃边界均恢复。
++- 真实内核 `ENOSPC` 传播通过。
++- 大归档发布没有 partial replica。
++- source/target Agent 进程崩溃后恢复。
++- Controller 与 SillyTavern 进程重启后恢复。
++- Controller–双 Agent–双 SillyTavern 灾难链路最终耗时 214.07 秒并通过。
++- 完整 SillyTavern 冷启动 + CSRF E2E 最终耗时 10.64 秒并通过；独立最终复验为 13.28 秒。
++
++证据：`go-race-postgres-final-go1267.log`、`linux-agent-filesystem.log`、`process-e2e-fresh-heartbeat-fix.log`、`go-full-postgres-final-zero-skip.log`。
++
++### 5.5 TLS、权限与端口中已通过的部分
++
++- Controller origin `127.0.0.1:8443` 成功协商 TLS 1.3：`TLS_AES_128_GCM_SHA256`。
++- Controller origin 明确拒绝 TLS 1.2。
++- 直接连接 origin 使用系统默认 CA 时校验失败，符合 Cloudflare Origin CA 不应直接被公网客户端信任的模型。
++- 证书 SAN 为 `*.pixcora.com`、`pixcora.com`，有效期 2025-11-12 至 2040-11-08。
++- `controller.docker.yaml`、TLS 私钥和 `.env` 权限为 0600；证书为 0644。
++- Controller 和测试 PostgreSQL 均只绑定 loopback；生产 PostgreSQL 未发布宿主端口。
++- 当前监听端口为 SSH 22、Nginx 80/443、loopback Controller 8443、loopback 测试 PostgreSQL 55432，没有额外 Agent 数据面暴露。
++
++证据：`tls13-handshake.txt`、`tls12-rejection.txt`、`controller-certificate.txt`、`local-sensitive-permissions.txt`、`host-time-ports-containers.txt`。
++
++### 5.6 部分负载基线
++
++对 loopback Controller 静态 HTTPS 首页执行 1,000 并发、10,000 请求：
++
++- TLS 1.3。
++- 10,000 complete，0 failed。
++- 5,766.02 requests/s。
++- P50 70 ms，P90 561 ms，P95 1,027 ms，P99 1,146 ms，max 1,298 ms。
++- Controller 内存从约 18.34 MiB 上升到 65.7 MiB；进程继续正常服务。
++
++证据：`ab-https-static-c1000-n10000.log`、`load-static-before.txt`、`load-static-after.txt`。
++
++该结果只证明静态 TLS 入口的部分承压能力，**不能替代**清单要求的 1,000 并发登录/心跳、数据库事务成功率、分布式来源 IP 和控制/数据面隔离压测。
++
++## 6. 本轮发现并已修复的问题
++
++以下改动已在工作区暂存，但尚未 commit/push/deploy。
++
++### F-01 SERIALIZABLE 事务竞争导致登录交接 500
++
++现象：首轮真实进程 E2E 在心跳并发时，登录交接约 195 秒后返回 HTTP 500“登录交接创建失败”。
++
++根因：`CreateLoginHandoff` 的 SERIALIZABLE 事务与心跳/租约更新竞争，PostgreSQL `40001` 没有重试。
++
++修复：新增统一 `retrySerializable`，只对 PostgreSQL `40001` 和 `40P01` 做最多 5 次、有 context 取消约束的整事务重试；应用到登录交接、活动租约获取和 snapshot workflow progress。
++
++验证：事务重试单测全部通过；真实进程 E2E 连续多轮越过原失败点并最终 PASS。
++
++涉及文件：
++
++- `internal/store/transaction_retry.go`
++- `internal/store/transaction_retry_test.go`
++- `internal/store/handoffs.go`
++- `internal/store/leases.go`
++- `internal/store/snapshots.go`
++
++### F-02 灾难写入事实已入库但用户没有冻结
++
++现象：Controller 恢复后，独立写入 reconciliation 已为 `conflict`，但 global/legacy identity、lease、protection 和 `replica_conflicts` 仍未冻结。
++
++根因：安全保护投影也是 SERIALIZABLE 事务，竞争错误没有重试；`runNodeMaintenance` 还把最终错误静默丢弃。
++
++修复：为整笔 `ReconcileProtectionStates` 增加同一有界重试，并在非 shutdown 错误时记录日志。
++
++验证：聚焦真实进程 E2E 218.54 秒 PASS；最终全量中同一路径 214.59 秒 PASS，确认 identity/lease/protection/conflict 全部持久冻结且控制面保持 fail-closed。
++
++涉及文件：`internal/store/protection.go`、`internal/controller/agent.go`。
++
++### F-03 生产 `ListUsers` 查询持续报 ambiguous column
++
++现象：生产 PostgreSQL 日志最近 10 分钟统计到 20 次 `column reference "status" is ambiguous`；历史日志反复出现同一错误。
++
++根因：`users u LEFT JOIN global_users gu` 后，`status`、`created_at` 等列未使用 `u.` 限定。
++
++修复：将所有 legacy user 投影列明确限定为 `u.auth_provider`、`u.oauth_id`、`u.avatar_url`、`u.email`、`u.home_node_id`、`u.status`、`u.created_at`。
++
++验证：新增真实 PostgreSQL 子测试 `legacy admin user list qualifies joined columns`；聚焦回归和最终全量均 PASS。
++
++涉及文件：`internal/store/users.go`、`internal/store/postgres_integration_test.go`。
++
++注意：线上仍运行旧镜像，此错误只有在安全升级并部署新镜像后才会停止。部署后必须确认连续 10 分钟该错误计数为 0。
++
++### F-04 完整 SillyTavern 冷启动 30 秒误判失败
++
++现象：首次启动会生成缩略图并编译前端，实际约 30–31 秒；原 30 秒 readiness deadline 偶发超时。
++
++修复：把冷启动 readiness 上限改为有界 90 秒，不改变请求级超时和业务断言。
++
++验证：聚焦用例、覆盖率轮次和最终全量均通过；稳定安全依赖后的冷启动耗时 10.64–13.28 秒。
++
++### F-05 AI 脱敏测试随机误报
++
++现象：测试搜索任意两字符子串 `fp`，随机伪匿名引用偶尔包含该组合，导致假失败。
++
++修复：改为检查敏感 JSON key `compatibility_fingerprint` 和精确 JSON 值 `"fp"`，仍保留真实泄露断言。
++
++验证：单测 `-count=20` 和最终全量通过。
++
++### F-06 helper 入口造成验收日志 SKIP
++
++现象：两个只供子进程调用的 helper 测试在正常进程中 `t.Skip`，违反清单 0 skip。
++
++修复：非 helper 环境直接返回 PASS；真正崩溃矩阵仍由父测试设置环境并调用。
++
++验证：最终全量和 race 均 0 skip，父崩溃矩阵正常执行。
++
++### F-07 Admin API 空列表导致 React 空态崩溃风险
++
++修复：Store 空列表统一验证为 JSON `[]`；前端用 `listOrEmpty` 规范化 nodes、links、users、backups、alerts、admins 的 nullish 响应，并增加测试。
++
++验证：Web 25/25 PASS，生产构建 PASS，Go Store 测试 PASS。
++
++### F-08 `/api/auth` 中间件范围过宽
++
++修复：全局 API rate limit 保留在 auth subtree；登录限流/用户名锁定仅挂载到 register、user login、admin login，避免 registration status/OAuth 等非凭据入口被错误套用登录锁定。
++
++验证：Controller HTTP、rate limit、OAuth、注册与最终全量测试通过。
++
++### F-09 容器暴露和构建上下文
++
++修复：Compose Controller 端口改为 `127.0.0.1:8443:8443`；新增 `.dockerignore`，排除 `.env`、私钥/证书、生产配置、Git、node_modules、dump 和 coverage，避免把秘密或大文件送入构建上下文。
++
++验证：Compose config PASS；干净镜像构建 PASS；实际端口为 loopback。
++
++### F-10 多进程重启后的 readiness 假阳性
++
++现象：重启两台真实 Agent 后，测试只检查数据库里上一次 heartbeat 留下的 `online/compatible` 状态，可能在新进程尚未发送 heartbeat 时提前继续；紧接着注册会被正确处于恢复对账状态的 Controller 以 503 fail-closed 拒绝。
++
++修复：`waitForProcessE2ENodeReady` 增加可选 `seenAfter` 边界；每次启动/重启 Agent 前记录 UTC 时间，只有 `nodes.last_seen_at` 严格晚于该启动时间，且节点 active/compatible、adapter telemetry 和全局 control-plane readiness 同时满足，才允许继续。
++
++验证：精确多进程长测在修复后 214.60 秒通过；最终全量回归再次执行此路径。
++
++### F-11 SMTP STARTTLS 绕过证书校验
++
++现象：`src/email-service.js` 对 587/STARTTLS 显式设置 `rejectUnauthorized: false`，并配置过时的 `SSLv3` cipher 字符串；攻击者可利用错误/伪造证书进行中间人攻击。
++
++修复：删除 `SSLv3` cipher 配置，把最低版本固定为 TLS 1.2，并设置 `rejectUnauthorized: true`。私有 SMTP 若使用企业 CA，应把 CA 安装到 Node/容器 trust store，禁止以关闭校验作为兼容手段。
++
++验证：相关 ESLint 0 error；Nodemailer 9 `createTransport/sendMail` JSON transport API smoke 通过；完整 SillyTavern 冷启动复验 11.04 秒通过。
++
++## 7. 未通过：覆盖率门禁
++
++清单原命令 `-coverpkg=./... -covermode=atomic` 最终结果：**67.1% statements**，低于 80% 目标 12.9 个百分点。
++
++辅助的逐包自身覆盖率：
++
++| 包 | 覆盖率 |
++|---|---:|
++| `internal/agent` | 72.1% |
++| `internal/controller` | 63.8% |
++| `internal/store` | 63.2% |
++| `internal/ai` | 55.5% |
++| `internal/config` | 94.1% |
++| `internal/crypto` | 64.7% |
++| 全仓辅助口径 | 64.5% |
++
++优先补测区域：
++
++- Agent：heartbeat 主循环、adapter ownership HTTP handlers、controller backup handler、冲突证据传输、relay 拉取/恢复失败路径。
++- Controller：后台 scheduler/reconciler 的取消、重试、终态、日志和启动/关闭路径。
++- Store：conflict resolution、restore、snapshot、node retirement、relay、registration 的失败/回放/租约丢失分支。
++- AI：真实 provider HTTP 错误、超时、schema 拒绝、supervisor run loop。
++- `cmd/agent`、`cmd/controller` 的启动参数、配置失败、信号关闭和恢复命令。
++
++精确修复要求：
++
++1. 在 CI 固定执行清单原覆盖率命令。
++2. 从 `coverage-final-func.txt` 的 0% 和低于 60% 状态机开始补“有断言”的测试。
++3. 加入门禁脚本读取 `go tool cover -func` 的 `total`；低于 80 时 CI 非零退出。
++4. 达到 80 后再次执行 full PostgreSQL、race、Linux 进程矩阵，不能只执行新增单测。
++
++证据：`go-coverage-final.log`、`coverage-final.out`、`coverage-final-func.txt`。
++
++## 8. 未通过：依赖与镜像安全
++
++### S-01 Controller 镜像漏洞（源码候选已关闭，线上未部署）
++
++原始候选为 Alpine 3.20.10 + Go 1.22.12，Trivy 发现 1 Critical、33 High，`govulncheck` 还发现调用链可达的 `GO-2026-5970`。本轮已完成并验证以下修改：
++
++1. `go.mod` 提升到 Go 1.26，并固定 `toolchain go1.26.7`。
++2. `golang.org/x/crypto` 从 v0.31.0 升到 v0.55.0、`x/sys` 从 v0.28.0 升到 v0.47.0、`x/text` 从 v0.21.0 升到 v0.41.0。
++3. 构建层固定为 Go 1.26.7/Alpine 3.24 与 Node 24/Alpine 3.24 的 digest；运行层固定 Alpine 3.24.1 digest。
++4. 新候选无缓存构建成功；`go mod verify`、vet、build、short 均通过。
++5. `govulncheck ./...`：**0 个业务可达漏洞**（另有 2 个包级/2 个模块级 finding，但业务没有调用）。
++6. Trivy `--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1`：Alpine 层 **0**，Go binary **0**，命令退出 0。
++
++结论：源码/候选镜像的 S-01 关闭。线上容器仍运行旧二进制，因此部署前必须重新从当前锁定源码构建、扫描并核对 digest，不能把本地 tag 当作线上已修复。
++
++证据：`go-final-static-short-go1267.log`、`docker-build-final-secure.log`、`govulncheck-final.log`、`trivy-controller-final.log`、`controller-final.cdx.json`。
++
++### S-02 Web 依赖漏洞（已关闭）
++
++原结果为全依赖 8 个（1 Critical、2 High、5 Moderate），生产依赖 2 个 Moderate。已升级 `react-router-dom` 7.18.2、Vite 8.2.2、Vitest 4.1.11、`@vitejs/plugin-react` 6.1.0，并更新 lockfile；随后 npm 自动把残余 `nanoid` 更新到安全版本。
++
++复验结果：`npm audit` **0 vulnerabilities**；Vitest 4 个文件/25 项通过；TypeScript + Vite 8 生产构建通过。三浏览器 E2E 仍属于第 10 节的环境阻断项，但依赖漏洞门禁已关闭。
++
++证据：`web-audit-zero.log`、`web-test-upgraded.log`、`web-build-upgraded.log`。
++
++### S-03 SillyTavern-online 生产依赖漏洞（Critical/High 已关闭，Moderate 未清零）
++
++原结果为 56 个漏洞（4 Critical、16 High、35 Moderate、1 Low）。先执行非强制安全更新，再显式升级 Nodemailer 9.0.5、Vectra 0.12.3，并把 lodash 固定/override 到 4.18.1。由于 `sillytavern-transformers` 2.14.6 固定依赖有 Critical 的 ONNX 链，而上游 2.17.2 被 npm 官方标记为 broken，本轮保留可工作的 2.14.6 API，并受控 override 到首个不在受影响范围且仍兼容旧 Tensor API 的 `onnxruntime-web` 1.16.1、`protobufjs` 8.7.2。`onnxruntime-web` 同时列为显式直接依赖，避免 hoist 位置不确定。
++
++复验：
++
++- `npm audit --omit=dev --audit-level=high`：退出 0，**0 Critical、0 High、6 Moderate**。
++- ONNX/transformer import 与关键 API smoke：PASS；真实 `Xenova/all-MiniLM-L6-v2` 模型下载/加载/推理 PASS，输出 `[1,384]` 且数值有限。
++- 六套 stcontrol adapter：47 pass、0 fail、0 skip；Vectra 0.12.3 建索引/upsert/list/query 与 Nodemailer 9 发送 API smoke 均 PASS。
++- 完整 SillyTavern 冷启动 + CSRF 跨仓测试：PASS。
++
++剩余 6 个 Moderate 来自 Jimp/file-type/sillytavern-transformers 及 Showdown。Showdown 包含 XSS/ReDoS 且当前无上游修复，生产前应替换 Markdown renderer 或在可信 sanitizer 后做安全回归。真实文本 embedding 已证明新 ONNX/WASM 组合可运行；发布前仍应补齐图像、语音、错误模型和 WASM 多线程矩阵。
++
++证据：`online-npm-audit-production-secure-final.log`、`online-transformer-real-inference.log`、`online-vectra-nodemailer-api-smoke.log`、`online-stcontrol-tests-final-secure-deps.log`、`online-full-cold-start-after-email-tls.log`。
++
++## 9. 未通过：静态检查、秘密、TLS、日志和主机
++
++### S-04 adapter ESLint（本次范围已关闭）
++
++原始结果为四个生产改动文件 73 个 error；测试 lint 还因 ESM 仓库中的 CommonJS `.eslintrc.js` 退出 2。本轮删除重复/错误的 `.eslintrc.js`，保留 `.eslintrc.cjs`，为 Node test 增加 ES2021 环境和适用规则；机械修复格式后，人工删除 unused import，并用 block 包住 `switch case` 的 lexical declarations。
++
++最终对四个生产文件与六个 stcontrol 测试文件执行 ESLint：**0 error、退出 0**。格式修改后六套 adapter 测试仍为 47 pass。
++
++证据：`online-stcontrol-eslint-fixed.log`、`online-stcontrol-tests-after-eslint.log`。
++
++### S-05 Git 历史 secret 候选
++
++Gitleaks 扫描 114 个提交，发现 4 个候选：3 个测试 fixture，1 个历史 `run-live-controller.bat`。
++
++bat 候选：变量名为 `CONTROLLER_SECRET_KEY`，值长 44，无 placeholder 标记。安全的等值比较确认：
++
++- 不等于当前运行 Controller secret。
++- 不等于当前 `.env` secret。
++- 当前 `.env` 与运行容器一致，且文件权限 0600。
++
++仍必须按泄露处置：
++
++1. 立即确认并轮换所有曾使用历史值的 Controller、备份、见证或恢复环境。
++2. 将 bat 改为只从环境或 0600 文件读取，不再含任何默认 secret。
++3. 使用 `git filter-repo --replace-text` 或等价工具清理历史；先备份、通知所有协作者，再协调 force-push 和所有 clone 重新同步。
++4. 三个测试 fixture 用明确的非秘密生成器或带注释固定 fixture，并只对精确 fingerprint 做 allowlist。
++5. 清理后重新扫描完整历史，要求 0 未处置 finding。
++
++证据：`gitleaks-findings-safe.json`、`gitleaks-candidate-classification.txt`、`controller-secret-equality-only.txt`。原始报告已 100% redacted。
++
++### S-06 TLS 1.2 与缺失安全响应头
++
++实际结果：
++
++- Controller origin 8443：TLS 1.3 成功，TLS 1.2 被拒绝。
++- Nginx 443：TLS 1.2 和 TLS 1.3 都成功。
++- Cloudflare 公网边缘：TLS 1.2 和 TLS 1.3 都成功。
++- 首页响应没有观察到 HSTS、CSP、`Referrer-Policy`、`X-Content-Type-Options`、frame/permissions policy。
++
++修复：
++
++1. Nginx 改为 `ssl_protocols TLSv1.3;`，执行 `nginx -t` 后平滑 reload。
++2. Cloudflare 将 Minimum TLS Version 设置为 1.3，并关闭兼容 TLS 1.2 的策略。
++3. 在 Nginx 或应用统一增加并验证：HSTS、CSP、`Referrer-Policy: no-referrer`、`X-Content-Type-Options: nosniff`、frame deny、最小 Permissions-Policy。CSP 必须按实际 Vite 资源调试，不能用 `unsafe-inline` 草率绕过。
++4. 重跑正确证书、错 hostname、过期、未知 CA、TLS 1.2 拒绝、TLS 1.3 成功矩阵。
++
++证据：`nginx-tls12-handshake.txt`、`nginx-tls13-handshake.txt`、`public-edge-tls12.txt`、`public-edge-tls13.txt`、`nginx-public-headers.txt`、`public-edge-headers.txt`。
++
++### S-07 Nginx query 日志
++
++18,512 条 Nginx access log 中有 887 条带 query；没有使用 redacted query 格式。参数名统计出现 `username` 和 `psd` 各 15 次。即使它们来自恶意扫描流量，也证明 access log 会原样落 query 值。
++
++修复：
++
++1. 自定义 `log_format`，请求目标只记录 `$uri`，不要记录 `$request` 或 `$request_uri`；需要业务诊断的非敏感参数应由应用显式、白名单化、脱敏记录。
++2. reload 后用生成的非秘密 marker 验证 access log 中没有 query 值。
++3. 将现有日志视为可能含敏感参数，限制权限、缩短保留期并按安全流程轮换/销毁；不要把原日志上传到普通 CI artifact。
++4. Controller 自身已把 200 条敏感 query 显示为 `redacted`，应保持该行为。
++
++证据：`nginx-log-config.txt`、`nginx-log-sensitive-summary.txt`、`nginx-query-key-counts.txt`、`stcontrol-controller-1-log-sensitive-summary.txt`。
++
++### S-08 系统时钟未同步
++
++`timedatectl`：`System clock synchronized: no`、`NTP service: n/a`；RTC 与 UTC 观察值约差 7 秒。清单要求节点误差小于 2 秒。
++
++修复：安装并启用 chrony 或 systemd-timesyncd，配置至少 3 个可靠时间源；等待 `tracking`/`timedatectl` 确认 synchronized，再在所有 Controller、Agent、数据库节点记录最大 offset < 2 秒。
++
++证据：`host-time-ports-containers.txt`。
++
++## 10. 未完成/被环境阻断的清单项
++
++以下项目不能由当前“单服务器 + 一个生产 Controller + 一个生产 PostgreSQL + 本机临时进程”的环境证明，不能标记为 PASS：
++
++1. 三台独立 compute Agent、pure-storage Agent、独立主动/被动 Controller 的真实网络拓扑。
++2. NAT、跨主机证书 hostname、错 CA/过期证书和 Agent 数据面的真实握手矩阵。
++3. 使用 `tc` 注入延迟、丢包、乱序、抖动后的 managed/independent 稳定性。
++4. 三节点见证仲裁、owner Agent 整机丢失、A/B 真实网络分叉、被动双主竞争。
++5. 1,000 个带独立来源和会话的并发登录/心跳；当前只有静态入口和数据库容量测试。
++6. 大文件限速占满数据面时，heartbeat、login、admin API、command ACK 的并行延迟图表。
++7. LinuxDo/Discord 的真实 provider、guild、双浏览器 state 绑定测试。
++8. Chromium、Firefox、WebKit 的登录/注册/账号/管理/恢复/冲突全链路，320–1440 px 响应式截图、HAR、console。
++9. 72 小时 soak、每角色三轮滚动重启、PostgreSQL 重启/切换、上一发布版本顺序升级。
++
++补测环境至少应包含：1 主 Controller、1 被动 Controller、3 compute Agent、1 pure-storage Agent、独立 PostgreSQL 测试实例、可控网络故障注入机、浏览器执行机和指标采集。所有数据必须为生成数据。
++
++## 11. 发布前精确修复顺序
++
++### P0：修复后才能继续验收
++
++1. 处置 Git 历史 Controller secret：先轮换，再清历史，再重新扫描。
++2. 将严格全仓覆盖率从 67.1% 提升到至少 80%。
++3. 修复 Nginx query 日志，安全处理既有日志。
++4. 处置 SillyTavern-online 剩余 6 个 Moderate，尤其是无上游修复的 Showdown XSS；并补真实 ONNX 模型推理兼容测试。
++5. 仅部署从当前 Go 1.26.7/Alpine 3.24.1 锁定配置重建且扫描为 0 Critical/High 的候选；线上旧容器不视为已修复。
++
++已关闭：Controller 原 1 Critical/33 High、可达 govulncheck finding、Web 8 个漏洞、adapter 原 4 Critical/16 High 和本次 adapter ESLint error。
++
++### P1：在候选发布环境关闭
++
++1. Nginx 与 Cloudflare 只允许 TLS 1.3，增加安全响应头。
++2. 启用时间同步并证明所有节点 offset < 2 秒。
++3. 在安全的新候选镜像中包含 F-01～F-11 修复；部署后确认 production SQL ambiguous error 为 0。
++4. 生成 SBOM，保存镜像 digest、Go build info、npm lockfile 和扫描数据库时间。
++
++### P1：补齐验收证据
++
++1. 完成真实多节点灾难/分区/NAT/双主测试。
++2. 完成 1,000 并发登录/心跳和控制/数据面隔离压测，记录 P50/P95/P99、错误率和系统曲线。
++3. 完成 Chromium/Firefox/WebKit 和响应式矩阵。
++4. 完成 72 小时 soak、滚动重启、数据库切换和上一版本升级。
++
++### 全量复验命令
++
++修复后至少重新执行：
++
++```bash
++go mod verify
++go vet ./...
++go build ./...
++go test -short -count=1 ./...
++
++STCONTROL_TEST_POSTGRES_DSN='REDACTED' \
++STCONTROL_TEST_PG_BIN="$(command -v pg_dump)" \
++STCONTROL_TEST_TAVERN_ROOT='/path/to/fixed/Sillytarven-online' \
++go test -p 1 -count=1 -v ./...
++
++go test -p 1 -race -count=1 ./...
++go test -p 1 -count=1 -coverpkg=./... -covermode=atomic \
++  -coverprofile=coverage.out ./...
++go tool cover -func=coverage.out
++
++govulncheck ./...
++trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed IMAGE
++npm audit --omit=dev
++```
++
++然后执行第 10 节的真实拓扑、性能、浏览器和长稳测试。任何一项 skip、blocked、Critical/High、覆盖率低于 80 或证据缺失，都不得签署发布。
++
++## 12. 线上状态与部署注意事项
++
++运行中 Controller 二进制 SHA256：`2ae9ca4d...b2ce28`。
++
++最终验收镜像 ID：`sha256:c81469658bbe630dd9dc79b26849f24b2e28b1f4a5e8ea81fec8fc1280d1c807`。
++
++最终验收镜像 Controller 二进制 SHA256：`b9a3e73d1fd9b6a5abcff6352830637495e99f513688680d7cf1332665430664`。
++
++两者不同，说明线上仍为旧版本。线上镜像 ID 与验收镜像 ID 也不同。当前生产资源占用较低，PostgreSQL 17.10 可连接，未发现数据库 deadlock；但运行日志中的 `ListUsers` ambiguous SQL 会持续发生，且线上没有本轮事务安全修复。
++
++在 P0/P1 关闭前不要部署。关闭后应采用：
++
++1. 先备份并验证 PostgreSQL 恢复与 master-key recovery。
++2. 构建固定 digest、扫描通过的新镜像。
++3. 在隔离 staging 完整复验。
++4. 以滚动/可回退方式部署，先 Controller 后按 generation fence 轮换 Agent 凭据。
++5. 观察 SQL error、保护投影错误、heartbeat、command queue、内存/FD 和告警至少一个完整业务周期。
++6. 只有新产物 digest、迁移版本、运行二进制 build info 和测试报告全部一致时才关闭升级项。
++
++证据：`controller-artifact-comparison.txt`、`docker-stats.txt`、`production-postgres-readonly-health.txt`、`postgres-recent-error-counts.txt`。
++
++## 13. 最终签署
++
++最终结论：**FAIL / NOT PRODUCTION READY**
++
++测试负责人：Codex 自动化验收（未代替人工签字）
++
++发布负责人：待 P0/P1 全部关闭、完整复验后签字

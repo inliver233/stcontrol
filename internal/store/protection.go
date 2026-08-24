@@ -88,6 +88,20 @@ func (s *Store) ReconcileProtectionStates(
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	var result ProtectionReconcileResult
+	err := retrySerializable(ctx, func() error {
+		var reconcileErr error
+		result, reconcileErr = s.reconcileProtectionStatesOnce(ctx, now, unprotectedGrace)
+		return reconcileErr
+	})
+	return result, err
+}
+
+func (s *Store) reconcileProtectionStatesOnce(
+	ctx context.Context,
+	now time.Time,
+	unprotectedGrace time.Duration,
+) (ProtectionReconcileResult, error) {
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return ProtectionReconcileResult{}, fmt.Errorf("begin user protection reconciliation: %w", err)

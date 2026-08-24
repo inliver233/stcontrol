@@ -1,0 +1,2 @@
+Go coverage gate failed: 72.4% < 80.0%
+covered=12855 total=17756 missing=4901 needed_for_80=1350 percent=72.398063

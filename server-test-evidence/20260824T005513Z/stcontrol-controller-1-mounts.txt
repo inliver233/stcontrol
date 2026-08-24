@@ -1,0 +1,3 @@
+/root/stcontrol/controller.docker.yaml  ->  /app/controller.yaml  ( ro )
+/root/stcontrol/certs  ->  /run/stcontrol-tls  ( ro )
+

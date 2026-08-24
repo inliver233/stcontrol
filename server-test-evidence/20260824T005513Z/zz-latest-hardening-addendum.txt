@@ -1,0 +1,64 @@
+stcontrol latest hardening addendum
+Date: 2026-08-24 Asia/Shanghai
+
+Changes exercised in this addendum (not committed, pushed, deployed, or restarted):
+- Real PostgreSQL controller-backup list regression found and fixed the `node.idWHERE` SQL concatenation defect.
+- Real PostgreSQL conflict flow now covers summary, paginated differences, status, injected durable failure,
+  authenticated retry, capability rotation, restart, and final publish.
+- Conflict retry found and fixed ambiguous `attempt=attempt+1`; it is now `transfer.attempt+1`.
+- Actual Controller Run was exercised with control-only and control+relay listeners, readiness, authorization
+  rejection, worker startup, cancellation, and clean shutdown.
+- Agent conflict evidence direct transfer, ownership HTTP, adapter response validation, runtime-state retention,
+  disk activity scanning, and both command main entrypoints received assertion-bearing tests.
+- Serializable retry now uses eight context-aware attempts with bounded exponential delay (25 ms to 750 ms).
+- AI ticker test now waits for durable enqueue before cancellation.
+
+Focused verification results:
+- Controller dual-listener lifecycle against real PostgreSQL: PASS.
+- Controller Admin HTTP against real PostgreSQL: PASS.
+- Store controller-backup empty/filter/cursor listing against real PostgreSQL: PASS.
+- Conflict evidence + injected failure + retry + final publish against real PostgreSQL: PASS (6.86 s).
+- AI ticker cancellation/persistence: PASS 30/30; focused race PASS.
+- Serializable retry tests: PASS; focused race PASS.
+- Agent runtime/disk/adapter focused race: PASS.
+- go vet ./...: PASS.
+- go build ./...: PASS.
+
+Important negative evidence:
+- Incremental same-source coverage-profile union estimate: 72.4%, below required 80%.
+- A deterministic serialized strict all-package run exposed two failures: a persistent PostgreSQL serialization
+  collision in the process disaster-recovery path and an AI test cancellation race.
+- The AI race was fixed and passed 30/30.
+- A short database retry delay remained insufficient: the isolated real process test failed once more.
+- After extending retry to eight bounded attempts, the unchanged real Controller + two Agent + two
+  SillyTavern recovery test passed in 215.80 s with its original 60 s final-convergence deadline.
+- Because the two fixes landed after the latest all-package strict run, there is not yet a post-fix single-run
+  0-fail coverage profile. Release status therefore remains FAIL / NOT PRODUCTION READY.
+
+Post-fix authoritative rerun:
+- The serialized strict all-package run was repeated after both fixes with real PostgreSQL, real pg_dump,
+  the fixed SillyTavern checkout, `-count=1`, atomic coverage, and `-coverpkg=./...`.
+- Every package passed: Agent 233.039 s, Controller 103.658 s, Store 88.266 s.
+- Command exit: 0.
+- Exact de-duplicated coverage: 12,855 / 17,756 statements = 72.398063% (reported as 72.4%).
+- The 80.0% gate correctly exited 1; 1,350 additional statements must be executed to reach 80%.
+- Release status remains FAIL / NOT PRODUCTION READY solely on this dimension plus the previously recorded
+  production-edge, secret-response, real-topology/load/browser/soak/upgrade, and deployment blockers.
+
+Final server-branch verification round:
+- Added assertion-bearing HTTP/state tests for OAuth pending enrollment, admin password-identity recovery,
+  immutable hot-standby node projection, encrypted-relay failure handling, Controller/Agent main lifecycle,
+  workflow cancellation propagation, and fixed Agent command failure codes.
+- The identity-recovery HTTP test found a real PostgreSQL failure: jsonb_build_object could not infer the
+  parameter types used only through its variadic `any` arguments. The audit insert now casts password_version
+  and staged_node_count to bigint, and create/replay/conflicting-replay all pass against PostgreSQL.
+- The 1 ms AI ticker test could enqueue more than once in its in-memory Store before cancellation because the
+  fake did not reproduce the database dedup constraint. The test now blocks a second build until cancellation;
+  production Supervisor behavior is unchanged. It passed 30/30 and 5/5 under race.
+- A new pipefail-enabled authoritative all-package run passed every package: Agent 235.956 s,
+  Controller 107.898 s, Store 84.241 s; command exit 0.
+- Exact de-duplicated coverage is now 13,263 / 17,756 statements = 74.695877% (reported as 74.7%).
+  The 80.0% gate correctly exits 1; 942 additional statements remain required.
+- Full short-mode race, targeted real-PostgreSQL Controller race, Controller main lifecycle race, go vet,
+  go build, Web 25/25 tests, Web production build, npm production audit (0 vulnerabilities), and Compose
+  validation all pass.

@@ -296,21 +296,19 @@ func TestControllerUserDataFaultReleaseRetriesAfterNodeAndWorkerRestart(t *testi
 	}
 	first := New(config.DefaultController(), st, secretKey)
 	first.reconcileUserDataFaults(ctx)
-	deadline := time.Now().Add(5 * time.Second)
 	var current *store.UserDataFaultStatus
 	var err error
+	firstAttemptDeadline := time.Now().Add(5 * time.Second)
 	for {
 		current, err = st.GetUserDataFaultByID(ctx, fault.ID)
-		if err == nil && current != nil && current.ReleaseState == "retry_wait" {
+		if err == nil && current != nil && current.ReleaseState == "retry_wait" &&
+			current.ReleaseErrorCode == "agent_unavailable" && current.ReleaseAttempt == 1 {
 			break
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(firstAttemptDeadline) {
 			t.Fatalf("first unavailable release attempt=%+v err=%v", current, err)
 		}
 		time.Sleep(10 * time.Millisecond)
-	}
-	if current.ReleaseErrorCode != "agent_unavailable" || current.ReleaseAttempt != 1 {
-		t.Fatalf("first unavailable release attempt=%+v", current)
 	}
 	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET connectivity_state='online' WHERE id=$1`, node.ID); err != nil {
 		t.Fatalf("restore release node: %v", err)
@@ -344,13 +342,13 @@ func TestControllerUserDataFaultReleaseRetriesAfterNodeAndWorkerRestart(t *testi
 	t.Cleanup(harness.stop)
 	restarted := New(config.DefaultController(), st, secretKey)
 	restarted.reconcileUserDataFaults(ctx)
-	deadline = time.Now().Add(5 * time.Second)
+	releaseDeadline := time.Now().Add(5 * time.Second)
 	for {
 		current, err = st.GetUserDataFaultByID(ctx, fault.ID)
 		if err == nil && current != nil && current.ReleaseState == "released" && current.ReleaseReleasedAt != nil {
 			break
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(releaseDeadline) {
 			t.Fatalf("restarted release did not converge: fault=%+v err=%v", current, err)
 		}
 		time.Sleep(10 * time.Millisecond)

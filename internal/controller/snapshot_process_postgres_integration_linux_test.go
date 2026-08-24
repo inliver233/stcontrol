@@ -35,7 +35,9 @@ const snapshotAgentProcessHelperEnv = "STCONTROL_SNAPSHOT_AGENT_PROCESS_HELPER"
 // fields used by cmd/agent; no command or data-plane behavior is replaced.
 func TestSnapshotAgentProcessHelper(t *testing.T) {
 	if os.Getenv(snapshotAgentProcessHelperEnv) != "1" {
-		t.Skip("snapshot Agent process helper")
+		// This is a subprocess entry point, not an acceptance case of its own.
+		// The parent process-crash test invokes it with the helper environment.
+		return
 	}
 	nodeID, err := strconv.ParseInt(os.Getenv("STCONTROL_HELPER_NODE_ID"), 10, 64)
 	if err != nil || nodeID <= 0 {

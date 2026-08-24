@@ -1,0 +1,81 @@
+web-npm-audit.json
+{
+  "metadata": {
+    "info": 0,
+    "low": 0,
+    "moderate": 5,
+    "high": 2,
+    "critical": 1,
+    "total": 8
+  },
+  "vulnerabilities": [
+    {
+      "package": "vitest",
+      "severity": "critical",
+      "isDirect": true,
+      "fixAvailable": {
+        "name": "vitest",
+        "version": "4.1.11",
+        "isSemVerMajor": true
+      }
+    },
+    {
+      "package": "nanoid",
+      "severity": "high",
+      "isDirect": false,
+      "fixAvailable": true
+    },
+    {
+      "package": "vite",
+      "severity": "high",
+      "isDirect": true,
+      "fixAvailable": {
+        "name": "vite",
+        "version": "8.2.2",
+        "isSemVerMajor": true
+      }
+    },
+    {
+      "package": "@vitest/mocker",
+      "severity": "moderate",
+      "isDirect": false,
+      "fixAvailable": {
+        "name": "vitest",
+        "version": "4.1.11",
+        "isSemVerMajor": true
+      }
+    },
+    {
+      "package": "esbuild",
+      "severity": "moderate",
+      "isDirect": false,
+      "fixAvailable": {
+        "name": "vite",
+        "version": "8.2.2",
+        "isSemVerMajor": true
+      }
+    },
+    {
+      "package": "react-router",
+      "severity": "moderate",
+      "isDirect": false,
+      "fixAvailable": true
+    },
+    {
+      "package": "react-router-dom",
+      "severity": "moderate",
+      "isDirect": true,
+      "fixAvailable": true
+    },
+    {
+      "package": "vite-node",
+      "severity": "moderate",
+      "isDirect": false,
+      "fixAvailable": {
+        "name": "vitest",
+        "version": "4.1.11",
+        "isSemVerMajor": true
+      }
+    }
+  ]
+}

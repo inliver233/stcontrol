@@ -280,3 +280,71 @@ func TestPersistedOwnershipTakeoverRejectsAuditedButUncommittedState(t *testing.
 		t.Fatalf("tampered takeover state error=%v", err)
 	}
 }
+
+func TestAdapterOwnershipHandlersAuthenticateValidateAndFenceMode(t *testing.T) {
+	controller := httptest.NewServer(http.NotFoundHandler())
+	defer controller.Close()
+	adapter := healthyOwnershipAdapter(t)
+	defer adapter.Close()
+	a := newOwnershipTestAgent(t, 61, t.TempDir(), controller.URL, adapter.URL)
+
+	request := httptest.NewRequest(http.MethodPost, adapterOwnershipResolveRoute, nil)
+	response := httptest.NewRecorder()
+	a.handleAdapterOwnershipResolve(response, request)
+	if response.Code != http.StatusBadRequest || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("missing-body response=%d headers=%v", response.Code, response.Header())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, adapterOwnershipResolveRoute, strings.NewReader(`{"handle":"alice"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.ContentLength = int64(len(`{"handle":"alice"}`))
+	response = httptest.NewRecorder()
+	a.handleAdapterOwnershipResolve(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unsigned response=%d body=%s", response.Code, response.Body.String())
+	}
+
+	doSigned := func(route string, payload any, handler http.HandlerFunc) *httptest.ResponseRecorder {
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, route, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		protocol.SignRequest(req, a.Cfg.NodeID, a.adapterPSK(), body)
+		result := httptest.NewRecorder()
+		handler(result, req)
+		return result
+	}
+
+	a.stateMu.Lock()
+	a.state.ControlMode.Mode = protocol.NodeModeManaged
+	a.stateMu.Unlock()
+	response = doSigned(adapterOwnershipResolveRoute, ownershipResolveRequest{Handle: "alice"}, a.handleAdapterOwnershipResolve)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "independent_mode_required") {
+		t.Fatalf("managed resolve=%d %s", response.Code, response.Body.String())
+	}
+	response = doSigned(adapterOwnershipTakeoverRoute, ownershipTakeoverRequest{
+		Handle: "alice", ParentClaimID: strings.Repeat("a", 64),
+		OperationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+	}, a.handleAdapterOwnershipTakeover)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "independent_mode_required") {
+		t.Fatalf("managed takeover=%d %s", response.Code, response.Body.String())
+	}
+
+	a.stateMu.Lock()
+	a.state.ControlMode.Mode = protocol.NodeModeIndependent
+	a.stateMu.Unlock()
+	response = doSigned(adapterOwnershipResolveRoute, ownershipResolveRequest{Handle: "Alice"}, a.handleAdapterOwnershipResolve)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid resolve=%d %s", response.Code, response.Body.String())
+	}
+	response = doSigned(adapterOwnershipTakeoverRoute, ownershipTakeoverRequest{Handle: "alice"}, a.handleAdapterOwnershipTakeover)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid takeover=%d %s", response.Code, response.Body.String())
+	}
+	response = doSigned(adapterOwnershipResolveRoute, ownershipResolveRequest{Handle: "alice"}, a.handleAdapterOwnershipResolve)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"decision":"unavailable"`) {
+		t.Fatalf("independent resolve=%d %s", response.Code, response.Body.String())
+	}
+}

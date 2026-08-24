@@ -1,0 +1,8 @@
+Evidence files containing sensitive-keyword candidates (filenames only):
+server-test-evidence/20260824T005513Z/nginx-log-sensitive-summary.txt
+server-test-evidence/20260824T005513Z/coverage-func.txt
+server-test-evidence/20260824T005513Z/stcontrol-controller-1-env-keys.txt
+server-test-evidence/20260824T005513Z/stcontrol-db-1-env-keys.txt
+server-test-evidence/20260824T005513Z/online-npm-audit.json
+server-test-evidence/20260824T005513Z/coverage.out
+server-test-evidence/20260824T005513Z/go-coverage.out

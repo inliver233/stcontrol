@@ -1,7 +1,15 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
-import { BackupJobRow, backupWorkflowStateLabel, StatusBadge } from './Admin'
+import { BackupJobRow, backupWorkflowStateLabel, listOrEmpty, StatusBadge } from './Admin'
+
+describe('admin list response normalization', () => {
+  it('turns nullish API lists into render-safe empty arrays', () => {
+    expect(listOrEmpty(null)).toEqual([])
+    expect(listOrEmpty(undefined)).toEqual([])
+    expect(listOrEmpty([{ id: 1 }])).toEqual([{ id: 1 }])
+  })
+})
 
 describe('backup workflow presentation', () => {
   it('labels every durable snapshot phase deterministically', () => {
@@ -118,4 +126,3 @@ describe('node composite status presentation', () => {
     expect(html).not.toContain('最后上报')
   })
 })
-

@@ -44,6 +44,12 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 	}
 	recoveryNode := insertIntegrationNode(t, stores[0], "controller-rebuild")
 
+	t.Run("legacy admin user list qualifies joined columns", func(t *testing.T) {
+		if _, err := stores[0].ListUsers(ctx); err != nil {
+			t.Fatalf("ListUsers with normalized identity join: %v", err)
+		}
+	})
+
 	t.Run("controller promotion only permits heartbeat recovery before credential rotation", func(t *testing.T) {
 		generation = assertPostgresControllerRebuild(t, stores[0], recoveryNode, generation)
 	})
@@ -60,6 +66,11 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 		deferredOnline := insertIntegrationNode(t, stores[0], "controller-rebuild-online")
 		deferredOffline := insertIntegrationNode(t, stores[0], "controller-rebuild-offline")
 		generation = assertPostgresDeferredControllerRebuild(t, stores[0], deferredOnline, deferredOffline, generation)
+		if _, err := stores[0].DB.ExecContext(ctx, `
+			UPDATE nodes SET status='online',connectivity_state='online',controller_generation=$3
+			WHERE id IN ($1,$2)`, deferredOnline, deferredOffline, generation); err != nil {
+			t.Fatalf("restore deferred controller-rebuild fixtures: %v", err)
+		}
 	})
 
 	// Create the general-purpose fixtures after the promotion scenarios so

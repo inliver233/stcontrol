@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -721,7 +722,9 @@ func (s *Server) runNodeMaintenance(ctx context.Context, timeout time.Duration) 
 	now := time.Now().UTC()
 	_ = s.Store.MarkStaleNodesOffline(ctx, timeout)
 	_, _ = s.Store.CleanupNodeMetricSamples(ctx, now.Add(-24*time.Hour))
-	_, _ = s.Store.ReconcileProtectionStates(ctx, now, s.protectionAlertGrace())
+	if _, err := s.Store.ReconcileProtectionStates(ctx, now, s.protectionAlertGrace()); err != nil && ctx.Err() == nil {
+		log.Printf("reconcile user protection states: %v", err)
+	}
 }
 
 // backupScheduler 扫描离线用户并触发备份（详见 backup.go 的完整实现）。

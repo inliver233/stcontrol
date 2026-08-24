@@ -1,0 +1,2 @@
+/root/stcontrol git_fsck_exit=0
+/root/Sillytarven-online git_fsck_exit=0

@@ -1,0 +1,40 @@
+stcontrol / SillyTavern-online final hardening round
+Date: 2026-08-24 Asia/Shanghai
+
+Repository changes verified (not committed, pushed, deployed, or restarted):
+- Controller security headers middleware covers success, error, and 404 responses.
+- Master-key archive recovery was split into a bounded, testable parser.
+- AI provider protocol, timeout, bounded-error, prompt, breaker, loop, and cancellation tests added.
+- Agent transfer, command validation, metrics, Tavern probing, and shutdown edge tests added.
+- Store ticket, user, replica, backup, deletion, and SQL error edge tests added.
+- A strict Go coverage gate script was added.
+- SillyTavern-online replaced the deprecated/broken transformer fork and vulnerable legacy Jimp chain with
+  @xenova/transformers 2.17.2, onnxruntime-web 1.16.1, and sharp 0.35.0; Node >=20.9 is required.
+- Showdown is integrity-locked to reviewed upstream commit d1a8d16344b855ea2f37677ee8a9e0cc2c597ea4.
+
+Verification results:
+- SillyTavern clean npm ci --ignore-scripts: PASS.
+- SillyTavern post-install: PASS.
+- Adapter plus dependency security tests: 53 pass, 0 fail, 0 skip.
+- Relevant SillyTavern ESLint: PASS, 0 errors.
+- Real MiniLM feature extraction: PASS, dimensions [1,384], all finite.
+- sharp 0.35 RGBA decode through application getRawImage: PASS, dimensions 2x3x4.
+- SillyTavern npm audit --omit=dev: 0 vulnerabilities.
+- Full SillyTavern cold-start Go cross-repository E2E: PASS (10.41s).
+- Go full PostgreSQL/pg_dump/Online strict coverage run: PASS for all packages after harness fix.
+- Strict total Go statement coverage: 69.3%; required 80.0%; coverage gate exits nonzero (FAIL).
+- Go race detector, all packages: PASS, no race report.
+- go vet ./...: PASS.
+- go build ./...: PASS.
+- Linux amd64 CGO-disabled cmd build: PASS.
+- git diff --check in both repositories: PASS.
+
+Race found and corrected in acceptance harness:
+- The relay harness exposed stored ciphertext before recording the causal transferring receipt, allowing the
+  target to race into verifying. Production Agent code already reports transferring before upload.
+- Harness order was aligned with production; the formerly failing lost-source-result subtest passed 10/10,
+  and the final full PostgreSQL run passed.
+
+Release decision remains FAIL / NOT PRODUCTION READY because coverage is below 80%, production-edge and
+host controls remain open, historical-secret response is incomplete, real multi-host/load/browser/soak/upgrade
+evidence is absent, and the running production container is not this candidate.

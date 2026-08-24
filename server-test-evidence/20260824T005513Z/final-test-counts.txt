@@ -1,0 +1,5 @@
+go-full-postgres-final.log run=901 pass=701 fail=0 skip=0
+go-race-postgres.log run=0 pass=0 fail=0 skip=0
+linux-agent-filesystem.log run=22 pass=19 fail=0 skip=0
+online-stcontrol-tests.log run=0 pass=0 fail=0 skip=0
+web-test-final.log run=0 pass=0 fail=0 skip=0

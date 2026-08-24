@@ -209,7 +209,10 @@ func TestGoAgentCallsFullSillyTavernServerWithCSRF(t *testing.T) {
 
 	baseURL := "http://127.0.0.1:" + strconv.Itoa(port)
 	readyClient := &http.Client{Timeout: time.Second}
-	deadline := time.Now().Add(30 * time.Second)
+	// A cold production checkout may need to generate thumbnails and compile
+	// frontend libraries before it starts listening. Keep the deadline bounded,
+	// but do not confuse that legitimate first boot with a server failure.
+	deadline := time.Now().Add(90 * time.Second)
 	ready := false
 	for time.Now().Before(deadline) {
 		response, requestErr := readyClient.Get(baseURL + "/api/ping-public")

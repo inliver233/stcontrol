@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"stcontrol/internal/config"
 	controlcrypto "stcontrol/internal/crypto"
 	"stcontrol/internal/protocol"
@@ -113,6 +114,26 @@ func TestControllerConflictEvidenceAndResolutionThroughDurableCommands(t *testin
 			t.Fatalf("decrypt stored conflict evidence for node %d: count=%d err=%v", conflictSource.NodeID, len(loaded), err)
 		}
 	}
+	conflictSession := &session{UserID: user.ID, GlobalUserID: user.GlobalID, Username: user.Username}
+	for _, endpoint := range []string{
+		"/api/conflicts/current",
+		"/api/conflicts/current/differences?offset=0&limit=10",
+		"/api/conflicts/current/differences?offset=999&limit=invalid",
+	} {
+		httpRequest := httptest.NewRequest(http.MethodGet, endpoint, nil)
+		httpRequest = httpRequest.WithContext(context.WithValue(
+			httpRequest.Context(), ctxKey("stcontrol-session"), conflictSession,
+		))
+		recorder := httptest.NewRecorder()
+		if strings.Contains(endpoint, "differences") {
+			server.handleMyReplicaConflictDifferences(recorder, httpRequest)
+		} else {
+			server.handleMyReplicaConflict(recorder, httpRequest)
+		}
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("read conflict endpoint %s: status=%d body=%s", endpoint, recorder.Code, recorder.Body.String())
+		}
+	}
 	var redactedPages, leakedPages int
 	if err := st.DB.QueryRowContext(ctx, `
 		SELECT count(*) FILTER (WHERE result_summary='{"ok":true,"code":"evidence_ingested"}'::jsonb),
@@ -147,8 +168,7 @@ func TestControllerConflictEvidenceAndResolutionThroughDurableCommands(t *testin
 	}
 	httpRequest := httptest.NewRequest(http.MethodPost, "/api/conflicts/resolve", bytes.NewReader(body))
 	httpRequest = httpRequest.WithContext(context.WithValue(
-		httpRequest.Context(), ctxKey("stcontrol-session"),
-		&session{UserID: user.ID, GlobalUserID: user.GlobalID, Username: user.Username},
+		httpRequest.Context(), ctxKey("stcontrol-session"), conflictSession,
 	))
 	recorder := httptest.NewRecorder()
 	server.handleStartConflictResolution(recorder, httpRequest)
@@ -162,6 +182,32 @@ func TestControllerConflictEvidenceAndResolutionThroughDurableCommands(t *testin
 	if err != nil || execution == nil || execution.State != "scheduled" || len(execution.Decisions) != 101 {
 		t.Fatalf("durable conflict resolution=%+v err=%v", execution, err)
 	}
+	statusRequest := conflictOperationRequest(t, http.MethodGet, operationID, conflictSession)
+	statusRecorder := httptest.NewRecorder()
+	server.handleConflictResolutionStatus(statusRecorder, statusRequest)
+	if statusRecorder.Code != http.StatusOK || !strings.Contains(statusRecorder.Body.String(), `"state":"preparing"`) {
+		t.Fatalf("scheduled conflict resolution status=%d body=%s", statusRecorder.Code, statusRecorder.Body.String())
+	}
+
+	if err := st.FailConflictResolution(ctx, execution.WorkflowID, "injected_recovery_test", "retry recovery test", time.Now().UTC()); err != nil {
+		t.Fatalf("inject durable conflict resolution failure: %v", err)
+	}
+	for range cap(server.snapshotSlots) {
+		server.snapshotSlots <- struct{}{}
+	}
+	retryRequest := conflictOperationRequest(t, http.MethodPost, operationID, conflictSession)
+	retryRecorder := httptest.NewRecorder()
+	server.handleRetryConflictResolution(retryRecorder, retryRequest)
+	for range cap(server.snapshotSlots) {
+		<-server.snapshotSlots
+	}
+	if retryRecorder.Code != http.StatusAccepted || !strings.Contains(retryRecorder.Body.String(), `"state":"preparing"`) {
+		t.Fatalf("retry conflict resolution status=%d body=%s", retryRecorder.Code, retryRecorder.Body.String())
+	}
+	execution, err = st.GetConflictResolutionExecutionByOperation(ctx, operationID)
+	if err != nil || execution == nil || execution.State != "scheduled" {
+		t.Fatalf("restarted conflict resolution=%+v err=%v", execution, err)
+	}
 	restarted := New(cfg, st, secretKey)
 	if restarted.workflowWorkerID == server.workflowWorkerID {
 		t.Fatal("conflict resolution restart reused worker identity")
@@ -173,6 +219,15 @@ func TestControllerConflictEvidenceAndResolutionThroughDurableCommands(t *testin
 	if errs := harness.errors(); len(errs) > 0 {
 		t.Fatalf("durable conflict Agent command harness errors: %v", errs)
 	}
+}
+
+func conflictOperationRequest(t *testing.T, method, operationID string, sess *session) *http.Request {
+	t.Helper()
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("operationID", operationID)
+	request := httptest.NewRequest(method, "/api/conflicts/resolutions/"+operationID, nil)
+	request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
+	return request.WithContext(context.WithValue(request.Context(), ctxKey("stcontrol-session"), sess))
 }
 
 func seedControllerReplicaConflict(

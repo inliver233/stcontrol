@@ -2,7 +2,9 @@ package agent
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -225,5 +227,68 @@ func TestAgentHandlerBoundsIncomingTransferConcurrencyBeforeReadingBody(t *testi
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") != "5" {
 		t.Fatalf("status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+}
+
+func TestControllerBackupTransferHandlerValidatesConsumesAndRejectsReplay(t *testing.T) {
+	t.Parallel()
+	a := newControllerBackupTestAgent(t, "storage")
+	operationID := "66666666-6666-4666-8666-666666666666"
+	token := "one-use-controller-backup-handler-token"
+	payload := []byte("verified-controller-backup-handler-payload")
+	tokenDigest := sha256.Sum256([]byte(token))
+	payloadDigest := sha256.Sum256(payload)
+	request := controllerBackupPrepareReq(operationID, time.Now().UTC().Add(time.Hour))
+	request.CapabilityHash = hex.EncodeToString(tokenDigest[:])
+	request.ExpectedSHA256 = hex.EncodeToString(payloadDigest[:])
+	if err := a.prepareControllerBackup(request); err != nil {
+		t.Fatal(err)
+	}
+	handler := a.Handler()
+	makeRequest := func(rawURL string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, rawURL, bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/zstd")
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-Archive-Sha256", hex.EncodeToString(payloadDigest[:]))
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, req)
+		return recorder
+	}
+	path := "/transfer/v1/controller-backups/" + operationID
+	if recorder := makeRequest(path); recorder.Code != http.StatusOK ||
+		!strings.Contains(recorder.Body.String(), `"ok":true`) {
+		t.Fatalf("first transfer status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := makeRequest(path); recorder.Code != http.StatusUnprocessableEntity ||
+		strings.Contains(recorder.Body.String(), token) {
+		t.Fatalf("replay status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := makeRequest(path + "?capability=" + token); recorder.Code != http.StatusBadRequest ||
+		strings.Contains(recorder.Body.String(), token) {
+		t.Fatalf("query transfer status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestControllerBackupTransferHandlerBoundsConcurrencyBeforeBodyRead(t *testing.T) {
+	t.Parallel()
+	a := newControllerBackupTestAgent(t, "storage")
+	handler := a.Handler()
+	for range cap(a.transferSlots) {
+		a.transferSlots <- struct{}{}
+	}
+	defer func() {
+		for range cap(a.transferSlots) {
+			<-a.transferSlots
+		}
+	}()
+	operationID := "77777777-7777-4777-8777-777777777777"
+	req := httptest.NewRequest(http.MethodPost, "/transfer/v1/controller-backups/"+operationID, bytes.NewReader([]byte("body")))
+	req.Header.Set("Content-Type", "application/zstd")
+	req.Header.Set("Authorization", "Bearer bounded-token")
+	req.Header.Set("X-Archive-Sha256", strings.Repeat("a", 64))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusTooManyRequests || recorder.Header().Get("Retry-After") != "5" {
+		t.Fatalf("status=%d headers=%v body=%s", recorder.Code, recorder.Header(), recorder.Body.String())
 	}
 }

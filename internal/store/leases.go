@@ -107,7 +107,19 @@ func (s *Store) AcquireActivityLease(ctx context.Context, p AcquireActivityLease
 	if p.Now.IsZero() {
 		p.Now = time.Now().UTC()
 	}
+	var result AcquireActivityLeaseResult
+	err := retrySerializable(ctx, func() error {
+		var attemptErr error
+		result, attemptErr = s.acquireActivityLeaseOnce(ctx, p)
+		return attemptErr
+	})
+	return result, err
+}
 
+func (s *Store) acquireActivityLeaseOnce(
+	ctx context.Context,
+	p AcquireActivityLeaseParams,
+) (AcquireActivityLeaseResult, error) {
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return AcquireActivityLeaseResult{}, err

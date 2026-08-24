@@ -1,0 +1,11 @@
+Connecting to 2606:4700:3032::ac43:9dc3
+CONNECTION ESTABLISHED
+Protocol version: TLSv1.2
+Ciphersuite: ECDHE-ECDSA-CHACHA20-POLY1305
+Peer certificate: CN=pixcora.com
+Hash used: SHA256
+Signature type: ecdsa_secp256r1_sha256
+Verification: OK
+Supported Elliptic Curve Point Formats: uncompressed
+Peer Temp Key: X25519, 253 bits
+DONE

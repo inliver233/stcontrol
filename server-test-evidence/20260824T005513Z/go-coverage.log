@@ -1,0 +1,10 @@
+	stcontrol/cmd/agent		coverage: 0.0% of statements
+	stcontrol/cmd/controller		coverage: 0.0% of statements
+ok  	stcontrol/internal	0.209s	coverage: [no statements]
+ok  	stcontrol/internal/agent	254.440s	coverage: 72.1% of statements
+ok  	stcontrol/internal/ai	0.013s	coverage: 55.5% of statements
+ok  	stcontrol/internal/config	0.006s	coverage: 94.1% of statements
+ok  	stcontrol/internal/controller	89.266s	coverage: 63.8% of statements
+ok  	stcontrol/internal/crypto	1.720s	coverage: 64.7% of statements
+	stcontrol/internal/protocol		coverage: 0.0% of statements
+ok  	stcontrol/internal/store	65.063s	coverage: 63.2% of statements

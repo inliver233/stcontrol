@@ -1,0 +1,11 @@
+3.20.10
+postgres (PostgreSQL) 17.10
+Usage of /app/controller:
+  -config string
+    	配置文件路径 (default "controller.yaml")
+  -passive
+    	作为被动副控等待 PostgreSQL 领导锁，取得后自动提升
+  -promote
+    	把本次启动标记为显式恢复（每次取得领导锁都会提升世代）
+  -recover-master-key string
+    	从总控灾备归档解出主密钥恢复信封并输出 base64 主密钥（Round 61）

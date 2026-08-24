@@ -1,0 +1,778 @@
+=== RUN   TestControllerAgentTavernProcessesRecoverAcrossRestarts
+    process_e2e_test.go:331: Controller recovery did not durably freeze the non-home disaster write: primary=managed/managed secondary=independent-draining/independent-draining runtime=independent-draining sessions=0 pending=1 takeover_journal=0 reconciliation=conflict identity=active/active lease=active protection= conflicts=0 takeovers=1 ready=false
+        controller:
+        2026/08/24 09:10:56 总控已原子提升到 generation=4；新操作保持关闭直至节点凭据轮换与模式对账完成
+        2026/08/24 09:10:56 总控启动, 监听 127.0.0.1:32519, 对外 HTTPS 端点已配置
+        2026/08/24 09:10:57 [takamatsu-tomori/0PeIrVSGTG-000001] "GET http://127.0.0.1:32519/api/health HTTP/1.1" from 127.0.0.1:19188 - 204 0B in 32.792µs
+        2026/08/24 09:10:57 [takamatsu-tomori/0PeIrVSGTG-000002] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:19200 - 200 310B in 108.723907ms
+        2026/08/24 09:10:57 [takamatsu-tomori/0PeIrVSGTG-000003] "POST http://127.0.0.1:32519/api/agent/credentials/confirm HTTP/1.1" from 127.0.0.1:19200 - 200 82B in 42.098338ms
+        2026/08/24 09:10:57 [takamatsu-tomori/0PeIrVSGTG-000004] "POST http://127.0.0.1:32519/api/agent/commands/lease HTTP/1.1" from 127.0.0.1:19204 - 401 67B in 5.514029ms
+        2026/08/24 09:10:57 [takamatsu-tomori/0PeIrVSGTG-000005] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:19204 - 200 310B in 62.383205ms
+        2026/08/24 09:10:57 [takamatsu-tomori/0PeIrVSGTG-000006] "POST http://127.0.0.1:32519/api/agent/credentials/confirm HTTP/1.1" from 127.0.0.1:19204 - 200 82B in 47.360996ms
+        2026/08/24 09:10:58 [takamatsu-tomori/0PeIrVSGTG-000007] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:19200 - 400 70B in 12.604194ms
+        2026/08/24 09:10:58 [takamatsu-tomori/0PeIrVSGTG-000008] "GET http://127.0.0.1:32519/api/health HTTP/1.1" from 127.0.0.1:19200 - 204 0B in 48.251µs
+        2026/08/24 09:10:58 [takamatsu-tomori/0PeIrVSGTG-000009] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:19204 - 200 194B in 72.473885ms
+        2026/08/24 09:10:59 [takamatsu-tomori/0PeIrVSGTG-000011] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 56.311239ms
+        2026/08/24 09:10:59 [takamatsu-tomori/0PeIrVSGTG-000012] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:19204 - 200 141B in 90.260867ms
+        2026/08/24 09:11:00 [takamatsu-tomori/0PeIrVSGTG-000013] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 61.347102ms
+        2026/08/24 09:11:00 [takamatsu-tomori/0PeIrVSGTG-000014] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:19204 - 200 142B in 92.419415ms
+        2026/08/24 09:11:01 [takamatsu-tomori/0PeIrVSGTG-000015] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 60.264692ms
+        2026/08/24 09:11:01 [takamatsu-tomori/0PeIrVSGTG-000017] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 59.746721ms
+        2026/08/24 09:11:02 [takamatsu-tomori/0PeIrVSGTG-000018] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 76.921996ms
+        2026/08/24 09:11:02 [takamatsu-tomori/0PeIrVSGTG-000019] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 83.283624ms
+        2026/08/24 09:11:03 [takamatsu-tomori/0PeIrVSGTG-000020] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 70.329024ms
+        2026/08/24 09:11:03 [takamatsu-tomori/0PeIrVSGTG-000021] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 50.328961ms
+        2026/08/24 09:11:04 [takamatsu-tomori/0PeIrVSGTG-000022] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 55.833442ms
+        2026/08/24 09:11:04 [takamatsu-tomori/0PeIrVSGTG-000023] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 47.87488ms
+        2026/08/24 09:11:05 [takamatsu-tomori/0PeIrVSGTG-000024] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 35.910405ms
+        2026/08/24 09:11:05 [takamatsu-tomori/0PeIrVSGTG-000025] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 140B in 50.358967ms
+        2026/08/24 09:11:06 [takamatsu-tomori/0PeIrVSGTG-000026] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 34.727478ms
+        2026/08/24 09:11:06 [takamatsu-tomori/0PeIrVSGTG-000027] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 93.547089ms
+        2026/08/24 09:11:07 [takamatsu-tomori/0PeIrVSGTG-000028] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 89.656755ms
+        2026/08/24 09:11:07 [takamatsu-tomori/0PeIrVSGTG-000029] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 86.024204ms
+        2026/08/24 09:11:08 [takamatsu-tomori/0PeIrVSGTG-000030] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 90.856915ms
+        2026/08/24 09:11:08 [takamatsu-tomori/0PeIrVSGTG-000031] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 116.94926ms
+        2026/08/24 09:11:09 [takamatsu-tomori/0PeIrVSGTG-000032] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 45.513181ms
+        2026/08/24 09:11:09 [takamatsu-tomori/0PeIrVSGTG-000033] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 82.792634ms
+        2026/08/24 09:11:10 [takamatsu-tomori/0PeIrVSGTG-000034] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 66.345234ms
+        2026/08/24 09:11:10 [takamatsu-tomori/0PeIrVSGTG-000035] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 63.730601ms
+        2026/08/24 09:11:11 [takamatsu-tomori/0PeIrVSGTG-000036] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 32.102275ms
+        2026/08/24 09:11:11 [takamatsu-tomori/0PeIrVSGTG-000037] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 53.242435ms
+        2026/08/24 09:11:12 [takamatsu-tomori/0PeIrVSGTG-000038] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 40.085734ms
+        2026/08/24 09:11:12 [takamatsu-tomori/0PeIrVSGTG-000039] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 43.357399ms
+        2026/08/24 09:11:13 [takamatsu-tomori/0PeIrVSGTG-000040] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 68.769179ms
+        2026/08/24 09:11:13 [takamatsu-tomori/0PeIrVSGTG-000041] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 66.237752ms
+        2026/08/24 09:11:14 [takamatsu-tomori/0PeIrVSGTG-000042] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 65.93766ms
+        2026/08/24 09:11:14 [takamatsu-tomori/0PeIrVSGTG-000043] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 54.250355ms
+        2026/08/24 09:11:15 [takamatsu-tomori/0PeIrVSGTG-000044] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 58.824572ms
+        2026/08/24 09:11:15 [takamatsu-tomori/0PeIrVSGTG-000045] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 79.988165ms
+        2026/08/24 09:11:16 [takamatsu-tomori/0PeIrVSGTG-000046] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 36.786709ms
+        2026/08/24 09:11:16 [takamatsu-tomori/0PeIrVSGTG-000047] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 64.40196ms
+        2026/08/24 09:11:17 [takamatsu-tomori/0PeIrVSGTG-000048] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 47.634509ms
+        2026/08/24 09:11:17 [takamatsu-tomori/0PeIrVSGTG-000049] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 60.186305ms
+        2026/08/24 09:11:18 [takamatsu-tomori/0PeIrVSGTG-000050] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 134B in 46.636177ms
+        2026/08/24 09:11:18 [takamatsu-tomori/0PeIrVSGTG-000051] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 83.943292ms
+        2026/08/24 09:11:18 [takamatsu-tomori/0PeIrVSGTG-000010] "POST http://127.0.0.1:32519/api/agent/commands/lease HTTP/1.1" from 127.0.0.1:19200 - 204 0B in 20.014569762s
+        2026/08/24 09:11:19 [takamatsu-tomori/0PeIrVSGTG-000053] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 54.971487ms
+        2026/08/24 09:11:19 [takamatsu-tomori/0PeIrVSGTG-000054] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 150.834059ms
+        2026/08/24 09:11:20 [takamatsu-tomori/0PeIrVSGTG-000055] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 44.368295ms
+        2026/08/24 09:11:20 [takamatsu-tomori/0PeIrVSGTG-000056] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 77.421091ms
+        2026/08/24 09:11:21 [takamatsu-tomori/0PeIrVSGTG-000057] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 47.735909ms
+        2026/08/24 09:11:21 [takamatsu-tomori/0PeIrVSGTG-000016] "POST http://127.0.0.1:32519/api/agent/commands/lease HTTP/1.1" from 127.0.0.1:19204 - 204 0B in 20.00574846s
+        2026/08/24 09:11:21 [takamatsu-tomori/0PeIrVSGTG-000059] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 89.919898ms
+        2026/08/24 09:11:22 [takamatsu-tomori/0PeIrVSGTG-000060] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 82.346848ms
+        2026/08/24 09:11:22 [takamatsu-tomori/0PeIrVSGTG-000061] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 95.679367ms
+        2026/08/24 09:11:23 [takamatsu-tomori/0PeIrVSGTG-000062] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 134B in 49.238666ms
+        2026/08/24 09:11:23 [takamatsu-tomori/0PeIrVSGTG-000063] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 65.726914ms
+        2026/08/24 09:11:24 [takamatsu-tomori/0PeIrVSGTG-000064] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 48.884563ms
+        2026/08/24 09:11:24 [takamatsu-tomori/0PeIrVSGTG-000065] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 47.02175ms
+        2026/08/24 09:11:25 [takamatsu-tomori/0PeIrVSGTG-000066] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 134B in 55.683812ms
+        2026/08/24 09:11:25 [takamatsu-tomori/0PeIrVSGTG-000067] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 72.442367ms
+        2026/08/24 09:11:26 [takamatsu-tomori/0PeIrVSGTG-000068] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 36.740381ms
+        2026/08/24 09:11:26 [takamatsu-tomori/0PeIrVSGTG-000069] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 67.167886ms
+        2026/08/24 09:11:27 [takamatsu-tomori/0PeIrVSGTG-000070] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 134B in 87.229553ms
+        2026/08/24 09:11:27 [takamatsu-tomori/0PeIrVSGTG-000071] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 109.280041ms
+        2026/08/24 09:11:28 [takamatsu-tomori/0PeIrVSGTG-000072] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 134B in 56.917877ms
+        2026/08/24 09:11:28 [takamatsu-tomori/0PeIrVSGTG-000073] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 140B in 64.672628ms
+        2026/08/24 09:11:29 [takamatsu-tomori/0PeIrVSGTG-000074] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 62.835884ms
+        2026/08/24 09:11:29 [takamatsu-tomori/0PeIrVSGTG-000075] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 71.093516ms
+        2026/08/24 09:11:30 [takamatsu-tomori/0PeIrVSGTG-000076] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 61.5063ms
+        2026/08/24 09:11:30 [takamatsu-tomori/0PeIrVSGTG-000077] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 83.820151ms
+        2026/08/24 09:11:31 [takamatsu-tomori/0PeIrVSGTG-000078] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 71.216498ms
+        2026/08/24 09:11:31 [takamatsu-tomori/0PeIrVSGTG-000079] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 91.812226ms
+        2026/08/24 09:11:32 [takamatsu-tomori/0PeIrVSGTG-000080] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 49.600967ms
+        2026/08/24 09:11:32 [takamatsu-tomori/0PeIrVSGTG-000081] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 72.420505ms
+        2026/08/24 09:11:33 [takamatsu-tomori/0PeIrVSGTG-000082] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 65.481563ms
+        2026/08/24 09:11:33 [takamatsu-tomori/0PeIrVSGTG-000083] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 47.888945ms
+        2026/08/24 09:11:34 [takamatsu-tomori/0PeIrVSGTG-000084] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 55.793939ms
+        2026/08/24 09:11:34 [takamatsu-tomori/0PeIrVSGTG-000085] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 55.608351ms
+        2026/08/24 09:11:35 [takamatsu-tomori/0PeIrVSGTG-000086] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 67.913384ms
+        2026/08/24 09:11:35 [takamatsu-tomori/0PeIrVSGTG-000087] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 42.273607ms
+        2026/08/24 09:11:36 [takamatsu-tomori/0PeIrVSGTG-000088] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 39.848751ms
+        2026/08/24 09:11:36 [takamatsu-tomori/0PeIrVSGTG-000089] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 44.33945ms
+        2026/08/24 09:11:37 [takamatsu-tomori/0PeIrVSGTG-000090] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 96.159278ms
+        2026/08/24 09:11:37 [takamatsu-tomori/0PeIrVSGTG-000091] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 66.643072ms
+        2026/08/24 09:11:38 [takamatsu-tomori/0PeIrVSGTG-000092] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 43.930224ms
+        2026/08/24 09:11:38 [takamatsu-tomori/0PeIrVSGTG-000093] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 69.388751ms
+        2026/08/24 09:11:38 [takamatsu-tomori/0PeIrVSGTG-000052] "POST http://127.0.0.1:32519/api/agent/commands/lease HTTP/1.1" from 127.0.0.1:19200 - 204 0B in 20.009590214s
+        2026/08/24 09:11:39 [takamatsu-tomori/0PeIrVSGTG-000095] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 58.603828ms
+        2026/08/24 09:11:39 [takamatsu-tomori/0PeIrVSGTG-000096] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 87.951968ms
+        2026/08/24 09:11:40 [takamatsu-tomori/0PeIrVSGTG-000097] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 51.299801ms
+        2026/08/24 09:11:40 [takamatsu-tomori/0PeIrVSGTG-000098] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 62.568932ms
+        2026/08/24 09:11:41 [takamatsu-tomori/0PeIrVSGTG-000099] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 72.235899ms
+        2026/08/24 09:11:41 [takamatsu-tomori/0PeIrVSGTG-000058] "POST http://127.0.0.1:32519/api/agent/commands/lease HTTP/1.1" from 127.0.0.1:19204 - 204 0B in 20.009784278s
+        2026/08/24 09:11:41 [takamatsu-tomori/0PeIrVSGTG-000101] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 63.77803ms
+        2026/08/24 09:11:42 [takamatsu-tomori/0PeIrVSGTG-000102] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 58.624987ms
+        2026/08/24 09:11:42 [takamatsu-tomori/0PeIrVSGTG-000103] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 90.73658ms
+        2026/08/24 09:11:43 [takamatsu-tomori/0PeIrVSGTG-000104] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 37.351938ms
+        2026/08/24 09:11:43 [takamatsu-tomori/0PeIrVSGTG-000105] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 75.748706ms
+        2026/08/24 09:11:44 [takamatsu-tomori/0PeIrVSGTG-000106] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 67.331392ms
+        2026/08/24 09:11:44 [takamatsu-tomori/0PeIrVSGTG-000107] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 61.867067ms
+        2026/08/24 09:11:45 [takamatsu-tomori/0PeIrVSGTG-000108] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 33.716282ms
+        2026/08/24 09:11:45 [takamatsu-tomori/0PeIrVSGTG-000109] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 65.613882ms
+        2026/08/24 09:11:46 [takamatsu-tomori/0PeIrVSGTG-000110] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 43.307616ms
+        2026/08/24 09:11:46 [takamatsu-tomori/0PeIrVSGTG-000111] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 116.401053ms
+        2026/08/24 09:11:47 [takamatsu-tomori/0PeIrVSGTG-000112] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 71.961334ms
+        2026/08/24 09:11:47 [takamatsu-tomori/0PeIrVSGTG-000113] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 88.847407ms
+        2026/08/24 09:11:48 [takamatsu-tomori/0PeIrVSGTG-000114] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 72.737058ms
+        2026/08/24 09:11:48 [takamatsu-tomori/0PeIrVSGTG-000115] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 60.710018ms
+        2026/08/24 09:11:49 [takamatsu-tomori/0PeIrVSGTG-000116] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 34.795023ms
+        2026/08/24 09:11:49 [takamatsu-tomori/0PeIrVSGTG-000117] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 57.773731ms
+        2026/08/24 09:11:50 [takamatsu-tomori/0PeIrVSGTG-000118] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 57.509886ms
+        2026/08/24 09:11:50 [takamatsu-tomori/0PeIrVSGTG-000119] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 88.359302ms
+        2026/08/24 09:11:51 [takamatsu-tomori/0PeIrVSGTG-000120] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 134B in 39.568164ms
+        2026/08/24 09:11:51 [takamatsu-tomori/0PeIrVSGTG-000121] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 74.88151ms
+        2026/08/24 09:11:52 [takamatsu-tomori/0PeIrVSGTG-000122] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 46.857843ms
+        2026/08/24 09:11:52 [takamatsu-tomori/0PeIrVSGTG-000123] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 59.037131ms
+        2026/08/24 09:11:53 [takamatsu-tomori/0PeIrVSGTG-000124] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 62.781942ms
+        2026/08/24 09:11:53 [takamatsu-tomori/0PeIrVSGTG-000125] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 77.211468ms
+        2026/08/24 09:11:54 [takamatsu-tomori/0PeIrVSGTG-000126] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 52.247669ms
+        2026/08/24 09:11:54 [takamatsu-tomori/0PeIrVSGTG-000127] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 92.090708ms
+        2026/08/24 09:11:55 [takamatsu-tomori/0PeIrVSGTG-000128] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 65.286689ms
+        2026/08/24 09:11:55 [takamatsu-tomori/0PeIrVSGTG-000129] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 63.738636ms
+        2026/08/24 09:11:56 [takamatsu-tomori/0PeIrVSGTG-000130] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 53.961943ms
+        2026/08/24 09:11:56 [takamatsu-tomori/0PeIrVSGTG-000131] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 72.184814ms
+        2026/08/24 09:11:57 [takamatsu-tomori/0PeIrVSGTG-000132] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 136B in 54.122615ms
+        2026/08/24 09:11:57 [takamatsu-tomori/0PeIrVSGTG-000133] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 141B in 100.486731ms
+        2026/08/24 09:11:58 [takamatsu-tomori/0PeIrVSGTG-000134] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16108 - 200 135B in 59.782267ms
+        2026/08/24 09:11:58 [takamatsu-tomori/0PeIrVSGTG-000135] "POST http://127.0.0.1:32519/api/agent/heartbeat HTTP/1.1" from 127.0.0.1:16124 - 200 142B in 88.412161ms
+        
+        primary Agent:
+        2026/08/24 09:10:56 子控启动, node_id=1 角色=compute 监听 127.0.0.1:34771, 总控端点已配置
+        2026/08/24 09:10:56 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:57 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:57 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:58 心跳上报失败: controller returned status 400
+        2026/08/24 09:10:58 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:59 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:59 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:00 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:00 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:01 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:01 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:02 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:02 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:03 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:03 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:04 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:04 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:05 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:05 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:06 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:06 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:07 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:07 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:08 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:08 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:09 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:09 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:10 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:10 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:11 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:11 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:12 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:12 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:13 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:13 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:14 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:14 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:15 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:15 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:16 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:16 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:17 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:17 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:18 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:18 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:19 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:19 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:20 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:20 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:21 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:21 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:22 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:22 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:23 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:23 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:24 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:24 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:25 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:25 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:26 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:26 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:27 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:27 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:28 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:28 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:29 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:29 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:30 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:30 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:31 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:31 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:32 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:32 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:33 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:33 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:34 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:34 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:35 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:35 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:36 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:36 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:37 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:37 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:38 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:38 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:39 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:39 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:40 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:40 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:41 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:41 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:42 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:42 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:43 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:43 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:44 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:44 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:45 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:45 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:46 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:46 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:47 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:47 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:48 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:48 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:49 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:49 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:50 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:50 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:51 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:51 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:52 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:52 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:53 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:53 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:54 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:54 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:55 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:55 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:56 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:56 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:57 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:57 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:58 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:58 用户活动租约确认尚未应用: node adapter returned status 400
+        
+        secondary Agent:
+        2026/08/24 09:07:48 子控启动, node_id=2 角色=compute 监听 127.0.0.1:13949, 总控端点已配置
+        2026/08/24 09:07:48 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:07:48 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:07:49 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:07:49 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:07:50 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:07:50 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:07:51 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:07:51 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:07:52 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:07:52 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:07:53 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:07:53 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:07:54 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:07:54 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:07:55 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:07:55 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:07:56 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:07:56 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:07:57 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:07:57 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:07:58 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:07:58 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:07:59 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:07:59 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:00 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:00 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:01 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:01 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:02 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:02 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:03 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:03 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:04 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:04 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:05 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:05 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:06 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:06 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:07 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:07 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:08 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:08 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:09 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:09 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:10 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:10 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:11 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:11 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:12 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:12 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:13 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:13 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:14 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:14 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:15 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:15 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:16 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:16 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:17 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:17 心跳上报失败: controller returned status 409
+        2026/08/24 09:08:18 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:18 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:19 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:19 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:20 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:20 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:21 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:21 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:22 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:22 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:23 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:23 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:24 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:24 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:25 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:25 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:26 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:26 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:27 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:27 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:28 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:28 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:29 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:29 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:30 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:30 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:31 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:31 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:32 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:32 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:33 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:33 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:34 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:34 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:35 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:35 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:36 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:36 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:37 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:37 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:38 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:38 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:39 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:39 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:40 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:40 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:41 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:41 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:42 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:42 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:43 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:43 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:44 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:44 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:45 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:45 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:46 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:46 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:47 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:47 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:48 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:48 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:49 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:49 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:50 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:50 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:51 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:51 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:52 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:52 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:53 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:53 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:54 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:54 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:55 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:55 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:56 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:56 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:57 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:57 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:58 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:58 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:08:59 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:08:59 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:00 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:00 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:01 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:01 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:02 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:02 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:03 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:03 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:04 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:04 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:05 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:05 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:06 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:06 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:07 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:07 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:08 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:08 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:09 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:09 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:10 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:10 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:11 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:11 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:12 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:12 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:13 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:13 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:14 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:14 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:15 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:15 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:16 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:16 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:17 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:17 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:18 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:18 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:19 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:19 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:20 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:20 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:21 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:21 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:22 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:22 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:23 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:23 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:24 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:24 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:25 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:25 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:26 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:26 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:27 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:27 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:28 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:28 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:29 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:29 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:30 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:30 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:31 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:31 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:32 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:32 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:33 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:33 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:34 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:34 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:35 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:35 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:36 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:36 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:37 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:37 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:38 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:38 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:39 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:39 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:40 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:40 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:41 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:41 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:42 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:42 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:43 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:43 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:44 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:44 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:45 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:45 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:46 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:46 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:47 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:47 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:48 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:48 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:49 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:49 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:50 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:50 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:51 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:51 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:52 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:52 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:53 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:53 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:54 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:54 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:55 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:55 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:56 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:56 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:57 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:57 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:58 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:58 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:09:59 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:09:59 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:00 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:00 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:01 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:01 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:02 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:02 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:03 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:03 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:04 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:04 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:05 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:05 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:06 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:06 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:07 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:07 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:08 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:08 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:09 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:09 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:10 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:10 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:11 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:11 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:12 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:12 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:13 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:13 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:14 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:14 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:15 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:15 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:16 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:16 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:17 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:17 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:18 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:18 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:19 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:19 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:20 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:20 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:21 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:21 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:22 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:22 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:23 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:23 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:24 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:24 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:25 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:25 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:26 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:26 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:27 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:27 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:28 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:28 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:29 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:29 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:30 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:30 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:31 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:31 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:32 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:32 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:33 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:33 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:34 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:34 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:35 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:35 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:36 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:36 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:37 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:37 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:38 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:38 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:39 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:39 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:40 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:40 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:41 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:41 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:42 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:42 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:43 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:43 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:44 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:44 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:45 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:45 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:46 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:46 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:47 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:47 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:48 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:48 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:49 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:49 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:50 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:50 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:51 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:51 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:52 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:52 命令通道暂不可用: Post "http://127.0.0.1:32519/api/agent/commands/lease": EOF
+        2026/08/24 09:10:52 心跳上报失败: Post "http://127.0.0.1:32519/api/agent/heartbeat": dial tcp 127.0.0.1:32519: connect: connection refused
+        2026/08/24 09:10:53 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:53 命令通道暂不可用: Post "http://127.0.0.1:32519/api/agent/commands/lease": dial tcp 127.0.0.1:32519: connect: connection refused
+        2026/08/24 09:10:53 心跳上报失败: Post "http://127.0.0.1:32519/api/agent/heartbeat": dial tcp 127.0.0.1:32519: connect: connection refused
+        2026/08/24 09:10:54 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:54 心跳上报失败: Post "http://127.0.0.1:32519/api/agent/heartbeat": dial tcp 127.0.0.1:32519: connect: connection refused
+        2026/08/24 09:10:55 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:55 心跳上报失败: Post "http://127.0.0.1:32519/api/agent/heartbeat": dial tcp 127.0.0.1:32519: connect: connection refused
+        2026/08/24 09:10:56 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:56 心跳上报失败: Post "http://127.0.0.1:32519/api/agent/heartbeat": dial tcp 127.0.0.1:32519: connect: connection refused
+        2026/08/24 09:10:57 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:57 命令通道暂不可用: command lease returned status 401
+        2026/08/24 09:10:57 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:58 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:58 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:10:59 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:10:59 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:00 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:00 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:01 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:01 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:02 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:02 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:03 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:03 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:04 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:04 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:05 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:05 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:06 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:06 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:07 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:07 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:08 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:08 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:09 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:09 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:10 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:10 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:11 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:11 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:12 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:12 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:13 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:13 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:14 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:14 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:15 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:15 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:16 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:16 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:17 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:17 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:18 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:18 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:19 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:19 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:20 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:20 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:21 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:21 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:22 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:22 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:23 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:23 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:24 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:24 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:25 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:25 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:26 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:26 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:27 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:27 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:28 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:28 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:29 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:29 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:30 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:30 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:31 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:31 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:32 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:32 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:33 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:33 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:34 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:34 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:35 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:35 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:36 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:36 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:37 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:37 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:38 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:38 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:39 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:39 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:40 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:40 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:41 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:41 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:42 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:42 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:43 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:43 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:44 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:44 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:45 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:45 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:46 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:46 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:47 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:47 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:48 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:48 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:49 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:49 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:50 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:50 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:51 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:51 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:52 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:52 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:53 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:53 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:54 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:54 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:55 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:55 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:56 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:56 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:57 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:57 应用总控活动租约确认失败: node adapter returned status 400
+        2026/08/24 09:11:58 用户活动租约确认尚未应用: node adapter returned status 400
+        2026/08/24 09:11:58 应用总控活动租约确认失败: node adapter returned status 400
+--- FAIL: TestControllerAgentTavernProcessesRecoverAcrossRestarts (262.52s)
+FAIL
+FAIL	stcontrol/internal/agent	262.534s
+FAIL

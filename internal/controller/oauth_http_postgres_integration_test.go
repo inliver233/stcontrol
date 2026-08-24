@@ -323,6 +323,194 @@ func TestControllerOAuthHTTPStatePendingLoginAndIdentityBinding(t *testing.T) {
 	}
 }
 
+func TestOAuthCompleteNewEnrollmentAndFailClosedMatrixPostgres(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Controller OAuth completion PostgreSQL integration is disabled in short mode")
+	}
+	dsn, cleanupSchema := newControllerBackupPostgresSchema(t)
+	t.Cleanup(cleanupSchema)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open isolated OAuth completion store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	node := createControllerBackupNode(t, ctx, st, "oauth-complete-compute", "compute", false, 1)
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE nodes SET allow_register=true,registration_policy_state='open',
+		  registration_policy_version=3,registration_policy_expires_at=now()+interval '1 hour',
+		  registration_policy_observed_at=now()
+		WHERE id=$1`, node.ID); err != nil {
+		t.Fatalf("publish open OAuth registration policy: %v", err)
+	}
+
+	cfg := config.DefaultController()
+	cfg.StaticDir = t.TempDir()
+	cfg.Relay.Listen = ""
+	server := New(cfg, st, []byte("0123456789abcdef0123456789abcdef"))
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+	cfg.PublicURL = httpServer.URL
+	completeURL := httpServer.URL + "/api/auth/oauth/complete"
+	completeParsed, err := url.Parse(completeURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newPendingClient := func(subject string) (*http.Client, string) {
+		t.Helper()
+		token := "opaque-oauth-pending-token-" + subject
+		tokenHash := sha256.Sum256([]byte(token))
+		pendingID, err := newUUID()
+		if err != nil {
+			t.Fatalf("create OAuth pending ID: %v", err)
+		}
+		now := time.Now().UTC()
+		if err := st.CreateOAuthPending(ctx, store.CreateOAuthPendingParams{
+			ID: pendingID, TokenHash: tokenHash[:], Provider: "linuxdo",
+			ProviderSubject: subject, DisplayName: "OAuth " + subject,
+			ExpiresAt: now.Add(10 * time.Minute), Now: now,
+		}); err != nil {
+			t.Fatalf("create OAuth pending %q: %v", subject, err)
+		}
+		client := newControllerHTTPClient(t)
+		client.Jar.SetCookies(completeParsed, []*http.Cookie{{
+			Name: oauthPendingCookie, Value: token, Path: "/api/auth/oauth/complete",
+		}})
+		return client, pendingID
+	}
+	requestFor := func(operationID string) map[string]any {
+		return map[string]any{"operation_id": operationID, "node_id": node.ID}
+	}
+
+	// Cross-site mutations are rejected before the opaque pending token is
+	// claimed. The same browser can then submit the exact request successfully.
+	happyClient, happyPendingID := newPendingClient("new-enrollment")
+	happyRequest := requestFor("75100000-0000-4000-8000-000000000001")
+	crossSiteBody, err := json.Marshal(happyRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crossSiteRequest, err := http.NewRequest(http.MethodPost, completeURL, bytes.NewReader(crossSiteBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	crossSiteRequest.Header.Set("Content-Type", "application/json")
+	crossSiteRequest.Header.Set("Origin", "https://attacker.invalid")
+	crossSiteResponse, err := happyClient.Do(crossSiteRequest)
+	if err != nil {
+		t.Fatalf("execute cross-site OAuth completion: %v", err)
+	}
+	_ = crossSiteResponse.Body.Close()
+	if crossSiteResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-site OAuth completion status=%d", crossSiteResponse.StatusCode)
+	}
+
+	// Saturate only the in-process launcher. The handler must still durably
+	// create a scheduled workflow and return its polling handoff.
+	for range cap(server.registrationSlots) {
+		server.registrationSlots <- struct{}{}
+	}
+	status, headers, body := controllerHTTPRequest(
+		t, happyClient, http.MethodPost, completeURL, happyRequest, false,
+	)
+	for range cap(server.registrationSlots) {
+		<-server.registrationSlots
+	}
+	if status != http.StatusAccepted || !bytes.Contains(body, []byte(`"state":"pending"`)) ||
+		!stringsContainNoStore(headers.Get("Cache-Control")) {
+		t.Fatalf("new OAuth enrollment status=%d cache=%q body=%s", status, headers.Get("Cache-Control"), body)
+	}
+	var workflowState, pendingState, authProvider, oauthSubject string
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT workflow.state,pending.state,registration.auth_provider,registration.oauth_subject
+		FROM oauth_pending_enrollments pending
+		JOIN workflows workflow ON workflow.operation_id=$2
+		JOIN registration_workflows registration ON registration.workflow_id=workflow.id
+		WHERE pending.id=$1`, happyPendingID, happyRequest["operation_id"]).Scan(
+		&workflowState, &pendingState, &authProvider, &oauthSubject,
+	); err != nil || workflowState != "scheduled" || pendingState != "pending" ||
+		authProvider != "linuxdo" || oauthSubject != "new-enrollment" {
+		t.Fatalf("durable OAuth registration workflow=%s pending=%s auth=%s/%s err=%v",
+			workflowState, pendingState, authProvider, oauthSubject, err)
+	}
+	if controllerCookieValue(t, happyClient, completeURL, oauthPendingCookie) != "" ||
+		controllerCookieValue(t, happyClient, httpServer.URL+"/api/auth/registration/status", registrationPendingCookie) == "" {
+		t.Fatal("OAuth completion did not rotate the pending cookie into a registration polling cookie")
+	}
+
+	busyClient, busyPendingID := newPendingClient("busy-enrollment")
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE oauth_pending_enrollments SET state='processing',claim_id=$2,
+		  claim_until=now()+interval '1 minute',updated_at=now() WHERE id=$1`,
+		busyPendingID, "75100000-0000-4000-8000-000000000099"); err != nil {
+		t.Fatalf("lease OAuth pending to competing request: %v", err)
+	}
+	assertControllerHTTPStatus(t, busyClient, http.MethodPost, completeURL,
+		requestFor("75100000-0000-4000-8000-000000000002"), false, http.StatusConflict)
+
+	missingClient := newControllerHTTPClient(t)
+	missingClient.Jar.SetCookies(completeParsed, []*http.Cookie{{
+		Name: oauthPendingCookie, Value: "unknown-expired-token", Path: "/api/auth/oauth/complete",
+	}})
+	assertControllerHTTPStatus(t, missingClient, http.MethodPost, completeURL,
+		requestFor("75100000-0000-4000-8000-000000000003"), false, http.StatusUnauthorized)
+	if controllerCookieValue(t, missingClient, completeURL, oauthPendingCookie) != "" {
+		t.Fatal("unknown OAuth pending cookie was not cleared")
+	}
+
+	closedClient, closedPendingID := newPendingClient("closed-node")
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE nodes SET allow_register=false,registration_policy_state='closed' WHERE id=$1`, node.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertControllerHTTPStatus(t, closedClient, http.MethodPost, completeURL,
+		requestFor("75100000-0000-4000-8000-000000000004"), false, http.StatusConflict)
+	var closedPendingState string
+	if err := st.DB.QueryRowContext(ctx, `SELECT state FROM oauth_pending_enrollments WHERE id=$1`, closedPendingID).
+		Scan(&closedPendingState); err != nil || closedPendingState != "pending" {
+		t.Fatalf("closed-node pending state=%q err=%v", closedPendingState, err)
+	}
+
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE nodes SET allow_register=true,registration_policy_state='invitation_required',
+		  registration_policy_version=4,registration_policy_expires_at=now()+interval '1 hour',
+		  registration_policy_observed_at=now() WHERE id=$1`, node.ID); err != nil {
+		t.Fatal(err)
+	}
+	invitationClient, invitationPendingID := newPendingClient("invitation-required")
+	assertControllerHTTPStatus(t, invitationClient, http.MethodPost, completeURL,
+		requestFor("75100000-0000-4000-8000-000000000005"), false, http.StatusBadRequest)
+	var invitationPendingState string
+	if err := st.DB.QueryRowContext(ctx, `SELECT state FROM oauth_pending_enrollments WHERE id=$1`, invitationPendingID).
+		Scan(&invitationPendingState); err != nil || invitationPendingState != "pending" {
+		t.Fatalf("invitation-required pending state=%q err=%v", invitationPendingState, err)
+	}
+
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE nodes SET allow_register=true,registration_policy_state='open',
+		  registration_policy_version=5,registration_policy_expires_at=now()+interval '1 hour',
+		  registration_policy_observed_at=now() WHERE id=$1`, node.ID); err != nil {
+		t.Fatal(err)
+	}
+	disabledUser := &store.User{
+		Username: "disabled-oauth-user", DisplayName: "Disabled OAuth User", AuthProvider: "linuxdo",
+		OAuthID:    sql.NullString{String: "disabled-subject", Valid: true},
+		HomeNodeID: sql.NullInt64{Int64: node.ID, Valid: true}, Status: "active",
+	}
+	if err := st.CreateUser(ctx, disabledUser); err != nil {
+		t.Fatalf("create disabled OAuth user: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `UPDATE users SET status='disabled' WHERE id=$1`, disabledUser.ID); err != nil {
+		t.Fatal(err)
+	}
+	disabledClient, _ := newPendingClient("disabled-subject")
+	assertControllerHTTPStatus(t, disabledClient, http.MethodPost, completeURL,
+		requestFor("75100000-0000-4000-8000-000000000006"), false, http.StatusForbidden)
+}
+
 func oauthProviderResponse(request *http.Request, status int, body string) *http.Response {
 	return &http.Response{
 		StatusCode: status,

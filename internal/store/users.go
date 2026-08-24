@@ -454,7 +454,7 @@ func stagePasswordMaterialCount(
 func (s *Store) ListUsers(ctx context.Context) ([]*User, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 	  SELECT u.id, COALESCE(gu.id,0), u.uuid, u.username, u.display_name, u.password_enc, u.password_hash,
-	    auth_provider, oauth_id, avatar_url, email, home_node_id, status, created_at
+	    u.auth_provider, u.oauth_id, u.avatar_url, u.email, u.home_node_id, u.status, u.created_at
 	  FROM users u LEFT JOIN global_users gu ON gu.legacy_user_id=u.id ORDER BY u.id`)
 	if err != nil {
 		return nil, err

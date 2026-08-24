@@ -135,6 +135,8 @@ func TestControllerAdminAndUserHTTPRoutesUseDurableFacts(t *testing.T) {
 		} {
 			assertControllerHTTPStatus(t, userClient, http.MethodGet, httpServer.URL+path, nil, false, http.StatusOK)
 		}
+		assertControllerHTTPStatus(t, userClient, http.MethodGet,
+			httpServer.URL+"/api/users/me/restores/not-a-uuid", nil, false, http.StatusBadRequest)
 		assertControllerHTTPStatus(t, userClient, http.MethodPost, httpServer.URL+"/api/auth/logout", nil, true, http.StatusOK)
 		assertControllerHTTPStatus(t, userClient, http.MethodGet, httpServer.URL+"/api/users/me", nil, false, http.StatusUnauthorized)
 		assertControllerHTTPStatus(t, userClient, http.MethodGet, httpServer.URL+"/api/admin/overview", nil, false, http.StatusUnauthorized)
@@ -183,13 +185,24 @@ func TestControllerAdminAndUserHTTPRoutesUseDurableFacts(t *testing.T) {
 			"/api/admin/node-links",
 			"/api/admin/users?limit=1&q=admin-http-user&status=active",
 			"/api/admin/backups?limit=1",
+			"/api/admin/controller-backups?limit=10",
 			"/api/admin/alerts/protection?limit=10",
+			"/api/admin/audit?limit=10",
+			"/api/admin/ai/status",
+			"/api/admin/ai/advisories?limit=10",
+			"/api/admin/ai/requests?limit=10&task_type=node_capacity",
 			"/api/admin/admins",
 		} {
 			assertControllerHTTPStatus(t, adminClient, http.MethodGet, httpServer.URL+path, nil, false, http.StatusOK)
 		}
 		assertControllerHTTPStatus(t, adminClient, http.MethodGet, httpServer.URL+"/api/admin/users?limit=101", nil, false, http.StatusBadRequest)
 		assertControllerHTTPStatus(t, adminClient, http.MethodGet, httpServer.URL+"/api/admin/backups?before=-1", nil, false, http.StatusBadRequest)
+		assertControllerHTTPStatus(t, adminClient, http.MethodGet, httpServer.URL+"/api/admin/controller-backups?limit=101", nil, false, http.StatusBadRequest)
+		assertControllerHTTPStatus(t, adminClient, http.MethodGet, httpServer.URL+"/api/admin/audit?before=-1", nil, false, http.StatusBadRequest)
+		assertControllerHTTPStatus(t, adminClient, http.MethodPost, httpServer.URL+"/api/admin/controller-backups", nil, true, http.StatusOK)
+		assertControllerHTTPStatus(t, adminClient, http.MethodPost,
+			httpServer.URL+"/api/admin/users/"+url.PathEscape(user.UUID)+"/storage-repair-target",
+			map[string]any{"target_node_id": 0}, true, http.StatusNotFound)
 
 		status, _, backupBody := controllerHTTPRequest(
 			t, adminClient, http.MethodGet,

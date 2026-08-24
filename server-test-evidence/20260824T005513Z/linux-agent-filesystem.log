@@ -1,0 +1,58 @@
+=== RUN   TestAbortBackupCancellationSurvivesAgentRestart
+=== PAUSE TestAbortBackupCancellationSurvivesAgentRestart
+=== RUN   TestConflictResolutionCommandsPublishAtomicallyAndReplayReceipt
+--- PASS: TestConflictResolutionCommandsPublishAtomicallyAndReplayReceipt (0.01s)
+=== RUN   TestConflictResolutionPublishIsSerializedByReplicaMutationMu
+--- PASS: TestConflictResolutionPublishIsSerializedByReplicaMutationMu (0.10s)
+=== RUN   TestConflictResolutionDecisionPagesArePrivateAndImmutable
+=== PAUSE TestConflictResolutionDecisionPagesArePrivateAndImmutable
+=== RUN   TestConflictResolutionPublishAllowedWithoutActiveLease
+=== PAUSE TestConflictResolutionPublishAllowedWithoutActiveLease
+=== RUN   TestConflictResolutionPublishBlockedByActiveWriterLease
+=== PAUSE TestConflictResolutionPublishBlockedByActiveWriterLease
+=== RUN   TestConflictResolutionPublishAllowsOnlyMatchingLocalSessionEpoch
+=== PAUSE TestConflictResolutionPublishAllowsOnlyMatchingLocalSessionEpoch
+=== RUN   TestSnapshotPublishCrashHelper
+--- PASS: TestSnapshotPublishCrashHelper (0.00s)
+=== RUN   TestSnapshotPublishSurvivesCrashAtEveryAtomicBoundary
+=== RUN   TestSnapshotPublishSurvivesCrashAtEveryAtomicBoundary/staging_durable
+=== RUN   TestSnapshotPublishSurvivesCrashAtEveryAtomicBoundary/after_atomic_swap
+=== RUN   TestSnapshotPublishSurvivesCrashAtEveryAtomicBoundary/published_durable
+--- PASS: TestSnapshotPublishSurvivesCrashAtEveryAtomicBoundary (0.04s)
+    --- PASS: TestSnapshotPublishSurvivesCrashAtEveryAtomicBoundary/staging_durable (0.02s)
+    --- PASS: TestSnapshotPublishSurvivesCrashAtEveryAtomicBoundary/after_atomic_swap (0.01s)
+    --- PASS: TestSnapshotPublishSurvivesCrashAtEveryAtomicBoundary/published_durable (0.01s)
+=== RUN   TestAgentRestartCleansAtomicSwapBeforeRearmingConsumedCapability
+--- PASS: TestAgentRestartCleansAtomicSwapBeforeRearmingConsumedCapability (0.02s)
+=== RUN   TestSnapshotFileWritePropagatesKernelDiskFull
+--- PASS: TestSnapshotFileWritePropagatesKernelDiskFull (0.00s)
+=== RUN   TestSnapshotUnsupportedAtomicExchangeKeepsPreviousReplica
+--- PASS: TestSnapshotUnsupportedAtomicExchangeKeepsPreviousReplica (0.00s)
+=== RUN   TestSnapshotPublishesLargeArchiveWithoutPartialReplica
+--- PASS: TestSnapshotPublishesLargeArchiveWithoutPartialReplica (0.33s)
+=== RUN   TestRunSnapshotDirectPublishesAtomicallyAndReleasesUserGate
+--- PASS: TestRunSnapshotDirectPublishesAtomicallyAndReleasesUserGate (0.02s)
+=== RUN   TestRunSnapshotNetworkFailureStillReleasesGateAndCleansTask
+--- PASS: TestRunSnapshotNetworkFailureStillReleasesGateAndCleansTask (0.01s)
+=== RUN   TestRunSnapshotRelayEncryptsThenTargetPublishesAndConfirms
+--- PASS: TestRunSnapshotRelayEncryptsThenTargetPublishesAndConfirms (0.01s)
+=== RUN   TestAbortBackupCancelsSnapshotAndEventuallyReleasesUserGate
+--- PASS: TestAbortBackupCancelsSnapshotAndEventuallyReleasesUserGate (0.00s)
+=== RUN   TestRunSnapshotStopsWhenGateRenewalCannotBeConfirmed
+=== PAUSE TestRunSnapshotStopsWhenGateRenewalCannotBeConfirmed
+=== RUN   TestRunRestoreTransferReverifiesArchiveAndAtomicallyPublishesComputeData
+--- PASS: TestRunRestoreTransferReverifiesArchiveAndAtomicallyPublishesComputeData (0.01s)
+=== CONT  TestAbortBackupCancellationSurvivesAgentRestart
+=== CONT  TestConflictResolutionPublishBlockedByActiveWriterLease
+--- PASS: TestConflictResolutionPublishBlockedByActiveWriterLease (0.00s)
+=== CONT  TestRunSnapshotStopsWhenGateRenewalCannotBeConfirmed
+--- PASS: TestAbortBackupCancellationSurvivesAgentRestart (0.00s)
+=== CONT  TestConflictResolutionPublishAllowedWithoutActiveLease
+=== CONT  TestConflictResolutionPublishAllowsOnlyMatchingLocalSessionEpoch
+--- PASS: TestConflictResolutionPublishAllowedWithoutActiveLease (0.00s)
+=== CONT  TestConflictResolutionDecisionPagesArePrivateAndImmutable
+--- PASS: TestConflictResolutionPublishAllowsOnlyMatchingLocalSessionEpoch (0.00s)
+--- PASS: TestConflictResolutionDecisionPagesArePrivateAndImmutable (0.00s)
+--- PASS: TestRunSnapshotStopsWhenGateRenewalCannotBeConfirmed (4.19s)
+PASS
+ok  	stcontrol/internal/agent	4.774s

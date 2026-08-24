@@ -1,0 +1,21 @@
+2026-08-24T09:56:08+08:00
+               Local time: Mon 2026-08-24 09:56:08 CST
+           Universal time: Mon 2026-08-24 01:56:08 UTC
+                 RTC time: Mon 2026-08-24 01:56:15
+                Time zone: Asia/Shanghai (CST, +0800)
+System clock synchronized: no
+              NTP service: n/a
+          RTC in local TZ: no
+State  Recv-Q Send-Q Local Address:Port  Peer Address:PortProcess                                                                                                                    
+LISTEN 0      65535      127.0.0.1:55432      0.0.0.0:*    users:(("docker-proxy",pid=2502819,fd=8))                                                                                 
+LISTEN 0      511          0.0.0.0:443        0.0.0.0:*    users:(("nginx",pid=736,fd=7),("nginx",pid=735,fd=7),("nginx",pid=733,fd=7),("nginx",pid=732,fd=7),("nginx",pid=731,fd=7))
+LISTEN 0      511          0.0.0.0:80         0.0.0.0:*    users:(("nginx",pid=736,fd=5),("nginx",pid=735,fd=5),("nginx",pid=733,fd=5),("nginx",pid=732,fd=5),("nginx",pid=731,fd=5))
+LISTEN 0      128          0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=710,fd=6))                                                                                             
+LISTEN 0      65535      127.0.0.1:8443       0.0.0.0:*    users:(("docker-proxy",pid=1156139,fd=8))                                                                                 
+LISTEN 0      511             [::]:443           [::]:*    users:(("nginx",pid=736,fd=8),("nginx",pid=735,fd=8),("nginx",pid=733,fd=8),("nginx",pid=732,fd=8),("nginx",pid=731,fd=8))
+LISTEN 0      511             [::]:80            [::]:*    users:(("nginx",pid=736,fd=6),("nginx",pid=735,fd=6),("nginx",pid=733,fd=6),("nginx",pid=732,fd=6),("nginx",pid=731,fd=6))
+LISTEN 0      128             [::]:22            [::]:*    users:(("sshd",pid=710,fd=7))                                                                                             
+NAMES                              IMAGE                  STATUS                PORTS
+stcontrol-acceptance-pg-20260824   postgres:17-alpine     Up About an hour      127.0.0.1:55432->5432/tcp
+stcontrol-controller-1             stcontrol-controller   Up 3 days             127.0.0.1:8443->8443/tcp
+stcontrol-db-1                     postgres:17-alpine     Up 6 days (healthy)   5432/tcp

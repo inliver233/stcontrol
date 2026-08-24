@@ -1,0 +1,16 @@
+                                         version                                          
+------------------------------------------------------------------------------------------
+ PostgreSQL 17.10 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+(1 row)
+
+  datname  | numbackends | xact_commit | xact_rollback | deadlocks | temp_files | blk_read_time | blk_write_time 
+-----------+-------------+-------------+---------------+-----------+------------+---------------+----------------
+ stcontrol |           7 |     3899209 |         51101 |         0 |          0 |             0 |              0
+(1 row)
+
+ state  | count 
+--------+-------
+ active |     2
+ idle   |     5
+(2 rows)
+

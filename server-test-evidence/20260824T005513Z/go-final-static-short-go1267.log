@@ -1,0 +1,11 @@
+all modules verified
+?   	stcontrol/cmd/agent	[no test files]
+?   	stcontrol/cmd/controller	[no test files]
+ok  	stcontrol/internal	0.535s
+ok  	stcontrol/internal/agent	7.657s
+ok  	stcontrol/internal/ai	0.018s
+ok  	stcontrol/internal/config	0.018s
+ok  	stcontrol/internal/controller	3.587s
+ok  	stcontrol/internal/crypto	4.463s
+?   	stcontrol/internal/protocol	[no test files]
+ok  	stcontrol/internal/store	0.372s

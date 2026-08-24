@@ -1,6 +1,8 @@
 module stcontrol
 
-go 1.22.5
+go 1.26.0
+
+toolchain go1.26.7
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
@@ -8,9 +10,9 @@ require (
 	github.com/klauspost/compress v1.17.9
 	github.com/lib/pq v1.10.9
 	github.com/shirou/gopsutil/v3 v3.24.5
-	golang.org/x/crypto v0.31.0
-	golang.org/x/sys v0.28.0
-	golang.org/x/text v0.21.0
+	golang.org/x/crypto v0.55.0
+	golang.org/x/sys v0.47.0
+	golang.org/x/text v0.41.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

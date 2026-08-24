@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -12,6 +13,7 @@ import (
 func newRouter() *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	r.Use(securityHeadersMiddleware)
 	// No middleware.RealIP: it would unconditionally trust spoofable
 	// True-Client-IP/X-Real-IP/X-Forwarded-For headers and rewrite RemoteAddr
 	// before ratelimit.clientIP runs, defeating its "private peer only"
@@ -23,6 +25,38 @@ func newRouter() *chi.Mux {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Compress(5))
 	return r
+}
+
+// securityHeadersMiddleware provides a safe application-level baseline even
+// when the controller is deployed behind a reverse proxy. HSTS is ignored by
+// browsers on plaintext development connections, so emitting it consistently
+// also covers TLS termination at a trusted local proxy without relying on a
+// spoofable X-Forwarded-Proto header.
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headers := w.Header()
+		headers.Set("Content-Security-Policy", strings.Join([]string{
+			"default-src 'self'",
+			"base-uri 'none'",
+			"frame-ancestors 'none'",
+			"form-action 'self'",
+			"object-src 'none'",
+			"script-src 'self'",
+			// The current React UI uses style attributes. This exception is
+			// deliberately limited to CSS; inline scripts remain forbidden.
+			"style-src 'self' 'unsafe-inline'",
+			"img-src 'self' data:",
+			"font-src 'self'",
+			"connect-src 'self'",
+			"manifest-src 'self'",
+		}, "; "))
+		headers.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		headers.Set("X-Content-Type-Options", "nosniff")
+		headers.Set("X-Frame-Options", "DENY")
+		headers.Set("Referrer-Policy", "no-referrer")
+		headers.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // queryRedactingLogFormatter keeps request query parameters available to the
@@ -66,11 +100,11 @@ func (s *Server) routes(r *chi.Mux) {
 
 	// 认证（R21/R22：登录/注册端点限流 + 用户名锁定，防暴力破解）
 	r.Route("/api/auth", func(r chi.Router) {
-		r.Use(s.loginRateLimitMiddleware, s.loginLockoutMiddleware)
-		r.Post("/register", s.handleRegister)
+		r.Use(s.rateLimitMiddleware)
+		r.With(s.loginRateLimitMiddleware, s.loginLockoutMiddleware).Post("/register", s.handleRegister)
 		r.Get("/registration/status", s.handleRegistrationStatus)
-		r.Post("/login", s.handleLogin)
-		r.Post("/admin/login", s.handleAdminLogin)
+		r.With(s.loginRateLimitMiddleware, s.loginLockoutMiddleware).Post("/login", s.handleLogin)
+		r.With(s.loginRateLimitMiddleware, s.loginLockoutMiddleware).Post("/admin/login", s.handleAdminLogin)
 		// Keep logout inside this route tree. Mounting /api/auth/logout
 		// later under /api is shadowed by chi's existing /api/auth subtree
 		// and produces a 404 before the authenticated handler is reached.

@@ -1,0 +1,2 @@
+/var/log/nginx/access.log lines=661 bytes=118676 sha256=dd8633f34dc90ac6936689ff8a5e7b9674105a489fecb1b0601a99d33e3e0c29
+/var/log/nginx/error.log lines=0 bytes=0 sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

@@ -1,0 +1,13 @@
+
+> stcontrol-web@0.1.0 test
+> vitest run
+
+
+ RUN  v4.1.11 /root/stcontrol/web
+
+
+ Test Files  4 passed (4)
+      Tests  25 passed (25)
+   Start at  10:24:10
+   Duration  1.35s (transform 1.29s, setup 0ms, import 2.61s, tests 81ms, environment 1ms)
+

@@ -1,0 +1,6 @@
+=== RUN   TestPostgresCriticalConcurrency
+=== RUN   TestPostgresCriticalConcurrency/legacy_admin_user_list_qualifies_joined_columns
+--- PASS: TestPostgresCriticalConcurrency (2.66s)
+    --- PASS: TestPostgresCriticalConcurrency/legacy_admin_user_list_qualifies_joined_columns (0.00s)
+PASS
+ok  	stcontrol/internal/store	2.670s

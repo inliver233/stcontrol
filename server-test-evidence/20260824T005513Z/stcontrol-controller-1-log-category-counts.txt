@@ -1,0 +1,6 @@
+password_word=1
+secret_assignment_shape=0
+oauth_code_state=0
+bearer=0
+capability=0
+psk=0

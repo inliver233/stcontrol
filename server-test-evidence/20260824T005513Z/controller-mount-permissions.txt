@@ -1,0 +1,2 @@
+-rw------- 600 root:root /root/stcontrol/controller.docker.yaml
+drwxr-xr-x 755 root:root /root/stcontrol/certs

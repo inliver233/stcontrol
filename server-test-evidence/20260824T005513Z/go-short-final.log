@@ -1,0 +1,10 @@
+?   	stcontrol/cmd/agent	[no test files]
+?   	stcontrol/cmd/controller	[no test files]
+ok  	stcontrol/internal	0.226s
+ok  	stcontrol/internal/agent	7.930s
+ok  	stcontrol/internal/ai	0.020s
+ok  	stcontrol/internal/config	0.017s
+ok  	stcontrol/internal/controller	2.775s
+ok  	stcontrol/internal/crypto	2.628s
+?   	stcontrol/internal/protocol	[no test files]
+ok  	stcontrol/internal/store	0.054s

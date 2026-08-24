@@ -68,7 +68,16 @@ func (s *Store) CreateLoginHandoff(ctx context.Context, p CreateLoginHandoffPara
 	if p.Now.IsZero() {
 		p.Now = time.Now().UTC()
 	}
+	var result LoginHandoff
+	err := retrySerializable(ctx, func() error {
+		var attemptErr error
+		result, attemptErr = s.createLoginHandoffOnce(ctx, p)
+		return attemptErr
+	})
+	return result, err
+}
 
+func (s *Store) createLoginHandoffOnce(ctx context.Context, p CreateLoginHandoffParams) (LoginHandoff, error) {
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return LoginHandoff{}, err

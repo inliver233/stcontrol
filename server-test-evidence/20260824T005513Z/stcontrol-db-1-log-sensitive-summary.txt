@@ -1,0 +1,4 @@
+lines=216167
+query_lines=0
+sensitive_keyword_lines=41557
+redacted_lines=0

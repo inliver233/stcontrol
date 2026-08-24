@@ -1,0 +1,7 @@
+/etc/nginx/nginx.conf-38-	# Logging Settings
+/etc/nginx/nginx.conf-39-	##
+/etc/nginx/nginx.conf-40-
+/etc/nginx/nginx.conf:41:	access_log /var/log/nginx/access.log;
+/etc/nginx/nginx.conf-42-
+/etc/nginx/nginx.conf-43-	##
+/etc/nginx/nginx.conf-44-	# Gzip Settings

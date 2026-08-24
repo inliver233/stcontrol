@@ -1,0 +1,3 @@
+2026-08-24T02:48:33Z	INFO	"--format cyclonedx" disables security scanning. Specify "--scanners vuln" explicitly if you want to include vulnerabilities in the "cyclonedx" report.
+2026-08-24T02:48:33Z	INFO	Detected OS	family="alpine" version="3.24.1"
+2026-08-24T02:48:33Z	INFO	Number of language-specific files	num=1

@@ -1,0 +1,46 @@
+[
+  {
+    "RuleID": "generic-api-key",
+    "Description": "Detected a Generic API Key, potentially exposing access to various services and sensitive operations.",
+    "File": "internal/controller/ai_adoption_postgres_integration_test.go",
+    "StartLine": 260,
+    "Commit": "681b8b119567d38e9247355a86041cb9ef246c47",
+    "Author": "inliver233",
+    "Date": "2026-08-14T23:11:13Z",
+    "Message": "feat: implement decision-4 auto_low_risk graded adoption chain (AI supervision)\n\nCompletes the largest remaining requirement gap from the 2026-08-15 review:\nthe ai-supervision decision-4 adoption chain is now wired end to end.\n\n- internal/ai: Supervisor.WithAdopter wires a deterministic executor that runs\n  ONLY in auto_low_risk mode, only for non-abstaining advisories at/above the\n  configured confidence floor (default 0.8, clamped [0.5,1)), only for actions\n  the validator whitelist marks reversible (EXPLAIN_ALERT, NODE_ORDER,\n  BACKUP_ORDER), and never when a risk flag or task family demands human\n  confirmation (disaster/conflict/import/recovery are structurally excluded).\n  Outcomes are audited as auto_adopted/system with a deterministic effect\n  reference; shadow/advisory modes keep zero-effect behavior (mode gate test).\n- internal/store + migration 0048: ai_adoption_effects persists reversible\n  effects (inspection_summary, alert_note, node/backup order hints) that\n  expire with their advisory and are idempotent per (request, kind); outcome\n  decision check extended with auto_adopted.\n- internal/controller ai_adoption.go: the executor re-checks every hard gate\n  against CURRENT store state - orderings must cover every currently\n  eligible node exactly once (partial/stale orderings fail closed), alert\n  notes re-run the secret scan and only annotate cited alerts, everything\n  degrades to no-hint on lookup errors. Consumed hints only reorder nodes\n  WITHIN deterministic rank tiers (available nodes, backup target, storage\n  repair) and can never promote an ineligible node or hide an eligible one.\n- Admin endpoint POST /api/admin/ai/advisories/{id}/adopt reuses the same\n  executor and gates for manual adoption (accepted/admin audit row); AI\n  status panel exposes adoption counters; the React AI page gains the\n  adopt button, adoption stats and the auto-adopted cluster summary.\n- Real PostgreSQL tests: ordering hard gates (full/partial/stale), alert\n  note merge + secret refusal, supervisor mode/confidence gates. Full real\n  suite 42 PASS / 0 SKIP / 0 FAIL (baseline 39 + 3).",
+    "Fingerprint": "681b8b119567d38e9247355a86041cb9ef246c47:internal/controller/ai_adoption_postgres_integration_test.go:generic-api-key:260"
+  },
+  {
+    "RuleID": "generic-api-key",
+    "Description": "Detected a Generic API Key, potentially exposing access to various services and sensitive operations.",
+    "File": "run-live-controller.bat",
+    "StartLine": 3,
+    "Commit": "5770362d3291e5c4b0eec99f8b2ef70120af9235",
+    "Author": "inliver233",
+    "Date": "2026-08-13T16:07:34Z",
+    "Message": "fix: repair WIP replica cleanup and storage repair SQL against real schema\n\n- replica_cleanup.go and snapshots.go: legacy.handle -> legacy.username (users table has no handle column)\n\n- storage_repair.go: cast param to timestamptz so CASE expression is not inferred as interval\n\n- verified against real PostgreSQL: store and controller integration tests now green",
+    "Fingerprint": "5770362d3291e5c4b0eec99f8b2ef70120af9235:run-live-controller.bat:generic-api-key:3"
+  },
+  {
+    "RuleID": "generic-api-key",
+    "Description": "Detected a Generic API Key, potentially exposing access to various services and sensitive operations.",
+    "File": "internal/agent/snapshot_run_linux_test.go",
+    "StartLine": 37,
+    "Commit": "713a784b69f890a793d0132152a916f435ec3830",
+    "Author": "inliver233",
+    "Date": "2026-08-09T13:42:49Z",
+    "Message": "fix: recover per-user snapshot drains",
+    "Fingerprint": "713a784b69f890a793d0132152a916f435ec3830:internal/agent/snapshot_run_linux_test.go:generic-api-key:37"
+  },
+  {
+    "RuleID": "generic-api-key",
+    "Description": "Detected a Generic API Key, potentially exposing access to various services and sensitive operations.",
+    "File": "internal/agent/peer_witness_test.go",
+    "StartLine": 19,
+    "Commit": "cce0c502e8f0d875acf16857766ecc81a5474027",
+    "Author": "inliver233",
+    "Date": "2026-08-08T21:14:17Z",
+    "Message": "feat: require peer witness quorum for disaster mode",
+    "Fingerprint": "cce0c502e8f0d875acf16857766ecc81a5474027:internal/agent/peer_witness_test.go:generic-api-key:19"
+  }
+]

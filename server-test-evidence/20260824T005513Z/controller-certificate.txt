@@ -1,0 +1,9 @@
+subject=O=CloudFlare, Inc., OU=CloudFlare Origin CA, CN=CloudFlare Origin Certificate
+issuer=C=US, O=CloudFlare, Inc., OU=CloudFlare Origin SSL Certificate Authority, L=San Francisco, ST=California
+serial=629262662A53423DDEA5D801FF8FDA2F09F9F938
+notBefore=Nov 12 11:18:00 2025 GMT
+notAfter=Nov  8 11:18:00 2040 GMT
+X509v3 Extended Key Usage: 
+    TLS Web Client Authentication, TLS Web Server Authentication
+            X509v3 Subject Alternative Name: 
+                DNS:*.pixcora.com, DNS:pixcora.com

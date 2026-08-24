@@ -1,0 +1,4 @@
+NAME                               CPU %     MEM USAGE / LIMIT    MEM %     NET I/O          BLOCK I/O         PIDS
+stcontrol-controller-1             0.00%     17.57MiB / 5.79GiB   0.30%     283MB / 952MB    11.3MB / 0B       13
+stcontrol-db-1                     0.03%     121.7MiB / 5.79GiB   2.05%     1.55GB / 482MB   200MB / 1.02GB    12
+stcontrol-acceptance-pg-20260824   0.00%     351.1MiB / 5.79GiB   5.92%     234MB / 130MB    12.4MB / 13.2MB   6

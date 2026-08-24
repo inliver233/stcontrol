@@ -1,0 +1,15 @@
+Connecting to 127.0.0.1
+depth=0 O=CloudFlare, Inc., OU=CloudFlare Origin CA, CN=CloudFlare Origin Certificate
+verify error:num=20:unable to get local issuer certificate
+depth=0 O=CloudFlare, Inc., OU=CloudFlare Origin CA, CN=CloudFlare Origin Certificate
+verify error:num=21:unable to verify the first certificate
+CONNECTION ESTABLISHED
+Protocol version: TLSv1.2
+Ciphersuite: ECDHE-RSA-AES256-GCM-SHA384
+Peer certificate: O=CloudFlare, Inc., OU=CloudFlare Origin CA, CN=CloudFlare Origin Certificate
+Hash used: SHA256
+Signature type: rsa_pss_rsae_sha256
+Verification error: unable to verify the first certificate
+Supported Elliptic Curve Point Formats: uncompressed:ansiX962_compressed_prime:ansiX962_compressed_char2
+Peer Temp Key: X25519, 253 bits
+DONE

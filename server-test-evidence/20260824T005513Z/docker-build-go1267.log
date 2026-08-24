@@ -1,0 +1,149 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile.controller
+#1 transferring dockerfile: 874B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:24-alpine3.24@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
+#2 DONE 0.1s
+
+#3 [internal] load metadata for docker.io/library/golang:1.26.7-alpine3.24@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468
+#3 DONE 0.1s
+
+#4 [internal] load metadata for docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+#4 DONE 0.1s
+
+#5 [internal] load .dockerignore
+#5 transferring context: 233B done
+#5 DONE 0.0s
+
+#6 [internal] load build context
+#6 DONE 0.0s
+
+#7 [gobuild 1/6] FROM docker.io/library/golang:1.26.7-alpine3.24@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468
+#7 resolve docker.io/library/golang:1.26.7-alpine3.24@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468 0.1s done
+#7 DONE 0.1s
+
+#8 [webbuild 1/6] FROM docker.io/library/node:24-alpine3.24@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
+#8 resolve docker.io/library/node:24-alpine3.24@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
+#8 ...
+
+#9 [stage-2 1/5] FROM docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+#9 resolve docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b 0.1s done
+#9 DONE 0.1s
+
+#8 [webbuild 1/6] FROM docker.io/library/node:24-alpine3.24@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
+#8 resolve docker.io/library/node:24-alpine3.24@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 0.1s done
+#8 ...
+
+#6 [internal] load build context
+#6 transferring context: 597.64kB 0.2s done
+#6 DONE 0.3s
+
+#8 [webbuild 1/6] FROM docker.io/library/node:24-alpine3.24@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
+#8 DONE 0.4s
+
+#10 [webbuild 2/6] WORKDIR /web
+#10 ...
+
+#7 [gobuild 1/6] FROM docker.io/library/golang:1.26.7-alpine3.24@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468
+#7 DONE 0.5s
+
+#10 [webbuild 2/6] WORKDIR /web
+#10 DONE 0.2s
+
+#11 [gobuild 2/6] WORKDIR /src
+#11 DONE 0.1s
+
+#12 [webbuild 3/6] COPY web/package*.json ./
+#12 DONE 0.1s
+
+#13 [gobuild 3/6] COPY go.mod go.sum ./
+#13 DONE 0.1s
+
+#14 [webbuild 4/6] RUN npm install --no-audit --no-fund
+#14 ...
+
+#15 [stage-2 2/5] RUN apk add --no-cache ca-certificates tzdata
+#15 1.324 (1/2) Installing ca-certificates (20260611-r0)
+#15 1.361 (2/2) Installing tzdata (2026c-r0)
+#15 1.431 Executing busybox-1.37.0-r31.trigger
+#15 1.441 Executing ca-certificates-20260611-r0.trigger
+#15 1.497 OK: 8837 KiB in 18 packages
+#15 DONE 1.7s
+
+#16 [stage-2 3/5] WORKDIR /app
+#16 DONE 0.2s
+
+#17 [gobuild 4/6] RUN go mod download
+#17 DONE 4.1s
+
+#14 [webbuild 4/6] RUN npm install --no-audit --no-fund
+#14 ...
+
+#18 [gobuild 5/6] COPY . .
+#18 DONE 1.1s
+
+#14 [webbuild 4/6] RUN npm install --no-audit --no-fund
+#14 ...
+
+#19 [gobuild 6/6] RUN CGO_ENABLED=0 go build -o /out/controller ./cmd/controller
+#19 ...
+
+#14 [webbuild 4/6] RUN npm install --no-audit --no-fund
+#14 7.952 
+#14 7.952 added 102 packages in 7s
+#14 7.956 npm warn allow-scripts 1 package has install scripts not yet covered by allowScripts:
+#14 7.956 npm warn allow-scripts   esbuild@0.21.5 (postinstall: node install.js)
+#14 7.956 npm warn allow-scripts
+#14 7.956 npm warn allow-scripts Run `npm approve-scripts --allow-scripts-pending` to review, or `npm approve-scripts <pkg>` to allow.
+#14 7.965 npm notice
+#14 7.965 npm notice New major version of npm available! 11.17.0 -> 12.0.2
+#14 7.965 npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+#14 7.965 npm notice To update run: npm install -g npm@12.0.2
+#14 7.965 npm notice
+#14 DONE 8.4s
+
+#20 [webbuild 5/6] COPY web/ ./
+#20 DONE 0.2s
+
+#19 [gobuild 6/6] RUN CGO_ENABLED=0 go build -o /out/controller ./cmd/controller
+#19 ...
+
+#21 [webbuild 6/6] RUN npm run build
+#21 0.828 
+#21 0.828 > stcontrol-web@0.1.0 build
+#21 0.828 > tsc -b && vite build
+#21 0.828 
+#21 10.82 vite v5.4.21 building for production...
+#21 10.93 transforming...
+#21 14.41 ✓ 45 modules transformed.
+#21 15.04 rendering chunks...
+#21 15.06 computing gzip size...
+#21 15.08 dist/index.html                   0.39 kB │ gzip:  0.28 kB
+#21 15.08 dist/assets/index-BvTHv7h1.css   10.73 kB │ gzip:  2.67 kB
+#21 15.08 dist/assets/index-C3KDIJc5.js   257.26 kB │ gzip: 83.08 kB
+#21 15.08 ✓ built in 4.21s
+#21 DONE 15.3s
+
+#19 [gobuild 6/6] RUN CGO_ENABLED=0 go build -o /out/controller ./cmd/controller
+#19 DONE 46.6s
+
+#22 [stage-2 4/5] COPY --from=gobuild /out/controller /app/controller
+#22 DONE 0.1s
+
+#23 [stage-2 5/5] COPY --from=webbuild /web/dist /app/web/dist
+#23 DONE 0.1s
+
+#24 exporting to image
+#24 exporting layers
+#24 exporting layers 1.4s done
+#24 exporting manifest sha256:88dc94f0abc9fa32ba0d8fd28a26569e0e9cc7c3d581057621dc3954020a0c41 0.0s done
+#24 exporting config sha256:83908836d150db7b379b91cf256e731f1e57d0e5f5e272a15a31d73c58a72e9d 0.0s done
+#24 exporting attestation manifest sha256:7926da5e6ee6d43361371476c4b79a4ef1a9b69612f2b58824fc4a1339dd57a1 0.0s done
+#24 exporting manifest list sha256:89ddaf2c1a4a54df848d5d43485adc3dccc11e48e5962789cfaf503025b95e58
+#24 exporting manifest list sha256:89ddaf2c1a4a54df848d5d43485adc3dccc11e48e5962789cfaf503025b95e58 0.0s done
+#24 naming to docker.io/library/stcontrol-controller:acceptance-go1267 done
+#24 unpacking to docker.io/library/stcontrol-controller:acceptance-go1267
+#24 unpacking to docker.io/library/stcontrol-controller:acceptance-go1267 0.5s done
+#24 DONE 2.1s

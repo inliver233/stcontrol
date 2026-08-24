@@ -1,0 +1,127 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile.controller
+#1 transferring dockerfile: 869B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/golang:1.26.7-alpine3.24@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468
+#2 DONE 0.1s
+
+#3 [internal] load metadata for docker.io/library/node:24-alpine3.24@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
+#3 DONE 0.1s
+
+#4 [internal] load metadata for docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+#4 DONE 0.1s
+
+#5 [internal] load .dockerignore
+#5 transferring context: 233B done
+#5 DONE 0.0s
+
+#6 [internal] load build context
+#6 DONE 0.0s
+
+#7 [webbuild 1/6] FROM docker.io/library/node:24-alpine3.24@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
+#7 resolve docker.io/library/node:24-alpine3.24@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 0.1s done
+#7 DONE 0.1s
+
+#8 [gobuild 1/6] FROM docker.io/library/golang:1.26.7-alpine3.24@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468
+#8 resolve docker.io/library/golang:1.26.7-alpine3.24@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468 0.1s done
+#8 DONE 0.1s
+
+#9 [webbuild 2/6] WORKDIR /web
+#9 CACHED
+
+#10 [stage-2 1/5] FROM docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+#10 resolve docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b 0.1s done
+#10 CACHED
+
+#11 [gobuild 2/6] WORKDIR /src
+#11 CACHED
+
+#6 [internal] load build context
+#6 transferring context: 1.16MB 0.1s done
+#6 DONE 0.1s
+
+#12 [webbuild 3/6] COPY web/package*.json ./
+#12 DONE 0.1s
+
+#13 [gobuild 3/6] COPY go.mod go.sum ./
+#13 DONE 0.1s
+
+#14 [gobuild 4/6] RUN go mod download
+#14 ...
+
+#15 [stage-2 2/5] RUN apk add --no-cache ca-certificates tzdata
+#15 1.002 (1/2) Installing ca-certificates (20260611-r0)
+#15 1.030 (2/2) Installing tzdata (2026c-r0)
+#15 1.094 Executing busybox-1.37.0-r31.trigger
+#15 1.103 Executing ca-certificates-20260611-r0.trigger
+#15 1.155 OK: 8837 KiB in 18 packages
+#15 DONE 1.3s
+
+#16 [stage-2 3/5] WORKDIR /app
+#16 DONE 0.1s
+
+#17 [webbuild 4/6] RUN npm ci --no-audit --no-fund
+#17 ...
+
+#14 [gobuild 4/6] RUN go mod download
+#14 DONE 2.1s
+
+#18 [gobuild 5/6] COPY . .
+#18 DONE 0.6s
+
+#17 [webbuild 4/6] RUN npm ci --no-audit --no-fund
+#17 4.661 
+#17 4.661 added 61 packages in 4s
+#17 4.665 npm notice
+#17 4.665 npm notice New major version of npm available! 11.17.0 -> 12.0.2
+#17 4.665 npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+#17 4.665 npm notice To update run: npm install -g npm@12.0.2
+#17 4.665 npm notice
+#17 DONE 4.9s
+
+#19 [gobuild 6/6] RUN CGO_ENABLED=0 go build -o /out/controller ./cmd/controller
+#19 ...
+
+#20 [webbuild 5/6] COPY web/ ./
+#20 DONE 0.1s
+
+#21 [webbuild 6/6] RUN npm run build
+#21 0.513 
+#21 0.513 > stcontrol-web@0.1.0 build
+#21 0.513 > tsc -b && vite build
+#21 0.513 
+#21 7.062 vite v8.2.2 building client environment for production...
+#21 7.087 transforming...
+#21 7.285 ✓ 34 modules transformed.
+#21 7.368 rendering chunks...
+#21 7.491 computing gzip size...
+#21 7.502 dist/index.html                   0.39 kB │ gzip:  0.28 kB
+#21 7.502 dist/assets/index-Cptp5BGx.css   10.68 kB │ gzip:  2.63 kB
+#21 7.502 dist/assets/index-B7IEl9to.js   285.31 kB │ gzip: 87.60 kB
+#21 7.502 
+#21 7.504 ✓ built in 440ms
+#21 DONE 7.7s
+
+#19 [gobuild 6/6] RUN CGO_ENABLED=0 go build -o /out/controller ./cmd/controller
+#19 DONE 24.6s
+
+#22 [stage-2 4/5] COPY --from=gobuild /out/controller /app/controller
+#22 DONE 0.1s
+
+#23 [stage-2 5/5] COPY --from=webbuild /web/dist /app/web/dist
+#23 DONE 0.1s
+
+#24 exporting to image
+#24 exporting layers
+#24 exporting layers 1.2s done
+#24 exporting manifest sha256:5e385f20ed022486a91e019381cd43d73bf5a023682fdb16ee7c69343fe9323c 0.0s done
+#24 exporting config sha256:18951581012e193fc99347f65c54d6dc4473a75f4cf088e9cfb7c480c1a2c8e0 0.0s done
+#24 exporting attestation manifest sha256:08d122d7773ef18b5c084d5fea0c3f23facdab3aec5e8a2851f960d8ad7feb84 0.0s done
+#24 exporting manifest list sha256:c81469658bbe630dd9dc79b26849f24b2e28b1f4a5e8ea81fec8fc1280d1c807
+#24 exporting manifest list sha256:c81469658bbe630dd9dc79b26849f24b2e28b1f4a5e8ea81fec8fc1280d1c807 0.0s done
+#24 naming to docker.io/library/stcontrol-controller:acceptance-final done
+#24 unpacking to docker.io/library/stcontrol-controller:acceptance-final
+#24 unpacking to docker.io/library/stcontrol-controller:acceptance-final 0.3s done
+#24 DONE 1.7s

@@ -1,0 +1,23 @@
+total 912
+-rw-r----- 1 www-data adm 118676 Aug 24 09:56 access.log
+-rw-r----- 1 www-data adm 534499 Aug 24 00:10 access.log.1
+-rw-r----- 1 www-data adm  13612 Aug 15 00:04 access.log.10.gz
+-rw-r----- 1 www-data adm  14018 Aug 14 00:11 access.log.11.gz
+-rw-r----- 1 www-data adm   8950 Aug 13 00:30 access.log.12.gz
+-rw-r----- 1 www-data adm  13032 Aug 12 00:28 access.log.13.gz
+-rw-r----- 1 www-data adm  22668 Aug 11 00:56 access.log.14.gz
+-rw-r----- 1 www-data adm  25577 Aug 23 00:06 access.log.2.gz
+-rw-r----- 1 www-data adm  10736 Aug 22 00:00 access.log.3.gz
+-rw-r----- 1 www-data adm  20875 Aug 21 00:24 access.log.4.gz
+-rw-r----- 1 www-data adm  19929 Aug 19 23:28 access.log.5.gz
+-rw-r----- 1 www-data adm  19889 Aug 19 00:37 access.log.6.gz
+-rw-r----- 1 www-data adm  14063 Aug 18 00:14 access.log.7.gz
+-rw-r----- 1 www-data adm  22224 Aug 17 00:27 access.log.8.gz
+-rw-r----- 1 www-data adm  14015 Aug 15 23:41 access.log.9.gz
+-rw-r----- 1 www-data adm      0 Aug 23 00:10 error.log
+-rw-r----- 1 www-data adm    201 Aug 22 21:36 error.log.1
+-rw-r----- 1 www-data adm    187 Aug 20 14:30 error.log.2.gz
+-rw-r----- 1 www-data adm    186 Aug 19 23:28 error.log.3.gz
+-rw-r----- 1 www-data adm    180 Aug 16 21:43 error.log.4.gz
+-rw-r----- 1 www-data adm    320 Aug 14 08:25 error.log.5.gz
+-rw-r----- 1 www-data adm     94 Aug  9 23:34 error.log.6.gz

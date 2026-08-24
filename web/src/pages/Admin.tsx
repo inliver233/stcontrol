@@ -30,6 +30,10 @@ import type {
   UserDataFaultStatus,
 } from '../adminTypes'
 
+export function listOrEmpty<T>(items: T[] | null | undefined): T[] {
+  return items ?? []
+}
+
 function readCookie(name: string): string {
   const prefix = `${encodeURIComponent(name)}=`
   for (const part of document.cookie.split(';')) {
@@ -409,9 +413,10 @@ function NodesAdmin() {
   const load = () => Promise.all([adminApi.nodes(), adminApi.nodeLinks()])
     .then(async ([nodeData, linkData]) => {
       setLoadError('')
-      setNodes(nodeData.nodes ?? [])
-      setNodeLinks(linkData.links || [])
-      const tracked = (nodeData.nodes ?? []).filter((node: AdminNode) =>
+      const loadedNodes = listOrEmpty(nodeData.nodes)
+      setNodes(loadedNodes)
+      setNodeLinks(listOrEmpty(linkData.links))
+      const tracked = loadedNodes.filter((node: AdminNode) =>
         ['draining', 'retiring', 'decommissioned'].includes(node.operational_state))
       const results = await Promise.allSettled(tracked.map((node: AdminNode) => adminApi.retirement(node.id)))
       const progress: Record<number, NodeRetirement> = {}
@@ -420,7 +425,7 @@ function NodesAdmin() {
         if (result.status === 'fulfilled') progress[node.id] = result.value
       })
       setRetirements(progress)
-      const compatibilityTracked = (nodeData.nodes ?? []).filter((node: AdminNode) => node.compatibility_state !== 'compatible')
+      const compatibilityTracked = loadedNodes.filter((node: AdminNode) => node.compatibility_state !== 'compatible')
       const compatibilityResults = await Promise.allSettled(
         compatibilityTracked.map((node: AdminNode) => adminApi.compatibilityIncident(node.id)),
       )
@@ -925,7 +930,7 @@ function UsersAdmin() {
     setLoading(true)
     return adminApi.users(pageCursor, pageQuery, pageStatus)
       .then(d => {
-        setUsers(d.users); setHasMore(d.has_more); setNextCursor(d.next_cursor); setError('')
+        setUsers(listOrEmpty(d.users)); setHasMore(d.has_more); setNextCursor(d.next_cursor); setError('')
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
@@ -1275,7 +1280,7 @@ export function BackupsAdmin() {
   const load = (pageCursor = cursor, pageStatus = status, pageUserID = userID) => {
     setLoading(true)
     return adminApi.backups(pageCursor, pageStatus, pageUserID)
-      .then(d => { setJobs(d.backups); setHasMore(d.has_more); setNextCursor(d.next_cursor); setError('') })
+      .then(d => { setJobs(listOrEmpty(d.backups)); setHasMore(d.has_more); setNextCursor(d.next_cursor); setError('') })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
   }
@@ -1355,7 +1360,7 @@ function ProtectionAlertsAdmin() {
   const [alerts, setAlerts] = useState<ProtectionAlert[]>([])
   const [error, setError] = useState('')
   const load = () => adminApi.protectionAlerts()
-    .then(data => { setAlerts(data.alerts ?? []); setError('') })
+    .then(data => { setAlerts(listOrEmpty(data.alerts)); setError('') })
     .catch(err => setError(err.message))
   useEffect(() => { load(); const timer = setInterval(load, 30000); return () => clearInterval(timer) }, [])
 
@@ -1497,7 +1502,7 @@ function AdminsAdmin() {
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
 
-  const load = () => adminApi.admins().then(data => setAdmins(data.admins ?? [])).catch(err => setError(err.message))
+  const load = () => adminApi.admins().then(data => setAdmins(listOrEmpty(data.admins))).catch(err => setError(err.message))
   useEffect(() => { load() }, [])
 
   const create = async (event: React.FormEvent) => {

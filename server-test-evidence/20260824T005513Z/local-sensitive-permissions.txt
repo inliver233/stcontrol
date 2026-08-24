@@ -1,0 +1,4 @@
+-rw------- 600 root:root controller.docker.yaml
+-rw-r--r-- 644 root:root certs/tls.crt
+-rw------- 600 root:root certs/tls.key
+-rw------- 600 root:root .env

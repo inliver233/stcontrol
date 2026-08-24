@@ -533,7 +533,7 @@ func (s *Store) RotateConflictResolutionTransfer(
 		return ErrInvalidConflictResolution
 	}
 	result, err := s.DB.ExecContext(ctx, `UPDATE conflict_resolution_transfers transfer
-		SET capability_id=$3,capability_hash=$4,state='prepared',attempt=attempt+1,
+		SET capability_id=$3,capability_hash=$4,state='prepared',attempt=transfer.attempt+1,
 		  expires_at=$5,completed_at=NULL,updated_at=$6
 		FROM conflict_resolution_operations operation,workflows workflow,controller_epochs epoch
 		WHERE transfer.operation_id=$1 AND transfer.evidence_id=$2

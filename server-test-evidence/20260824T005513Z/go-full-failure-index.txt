@@ -1,0 +1,11 @@
+192:    process_e2e_test.go:262: first writer handoff={PostURL: Code: TargetNodeID:0 ExistingWriter:false} err=handoff status 500: {"error":"登录交接创建失败"}
+193:--- FAIL: TestControllerAgentTavernProcessesRecoverAcrossRestarts (195.07s)
+236:--- SKIP: TestSnapshotPublishCrashHelper (0.00s)
+314:    tavern_crossrepo_e2e_test.go:231: full Sillytarven server readiness timed out
+517:--- FAIL: TestGoAgentCallsFullSillyTavernServerWithCSRF (30.08s)
+1074:FAIL
+1831:--- SKIP: TestSnapshotAgentProcessHelper (0.00s)
+2122:    ai_supervisor_test.go:104: observation leaked "fp"
+2123:--- FAIL: TestBuildAIObservationProducesRedactedSnapshot (0.00s)
+2410:FAIL
+3758:FAIL

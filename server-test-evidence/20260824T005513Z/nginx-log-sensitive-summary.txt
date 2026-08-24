@@ -1,0 +1,5 @@
+lines=18512
+query_lines=887
+redacted_query_lines=0
+sensitive_query_key_lines=0
+authorization_or_bearer_lines=0

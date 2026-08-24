@@ -205,7 +205,7 @@ func (s *Store) RecoverUserPasswordIdentity(
 		  actor_type,actor_id,action,target_type,target_id,operation_id,
 		  controller_generation,input_digest,outcome,detail
 		) VALUES ('admin',$1::text,'identity-recovery','global_user',$2,$3,$4,$5,'succeeded',
-		  jsonb_build_object('password_version',$6,'staged_node_count',$7))`,
+		  jsonb_build_object('password_version',$6::bigint,'staged_node_count',$7::bigint))`,
 		p.AdminID, result.UserUUID, p.OperationID, controllerGeneration,
 		p.RequestDigest, result.PasswordVersion, result.StagedNodeCount); err != nil {
 		return IdentityRecoveryResult{}, err

@@ -1,0 +1,16 @@
+go           /usr/bin/go
+node         /usr/bin/node
+npm          /usr/bin/npm
+git          /usr/bin/git
+openssl      /usr/bin/openssl
+curl         /usr/bin/curl
+jq           /usr/bin/jq
+pg_dump      /usr/bin/pg_dump
+psql         /usr/bin/psql
+zstd         /usr/bin/zstd
+tc           /usr/sbin/tc
+nft          /usr/sbin/nft
+iptables     /usr/sbin/iptables
+stress-ng    /usr/bin/stress-ng
+fio          /usr/bin/fio
+docker       /usr/bin/docker

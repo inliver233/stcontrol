@@ -522,7 +522,7 @@ func (s *Store) ListControllerDisasterBackupsPage(
 		  COALESCE(backup.error_code,''),backup.attempt,backup.next_attempt_at,
 		  backup.started_at,backup.finished_at,backup.created_at,backup.updated_at
 		FROM controller_disaster_backups backup
-		JOIN nodes node ON node.id=backup.node_id` + where + " ORDER BY backup.created_at DESC, backup.id DESC LIMIT " + fmt.Sprintf("$%d", len(args)+1)
+		JOIN nodes node ON node.id=backup.node_id ` + where + " ORDER BY backup.created_at DESC, backup.id DESC LIMIT " + fmt.Sprintf("$%d", len(args)+1)
 	args = append(args, p.Limit)
 	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil {

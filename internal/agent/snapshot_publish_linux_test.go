@@ -26,7 +26,9 @@ const snapshotPublishCrashHelperEnv = "STCONTROL_SNAPSHOT_PUBLISH_CRASH_HELPER"
 
 func TestSnapshotPublishCrashHelper(t *testing.T) {
 	if os.Getenv(snapshotPublishCrashHelperEnv) != "1" {
-		t.Skip("snapshot publish crash helper")
+		// This is a subprocess entry point, not an acceptance case of its own.
+		// The parent crash-matrix test invokes it with the helper environment.
+		return
 	}
 	checkpoint := os.Getenv("STCONTROL_SNAPSHOT_PUBLISH_CHECKPOINT")
 	marker := os.Getenv("STCONTROL_SNAPSHOT_PUBLISH_MARKER")

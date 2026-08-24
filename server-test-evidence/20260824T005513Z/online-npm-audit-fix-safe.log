@@ -1,0 +1,241 @@
+npm warn ERESOLVE overriding peer dependency
+npm warn While resolving: @jimp/types@0.22.12
+npm warn Found: @jimp/custom@0.22.12
+npm warn node_modules/@jimp/custom
+npm warn   peer @jimp/custom@">=0.3.5" from @jimp/plugin-gaussian@0.22.12
+npm warn   node_modules/@jimp/plugin-gaussian
+npm warn     @jimp/plugin-gaussian@"^0.22.12" from @jimp/plugins@0.22.12
+npm warn     node_modules/@jimp/plugins
+npm warn   24 more (@jimp/plugin-invert, @jimp/plugin-normalize, ...)
+npm warn
+npm warn Could not resolve dependency:
+npm warn peer @jimp/custom@">=0.3.5" from @jimp/types@0.22.12
+npm warn node_modules/jimp/node_modules/@jimp/types
+npm warn   @jimp/types@"^0.22.12" from jimp@0.22.12
+npm warn   node_modules/jimp
+npm warn
+npm warn Conflicting peer dependency: @jimp/custom@0.16.2
+npm warn node_modules/@jimp/custom
+npm warn   peer @jimp/custom@">=0.3.5" from @jimp/types@0.22.12
+npm warn   node_modules/jimp/node_modules/@jimp/types
+npm warn     @jimp/types@"^0.22.12" from jimp@0.22.12
+npm warn     node_modules/jimp
+npm warn ERESOLVE overriding peer dependency
+npm warn While resolving: @jimp/bmp@0.22.12
+npm warn Found: @jimp/custom@0.22.12
+npm warn node_modules/@jimp/custom
+npm warn   peer @jimp/custom@">=0.3.5" from @jimp/plugin-gaussian@0.22.12
+npm warn   node_modules/@jimp/plugin-gaussian
+npm warn     @jimp/plugin-gaussian@"^0.22.12" from @jimp/plugins@0.22.12
+npm warn     node_modules/@jimp/plugins
+npm warn   24 more (@jimp/plugin-invert, @jimp/plugin-normalize, ...)
+npm warn
+npm warn Could not resolve dependency:
+npm warn peer @jimp/custom@">=0.3.5" from @jimp/bmp@0.22.12
+npm warn node_modules/jimp/node_modules/@jimp/types/node_modules/@jimp/bmp
+npm warn   @jimp/bmp@"^0.22.12" from @jimp/types@0.22.12
+npm warn   node_modules/jimp/node_modules/@jimp/types
+npm warn
+npm warn Conflicting peer dependency: @jimp/custom@0.16.2
+npm warn node_modules/@jimp/custom
+npm warn   peer @jimp/custom@">=0.3.5" from @jimp/bmp@0.22.12
+npm warn   node_modules/jimp/node_modules/@jimp/types/node_modules/@jimp/bmp
+npm warn     @jimp/bmp@"^0.22.12" from @jimp/types@0.22.12
+npm warn     node_modules/jimp/node_modules/@jimp/types
+npm warn ERESOLVE overriding peer dependency
+npm warn While resolving: @jimp/gif@0.22.12
+npm warn Found: @jimp/custom@0.22.12
+npm warn node_modules/@jimp/custom
+npm warn   peer @jimp/custom@">=0.3.5" from @jimp/plugin-gaussian@0.22.12
+npm warn   node_modules/@jimp/plugin-gaussian
+npm warn     @jimp/plugin-gaussian@"^0.22.12" from @jimp/plugins@0.22.12
+npm warn     node_modules/@jimp/plugins
+npm warn   24 more (@jimp/plugin-invert, @jimp/plugin-normalize, ...)
+npm warn
+npm warn Could not resolve dependency:
+npm warn peer @jimp/custom@">=0.3.5" from @jimp/gif@0.22.12
+npm warn node_modules/jimp/node_modules/@jimp/types/node_modules/@jimp/gif
+npm warn   @jimp/gif@"^0.22.12" from @jimp/types@0.22.12
+npm warn   node_modules/jimp/node_modules/@jimp/types
+npm warn
+npm warn Conflicting peer dependency: @jimp/custom@0.16.2
+npm warn node_modules/@jimp/custom
+npm warn   peer @jimp/custom@">=0.3.5" from @jimp/gif@0.22.12
+npm warn   node_modules/jimp/node_modules/@jimp/types/node_modules/@jimp/gif
+npm warn     @jimp/gif@"^0.22.12" from @jimp/types@0.22.12
+npm warn     node_modules/jimp/node_modules/@jimp/types
+npm warn ERESOLVE overriding peer dependency
+npm warn While resolving: @jimp/jpeg@0.22.12
+npm warn Found: @jimp/custom@0.22.12
+npm warn node_modules/@jimp/custom
+npm warn   peer @jimp/custom@">=0.3.5" from @jimp/plugin-gaussian@0.22.12
+npm warn   node_modules/@jimp/plugin-gaussian
+npm warn     @jimp/plugin-gaussian@"^0.22.12" from @jimp/plugins@0.22.12
+npm warn     node_modules/@jimp/plugins
+npm warn   24 more (@jimp/plugin-invert, @jimp/plugin-normalize, ...)
+npm warn
+npm warn Could not resolve dependency:
+npm warn peer @jimp/custom@">=0.3.5" from @jimp/jpeg@0.22.12
+npm warn node_modules/jimp/node_modules/@jimp/types/node_modules/@jimp/jpeg
+npm warn   @jimp/jpeg@"^0.22.12" from @jimp/types@0.22.12
+npm warn   node_modules/jimp/node_modules/@jimp/types
+npm warn
+npm warn Conflicting peer dependency: @jimp/custom@0.16.2
+npm warn node_modules/@jimp/custom
+npm warn   peer @jimp/custom@">=0.3.5" from @jimp/jpeg@0.22.12
+npm warn   node_modules/jimp/node_modules/@jimp/types/node_modules/@jimp/jpeg
+npm warn     @jimp/jpeg@"^0.22.12" from @jimp/types@0.22.12
+npm warn     node_modules/jimp/node_modules/@jimp/types
+npm warn ERESOLVE overriding peer dependency
+npm warn While resolving: @jimp/png@0.22.12
+npm warn Found: @jimp/custom@0.22.12
+npm warn node_modules/@jimp/custom
+npm warn   peer @jimp/custom@">=0.3.5" from @jimp/plugin-gaussian@0.22.12
+npm warn   node_modules/@jimp/plugin-gaussian
+npm warn     @jimp/plugin-gaussian@"^0.22.12" from @jimp/plugins@0.22.12
+npm warn     node_modules/@jimp/plugins
+npm warn   24 more (@jimp/plugin-invert, @jimp/plugin-normalize, ...)
+npm warn
+npm warn Could not resolve dependency:
+npm warn peer @jimp/custom@">=0.3.5" from @jimp/png@0.22.12
+npm warn node_modules/jimp/node_modules/@jimp/types/node_modules/@jimp/png
+npm warn   @jimp/png@"^0.22.12" from @jimp/types@0.22.12
+npm warn   node_modules/jimp/node_modules/@jimp/types
+npm warn
+npm warn Conflicting peer dependency: @jimp/custom@0.16.2
+npm warn node_modules/@jimp/custom
+npm warn   peer @jimp/custom@">=0.3.5" from @jimp/png@0.22.12
+npm warn   node_modules/jimp/node_modules/@jimp/types/node_modules/@jimp/png
+npm warn     @jimp/png@"^0.22.12" from @jimp/types@0.22.12
+npm warn     node_modules/jimp/node_modules/@jimp/types
+npm warn ERESOLVE overriding peer dependency
+npm warn While resolving: @jimp/tiff@0.22.12
+npm warn Found: @jimp/custom@0.22.12
+npm warn node_modules/@jimp/custom
+npm warn   peer @jimp/custom@">=0.3.5" from @jimp/plugin-gaussian@0.22.12
+npm warn   node_modules/@jimp/plugin-gaussian
+npm warn     @jimp/plugin-gaussian@"^0.22.12" from @jimp/plugins@0.22.12
+npm warn     node_modules/@jimp/plugins
+npm warn   24 more (@jimp/plugin-invert, @jimp/plugin-normalize, ...)
+npm warn
+npm warn Could not resolve dependency:
+npm warn peer @jimp/custom@">=0.3.5" from @jimp/tiff@0.22.12
+npm warn node_modules/jimp/node_modules/@jimp/types/node_modules/@jimp/tiff
+npm warn   @jimp/tiff@"^0.22.12" from @jimp/types@0.22.12
+npm warn   node_modules/jimp/node_modules/@jimp/types
+npm warn
+npm warn Conflicting peer dependency: @jimp/custom@0.16.2
+npm warn node_modules/@jimp/custom
+npm warn   peer @jimp/custom@">=0.3.5" from @jimp/tiff@0.22.12
+npm warn   node_modules/jimp/node_modules/@jimp/types/node_modules/@jimp/tiff
+npm warn     @jimp/tiff@"^0.22.12" from @jimp/types@0.22.12
+npm warn     node_modules/jimp/node_modules/@jimp/types
+
+added 55 packages, removed 26 packages, changed 74 packages, and audited 667 packages in 16s
+
+107 packages are looking for funding
+  run `npm fund` for details
+
+# npm audit report
+
+file-type  13.0.0 - 21.3.0
+Severity: moderate
+file-type affected by infinite loop in ASF parser on malformed input with zero-size sub-header - https://github.com/advisories/GHSA-5v7r-6r5c-r473
+No fix available
+node_modules/file-type
+  @jimp/core  0.16.3-canary.993.1592.0 - 1.6.0
+  Depends on vulnerable versions of file-type
+  node_modules/@jimp/custom/node_modules/@jimp/core
+    @jimp/custom  >=0.16.3-canary.993.1592.0
+    Depends on vulnerable versions of @jimp/core
+    node_modules/@jimp/custom
+      jimp  0.16.3-canary.993.1592.0 - 0.22.12
+      Depends on vulnerable versions of @jimp/custom
+      node_modules/jimp
+        sillytavern-transformers  *
+        Depends on vulnerable versions of jimp
+        Depends on vulnerable versions of onnxruntime-web
+        node_modules/sillytavern-transformers
+
+lodash-es  <=4.17.23
+Severity: high
+lodash vulnerable to Code Injection via `_.template` imports key names - https://github.com/advisories/GHSA-r5fr-rjxr-66jc
+lodash vulnerable to Prototype Pollution via array path bypass in `_.unset` and `_.omit` - https://github.com/advisories/GHSA-f23m-r3pf-42rh
+fix available via `npm audit fix --force`
+Will install chevrotain@10.5.0, which is a breaking change
+node_modules/lodash-es
+  @chevrotain/cst-dts-gen  11.0.0 - 11.2.0
+  Depends on vulnerable versions of @chevrotain/gast
+  Depends on vulnerable versions of lodash-es
+  node_modules/@chevrotain/cst-dts-gen
+  @chevrotain/gast  11.0.0 - 11.2.0
+  Depends on vulnerable versions of lodash-es
+  node_modules/@chevrotain/gast
+  chevrotain  11.0.0 - 11.2.0
+  Depends on vulnerable versions of @chevrotain/cst-dts-gen
+  Depends on vulnerable versions of @chevrotain/gast
+  Depends on vulnerable versions of lodash-es
+  node_modules/chevrotain
+
+nodemailer  <=9.0.0
+Severity: high
+Nodemailer has SMTP command injection due to unsanitized `envelope.size` parameter - https://github.com/advisories/GHSA-c7w3-x93f-qmm8
+Nodemailer Vulnerable to SMTP Command Injection via CRLF in Transport name Option (EHLO/HELO)  - https://github.com/advisories/GHSA-vvjj-xcjg-gr5g
+Nodemailer: CRLF injection in Nodemailer List-* header comments allows arbitrary message header injection - https://github.com/advisories/GHSA-268h-hp4c-crq3
+Nodemailer jsonTransport bypasses disableFileAccess and disableUrlAccess during message normalization - https://github.com/advisories/GHSA-wqvq-jvpq-h66f
+Nodemailer: Improper TLS Certificate Validation in OAuth2 Token Fetch Enables Credential Interception - https://github.com/advisories/GHSA-r7g4-qg5f-qqm2
+Nodemailer: Message-level raw option bypasses disableFileAccess/disableUrlAccess, enabling arbitrary file read and full-response SSRF in the delivered message - https://github.com/advisories/GHSA-p6gq-j5cr-w38f
+fix available via `npm audit fix --force`
+Will install nodemailer@9.0.5, which is a breaking change
+node_modules/nodemailer
+
+protobufjs  <=7.6.2
+Severity: critical
+Arbitrary code execution in protobufjs - https://github.com/advisories/GHSA-xq3m-2v4x-88gg
+protobuf.js: Code injection through bytes field defaults in generated toObject code - https://github.com/advisories/GHSA-66ff-xgx4-vchm
+protobuf.js: Denial of service from crafted field names in generated code - https://github.com/advisories/GHSA-2pr8-phx7-x9h3
+protobuf.js: Prototype injection in generated message constructors - https://github.com/advisories/GHSA-fx83-v9x8-x52w
+protobuf.js: Code generation gadget after prototype pollution - https://github.com/advisories/GHSA-75px-5xx7-5xc7
+protobuf.js: Process-wide denial of service through unsafe option paths - https://github.com/advisories/GHSA-jvwf-75h9-cwgg
+protobuf.js: Denial of service through unbounded protobuf recursion - https://github.com/advisories/GHSA-685m-2w69-288q
+protobufjs has overlong UTF-8 decoding - https://github.com/advisories/GHSA-q6x5-8v7m-xcrf
+protobufjs: Denial of Service via unbounded recursive JSON descriptor expansion - https://github.com/advisories/GHSA-jggg-4jg4-v7c6
+protobufjs: Denial of service through unbounded Any expansion during JSON conversion - https://github.com/advisories/GHSA-wcpc-wj8m-hjx6
+protobufjs : Schema-derived names can shadow runtime-significant properties - https://github.com/advisories/GHSA-f38q-mgvj-vph7
+No fix available
+node_modules/protobufjs
+  onnx-proto  *
+  Depends on vulnerable versions of protobufjs
+  node_modules/onnx-proto
+    onnxruntime-web  <=1.16.0-dev.20230910-24f0893d3c
+    Depends on vulnerable versions of onnx-proto
+    node_modules/onnxruntime-web
+
+showdown  *
+Severity: moderate
+Showdown vulnerable to Regular Expression Denial of Service (ReDoS) in link/anchor parsing - https://github.com/advisories/GHSA-rmmh-p597-ppvv
+showdown metadata title handling allows cross-site scripting - https://github.com/advisories/GHSA-cr32-g25g-vxjj
+showdown allows stored cross-site scripting through table header ID injection - https://github.com/advisories/GHSA-22g5-r2x5-97cx
+No fix available
+node_modules/showdown
+
+uuid  <11.1.1
+Severity: moderate
+uuid: Missing buffer bounds check in v3/v5/v6 when buf is provided - https://github.com/advisories/GHSA-w5hq-g745-h8pq
+fix available via `npm audit fix --force`
+Will install vectra@0.12.3, which is a breaking change
+node_modules/uuid
+  vectra  <=0.10.1
+  Depends on vulnerable versions of uuid
+  node_modules/vectra
+
+16 vulnerabilities (7 moderate, 8 high, 1 critical)
+
+To address issues that do not require attention, run:
+  npm audit fix
+
+To address all issues possible (including breaking changes), run:
+  npm audit fix --force
+
+Some issues need review, and may require choosing
+a different dependency.

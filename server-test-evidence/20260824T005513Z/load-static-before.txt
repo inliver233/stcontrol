@@ -1,0 +1,3 @@
+1048576
+stcontrol-controller-1 0.00% 18.34MiB / 5.79GiB 283MB / 952MB 13
+stcontrol-db-1 3.98% 114.9MiB / 5.79GiB 1.55GB / 482MB 18

@@ -1,0 +1,13 @@
+current_file=present
+line3_name=set CONTROLLER_SECRET_KEY
+value_length=44
+looks_placeholder=no
+test_candidate=internal/controller/ai_adoption_postgres_integration_test.go
+line_length=101
+contains_test_marker=no
+test_candidate=internal/agent/snapshot_run_linux_test.go
+line_length=73
+contains_test_marker=no
+test_candidate=internal/agent/peer_witness_test.go
+line_length=64
+contains_test_marker=yes

@@ -1,0 +1,12 @@
+POSTGRES_DB=<present>
+POSTGRES_USER=<present>
+POSTGRES_PASSWORD=<present>
+PATH=<present>
+GOSU_VERSION=<present>
+LANG=<present>
+PG_MAJOR=<present>
+PG_VERSION=<present>
+PG_SHA256=<present>
+DOCKER_PG_LLVM_DEPS=<present>
+PGDATA=<present>
+

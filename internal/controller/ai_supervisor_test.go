@@ -99,13 +99,60 @@ func TestBuildAIObservationProducesRedactedSnapshot(t *testing.T) {
 		t.Fatalf("protection aggregates=%+v, want real projection dimensions", decoded.Protection)
 	}
 	rawStr := string(raw)
-	for _, forbidden := range []string{"http://internal", "fp", "alice", "11111111-1111-4111-8111-111111111111"} {
+	for _, forbidden := range []string{
+		"http://internal", `"compatibility_fingerprint"`, `"fp"`, "alice",
+		"11111111-1111-4111-8111-111111111111",
+	} {
 		if containsSubstring(rawStr, forbidden) {
 			t.Fatalf("observation leaked %q", forbidden)
 		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestStartAISupervisorStartsPhaseWorkersAndFailsClosed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cfg := config.DefaultController()
+	cfg.AISupervisor.Enabled = true
+	cfg.AISupervisor.Mode = "shadow"
+	cfg.AISupervisor.Provider = "openai_compatible"
+	cfg.AISupervisor.BaseURL = "http://127.0.0.1:1"
+	cfg.AISupervisor.Model = "coverage-model"
+	cfg.AISupervisor.TimeoutMS = 10
+	cfg.AISupervisor.InspectEverySec = 1
+	server := &Server{Cfg: cfg, Store: &store.Store{}, secretKey: []byte("coverage-redaction-key")}
+	server.startAISupervisor(ctx)
+	if server.aiSupervisor == nil {
+		t.Fatal("valid AI supervisor configuration did not start")
+	}
+
+	badMode := config.DefaultController()
+	badMode.AISupervisor.Enabled = true
+	badMode.AISupervisor.Mode = "unsafe"
+	badModeServer := &Server{Cfg: badMode}
+	badModeServer.startAISupervisor(ctx)
+	if badModeServer.aiSupervisor != nil {
+		t.Fatal("invalid AI supervisor mode started")
+	}
+
+	badProvider := config.DefaultController()
+	badProvider.AISupervisor.Enabled = true
+	badProvider.AISupervisor.Provider = "unsafe"
+	badProviderServer := &Server{Cfg: badProvider}
+	badProviderServer.startAISupervisor(ctx)
+	if badProviderServer.aiSupervisor != nil {
+		t.Fatal("invalid AI supervisor provider started")
+	}
+
+	t.Setenv("STCONTROL_AI_COVERAGE_ENV", "configured")
+	if got := envOr("STCONTROL_AI_COVERAGE_ENV", "fallback"); got != "configured" {
+		t.Fatalf("envOr configured=%q", got)
+	}
+	if got := envOr("STCONTROL_AI_COVERAGE_MISSING", "fallback"); got != "fallback" {
+		t.Fatalf("envOr fallback=%q", got)
 	}
 }
 

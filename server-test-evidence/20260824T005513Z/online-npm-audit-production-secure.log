@@ -1,0 +1,36 @@
+# npm audit report
+
+file-type  13.0.0 - 21.3.0
+Severity: moderate
+file-type affected by infinite loop in ASF parser on malformed input with zero-size sub-header - https://github.com/advisories/GHSA-5v7r-6r5c-r473
+fix available via `npm audit fix --force`
+Will install sillytavern-transformers@2.17.2, which is outside the stated dependency range
+node_modules/file-type
+  @jimp/core  0.16.3-canary.993.1592.0 - 1.6.0
+  Depends on vulnerable versions of file-type
+  node_modules/@jimp/custom/node_modules/@jimp/core
+    @jimp/custom  >=0.16.3-canary.993.1592.0
+    Depends on vulnerable versions of @jimp/core
+    node_modules/@jimp/custom
+      jimp  0.16.3-canary.993.1592.0 - 0.22.12
+      Depends on vulnerable versions of @jimp/custom
+      node_modules/jimp
+        sillytavern-transformers  2.7.0 - 2.17.0
+        Depends on vulnerable versions of jimp
+        node_modules/sillytavern-transformers
+
+showdown  *
+Severity: moderate
+Showdown vulnerable to Regular Expression Denial of Service (ReDoS) in link/anchor parsing - https://github.com/advisories/GHSA-rmmh-p597-ppvv
+showdown metadata title handling allows cross-site scripting - https://github.com/advisories/GHSA-cr32-g25g-vxjj
+showdown allows stored cross-site scripting through table header ID injection - https://github.com/advisories/GHSA-22g5-r2x5-97cx
+No fix available
+node_modules/showdown
+
+6 moderate severity vulnerabilities
+
+To address all issues possible, run:
+  npm audit fix --force
+
+Some issues need review, and may require choosing
+a different dependency.

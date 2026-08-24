@@ -133,6 +133,7 @@ func main() {
 		log.Fatalf("服务退出: %v", err)
 	}
 }
+
 // runMasterKeyRecovery extracts the master-key recovery envelope from a
 // controller disaster backup archive and, with the recovery passphrase,
 // prints the unwrapped base64 master key (Round 61).  The archive is a
@@ -146,18 +147,33 @@ func runMasterKeyRecovery(archivePath string, cfg *config.ControllerConfig) {
 	if len(passphrase) < 8 {
 		log.Fatalf("必须通过环境变量 %s 提供至少 8 位的恢复口令", passphraseEnv)
 	}
+	encoded, err := recoverMasterKeyFromArchive(archivePath, passphrase)
+	if err != nil {
+		log.Fatalf("恢复主密钥失败: %v", err)
+	}
+	fmt.Printf("%s\n", encoded)
+}
+
+// recoverMasterKeyFromArchive performs the security-sensitive archive parsing
+// without terminating the process. Keeping the core operation testable lets
+// acceptance tests cover malformed/truncated archives and wrong passphrases;
+// the CLI wrapper above remains responsible only for environment and output.
+func recoverMasterKeyFromArchive(archivePath, passphrase string) (string, error) {
+	if len(passphrase) < 8 {
+		return "", fmt.Errorf("recovery passphrase must be at least 8 characters")
+	}
 	archive, err := os.Open(archivePath)
 	if err != nil {
-		log.Fatalf("打开灾备归档失败: %v", err)
+		return "", fmt.Errorf("open disaster backup: %w", err)
 	}
 	defer archive.Close()
 	info, err := archive.Stat()
 	if err != nil || info.Size() <= 0 {
-		log.Fatalf("无效的灾备归档")
+		return "", fmt.Errorf("invalid disaster backup archive")
 	}
 	decoder, err := zstd.NewReader(archive, zstd.WithDecoderMaxMemory(256<<20), zstd.WithDecoderMaxWindow(256<<20))
 	if err != nil {
-		log.Fatalf("解压灾备归档失败: %v", err)
+		return "", fmt.Errorf("decompress disaster backup: %w", err)
 	}
 	defer decoder.Close()
 	tarReader := tar.NewReader(decoder)
@@ -168,31 +184,31 @@ func runMasterKeyRecovery(archivePath string, cfg *config.ControllerConfig) {
 			break
 		}
 		if err != nil {
-			log.Fatalf("读取灾备归档失败: %v", err)
+			return "", fmt.Errorf("read disaster backup: %w", err)
 		}
 		if header.Typeflag != tar.TypeReg || header.Name != "master_key_recovery.json" {
 			continue
 		}
 		if header.Size <= 0 || header.Size > 1<<20 {
-			log.Fatalf("恢复信封大小非法")
+			return "", fmt.Errorf("invalid recovery envelope size")
 		}
 		data, err := io.ReadAll(io.LimitReader(tarReader, header.Size+1))
 		if err != nil || int64(len(data)) != header.Size {
-			log.Fatalf("读取恢复信封失败")
+			return "", fmt.Errorf("read recovery envelope")
 		}
 		found = data
 		break
 	}
 	if found == nil {
-		log.Fatalf("归档中不存在 master_key_recovery.json；该备份未包含主密钥恢复材料")
+		return "", fmt.Errorf("master_key_recovery.json is absent from disaster backup")
 	}
 	envelope, err := crypto.DecodeMasterKeyRecoveryJSON(found)
 	if err != nil {
-		log.Fatalf("解析恢复信封失败: %v", err)
+		return "", fmt.Errorf("decode recovery envelope: %w", err)
 	}
 	masterKey, err := crypto.OpenMasterKeyRecovery(passphrase, envelope)
 	if err != nil {
-		log.Fatalf("解出主密钥失败（口令错误或信封损坏）: %v", err)
+		return "", fmt.Errorf("unwrap master key: %w", err)
 	}
-	fmt.Printf("%s\n", base64.StdEncoding.EncodeToString(masterKey))
+	return base64.StdEncoding.EncodeToString(masterKey), nil
 }

@@ -467,8 +467,9 @@ func startProcessE2ENode(t *testing.T, options processE2ENodeOptions) *processE2
 		tavernConfigPath: tavernConfigPath, adapterURL: adapterURL,
 		initialAgentPSK: agentConfig.AgentPSK, adapterProcess: adapterProcess,
 	}
+	startedAt := time.Now().UTC()
 	harness.agentProcess = harness.startAgent(t)
-	waitForProcessE2ENodeReady(t, options.Store, node.ID, 45*time.Second)
+	waitForProcessE2ENodeReady(t, options.Store, node.ID, 45*time.Second, startedAt)
 	return harness
 }
 
@@ -551,10 +552,11 @@ func configureProcessE2EDisasterPeers(
 	}
 	primary.agentEnvironment = []string{secretEnv + "=" + secret}
 	secondary.agentEnvironment = []string{secretEnv + "=" + secret}
+	startedAt := time.Now().UTC()
 	primary.agentProcess = primary.startAgent(t)
 	secondary.agentProcess = secondary.startAgent(t)
-	waitForProcessE2ENodeReady(t, st, primary.node.ID, 45*time.Second)
-	waitForProcessE2ENodeReady(t, st, secondary.node.ID, 45*time.Second)
+	waitForProcessE2ENodeReady(t, st, primary.node.ID, 45*time.Second, startedAt)
+	waitForProcessE2ENodeReady(t, st, secondary.node.ID, 45*time.Second, startedAt)
 }
 
 // runProcessE2EManagedPartitionMatrix proves the bounded-grace single-writer
@@ -729,8 +731,9 @@ func runProcessE2EManagedPartitionMatrix(
 			t.Fatalf("partition %s logout status=%d err=%v body=%s", node.node.Name, logout.status, err, logout.body)
 		}
 	}
+	startedAt := time.Now().UTC()
 	primary.agentProcess = primary.startAgent(t)
-	waitForProcessE2ENodeReady(t, st, primary.node.ID, 45*time.Second)
+	waitForProcessE2ENodeReady(t, st, primary.node.ID, 45*time.Second, startedAt)
 	waitForProcessE2ECondition(t, 15*time.Second, func() (bool, error) {
 		var state string
 		err := st.DB.QueryRowContext(ctx, `SELECT state FROM user_activity_leases WHERE user_id=$1`, user.GlobalID).Scan(&state)
@@ -1532,12 +1535,21 @@ func waitForProcessE2ECondition(
 	t.Fatalf("%s: %v", failure, lastErr)
 }
 
-func waitForProcessE2ENodeReady(t *testing.T, st *store.Store, nodeID int64, timeout time.Duration) {
+func waitForProcessE2ENodeReady(
+	t *testing.T,
+	st *store.Store,
+	nodeID int64,
+	timeout time.Duration,
+	seenAfter ...time.Time,
+) {
 	t.Helper()
 	waitForProcessE2ECondition(t, timeout, func() (bool, error) {
 		node, err := st.GetNodeByID(context.Background(), nodeID)
 		if err != nil || node == nil {
 			return false, err
+		}
+		if len(seenAfter) > 0 && (!node.LastSeenAt.Valid || !node.LastSeenAt.Time.After(seenAfter[0])) {
+			return false, nil
 		}
 		ready, err := st.IsControlPlaneReady(context.Background())
 		return node.ConnectivityState == "online" && node.OperationalState == "active" &&

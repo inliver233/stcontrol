@@ -1,0 +1,13 @@
+
+> stcontrol-web@0.1.0 build
+> tsc -b && vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 45 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.39 kB │ gzip:  0.28 kB
+dist/assets/index-BvTHv7h1.css   10.73 kB │ gzip:  2.67 kB
+dist/assets/index-C3KDIJc5.js   257.26 kB │ gzip: 83.08 kB
+✓ built in 1.75s

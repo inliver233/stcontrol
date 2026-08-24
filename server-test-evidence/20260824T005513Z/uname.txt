@@ -1,0 +1,1 @@
+Linux takamatsu-tomori 7.1.8-joeyblog-bbrv3 #1 SMP PREEMPT_DYNAMIC Mon Aug 10 06:18:36 UTC 2026 x86_64 GNU/Linux

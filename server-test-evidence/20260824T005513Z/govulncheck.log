@@ -1,0 +1,24 @@
+go: downloading golang.org/x/vuln v1.7.0
+go: golang.org/x/vuln@v1.7.0 requires go >= 1.25.0; switching to go1.26.7
+go: downloading go1.26.7 (linux/amd64)
+go: downloading golang.org/x/telemetry v0.0.0-20260811182544-a038080d80e5
+go: downloading golang.org/x/mod v0.39.0
+go: downloading golang.org/x/tools v0.49.0
+go: downloading golang.org/x/sync v0.22.0
+=== Symbol Results ===
+
+Vulnerability #1: GO-2026-5970
+    Infinite loop on invalid input in golang.org/x/text
+  More info: https://pkg.go.dev/vuln/GO-2026-5970
+  Module: golang.org/x/text
+    Found in: golang.org/x/text@v0.21.0
+    Fixed in: golang.org/x/text@v0.39.0
+    Example traces found:
+      #1: internal/crypto/sillytavern_password.go:28:25: crypto.SillyTavernPasswordMaterial calls norm.Form.String
+
+Your code is affected by 1 vulnerability from 1 module.
+This scan also found 2 vulnerabilities in packages you import and 20
+vulnerabilities in modules you require, but your code doesn't appear to call
+these vulnerabilities.
+Use '-show verbose' for more details.
+exit status 3

@@ -1,0 +1,2 @@
+/var/lib/docker/volumes/stcontrol_pgdata/_data  ->  /var/lib/postgresql/data  ( rw )
+
