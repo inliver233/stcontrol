@@ -13,6 +13,6 @@ for arch in amd64 arm64; do
   (
     cd "$OUTPUT_DIR"
     sha256sum "$artifact" >"$artifact.sha256"
-    sha256sum --check "$artifact.sha256"
+    sha256sum -c "$artifact.sha256"
   )
 done
