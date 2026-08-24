@@ -1,0 +1,37 @@
+tag=stcontrol-controller:server-20260824-final2
+build=no-cache PASS
+base_images=digest pinned
+web_build=PASS
+go_build=PASS
+image_id=sha256:881310d5c612c000b64a939a620b925bd2c7090e05b37ea56d21ba83375db088
+controller_binary_sha256=24f49dfbc5040c3530bb60acd480158501ca7de759aa44fc61c016cbf2d15bfb
+sbom_file=controller-final2.cdx.json
+sbom_sha256=af626753d6f93adce20e6cbf039da488c9f17f04e6ca0d5a8cf88b82eb838d81
+trivy_version=0.73.0
+trivy_alpine_high_critical_fixable=0
+trivy_go_binary_high_critical_fixable=0
+govulncheck_version=golang.org/x/vuln/cmd/govulncheck@v1.7.0
+govulncheck_reachable_vulnerabilities=0
+govulncheck_imported_unreachable_package_findings=2
+govulncheck_imported_unreachable_module_findings=2
+
+deployment=PASS
+runtime_image=sha256:881310d5c612c000b64a939a620b925bd2c7090e05b37ea56d21ba83375db088
+compose_note=Compose also recreated the PostgreSQL container while retaining its named data volume; it returned healthy before Controller start.
+postgresql_healthy=PASS
+migration_count=52
+core_counts_nodes_users_global_users=0/0/0
+origin_health=204
+nginx_health=204
+public_health=204
+origin_tls12=REJECTED (protocol version alert)
+origin_tls13=PASS
+controller_unexpected_log_matches=0
+expected_tls12_probe_log_matches=1
+
+final_controller_restart=PASS
+controller_generation_after_restart=16
+runtime_image_after_restart=sha256:881310d5c612c000b64a939a620b925bd2c7090e05b37ea56d21ba83375db088
+origin_health_after_restart=204
+public_health_after_restart=204
+controller_unexpected_log_matches_after_restart=0

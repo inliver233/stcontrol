@@ -1,0 +1,22 @@
+scope=working tree containing the final registration polling and protection reconciliation fixes
+gofmt=PASS
+go_mod_verify=PASS (all modules verified)
+go_vet_all=PASS
+go_test_short_race="go test -short -race -p=1 -count=1 ./..."
+go_test_short_race_result=PASS
+go_packages=9
+race_reports=0
+coverage_gate_self_test=PASS
+workflow_actionlint=PASS on the unchanged workflow (actionlint 1.7.12)
+
+package_results:
+  stcontrol/cmd/agent PASS 1.087s
+  stcontrol/cmd/controller PASS 20.257s
+  stcontrol/internal PASS 4.213s
+  stcontrol/internal/agent PASS 21.229s
+  stcontrol/internal/ai PASS 1.168s
+  stcontrol/internal/config PASS 1.028s
+  stcontrol/internal/controller PASS 29.545s
+  stcontrol/internal/crypto PASS 16.346s
+  stcontrol/internal/protocol no_test_files
+  stcontrol/internal/store PASS 5.651s

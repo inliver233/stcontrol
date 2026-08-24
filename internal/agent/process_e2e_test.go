@@ -983,7 +983,9 @@ func waitForProcessE2ETakeoverPersistence(
 		if lastErr == nil && count == 1 {
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		// Match the production Web poller. A 100 ms test-only loop can consume
+		// the legitimate 120/minute user budget on slower CI runners.
+		time.Sleep(time.Second)
 	}
 	primaryNode, primaryNodeErr := st.GetNodeByID(ctx, primary.node.ID)
 	secondaryNode, secondaryNodeErr := st.GetNodeByID(ctx, secondary.node.ID)

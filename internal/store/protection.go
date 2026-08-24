@@ -102,7 +102,13 @@ func (s *Store) reconcileProtectionStatesOnce(
 	now time.Time,
 	unprotectedGrace time.Duration,
 ) (ProtectionReconcileResult, error) {
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	// This is a repeatedly recomputed, idempotent and restrictive projection.
+	// SERIALIZABLE couples its reads of node health to every heartbeat update;
+	// under sustained heartbeats that can starve the later conflict freeze even
+	// though no competing transaction is making a protection decision. READ
+	// COMMITTED still keeps projection, evidence capture and the fail-closed
+	// identity/lease updates atomic, while row locks order actual write conflicts.
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return ProtectionReconcileResult{}, fmt.Errorf("begin user protection reconciliation: %w", err)
 	}

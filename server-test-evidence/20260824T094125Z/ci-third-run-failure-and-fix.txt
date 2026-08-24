@@ -1,0 +1,21 @@
+third_run_id=32725735296
+third_run_head_sha=3c87e5585bc19e6f622661f4a31c93187f4813ca
+static_and_short_race=success
+failed_job=full-postgresql-coverage
+failed_step=Run full PostgreSQL and process acceptance suite
+failed_test=TestControllerAgentTavernProcessesRecoverAcrossRestarts
+initial_failure=http_status_429_during_registration_poll
+
+test_root_cause=The process E2E polled registration every 100 ms. On a slower GitHub runner this consumed the legitimate 120/minute per-user request budget before the process recovery assertion. The production Web poller uses a one-second interval.
+test_fix=Poll once per second, matching web/src/registration.ts. No production rate limit was raised or bypassed.
+
+follow_up_failure=After the poll correction removed the 429, the same coverage-mode process E2E reached conflict recovery but exhausted three maintenance retries after 260.75 seconds with PostgreSQL serialization failures while Agent heartbeats continuously updated node facts.
+production_root_cause=The idempotent protection projection read heartbeat-mutated rows in a SERIALIZABLE transaction. PostgreSQL SSI could repeatedly abort the transaction before its later conflict evidence and fail-closed freeze writes, even though no concurrent transaction was making a protection decision.
+production_fix=Run the repeatedly recomputed restrictive projection at READ COMMITTED while retaining projection, conflict evidence, identity/lease freeze, and alerts in one atomic transaction. Row locks still order actual write conflicts.
+
+focused_coverage_process_e2e=PASS (218.13 seconds; package 218.152 seconds)
+focused_race_process_e2e=PASS (215.04 seconds; package 216.062 seconds; no race report)
+all_package_short_race_after_fix=PASS (9 packages; no race report)
+production_rate_limit_changed=no
+transaction_atomicity_removed=no
+fail_closed_conflict_freeze_removed=no

@@ -41,10 +41,13 @@ browser-matrix-public-final/webkit-375-login.png	25692 bytes
 browser-matrix-public-final/webkit-768-login.png	29257 bytes
 ci-first-run-failure-and-fix.txt	794 bytes
 ci-second-run-failure-and-fix.txt	847 bytes
+ci-third-run-failure-and-fix.txt	1867 bytes
 cloudflare-remediation.md	1130 bytes
 controller-final-build-info.txt	811 bytes
 controller-final-image.txt	145 bytes
 controller-final.cdx.json	40796 bytes
+controller-final2-build-scan-deploy.txt	1517 bytes
+controller-final2.cdx.json	40799 bytes
 coverage-gate-selftest.log	30 bytes
 docker-build-final.log	4955 bytes
 environment.txt	424 bytes
@@ -54,6 +57,7 @@ final-system-state.txt	1705 bytes
 final-tls-edge.txt	1026 bytes
 go-coverage-summary.txt	57 bytes
 go-coverage.out	6391355 bytes
+go-final2-local-gates.txt	798 bytes
 go-process-e2e-race-after-empty-array-fix.log	186 bytes
 go-test-counts.txt	82 bytes
 go-test-postgresql.log	562488 bytes
