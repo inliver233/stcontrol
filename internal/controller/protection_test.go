@@ -164,6 +164,10 @@ func TestHandleConfirmReplicaTakeoverMapsFencedStoreOutcomes(t *testing.T) {
 		{
 			name: "writer lease active",
 			setup: func(mock sqlmock.Sqlmock) {
+				// The handler uses the real clock for the takeover attempt. Keep the
+				// fixture active relative to execution time instead of tying it to
+				// recoveryAt, which can expire while this test suite is running.
+				leaseExpiresAt := time.Now().UTC().Add(time.Hour)
 				expectTakeoverHandlerStoreStart(mock)
 				expectTakeoverHandlerNoReplay(mock)
 				expectTakeoverHandlerIdentity(mock, 8)
@@ -175,7 +179,7 @@ func TestHandleConfirmReplicaTakeoverMapsFencedStoreOutcomes(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{
 						"user_id", "writer_node_id", "session_id", "activity_epoch", "state", "lease_expires_at",
 						"last_page", "last_request", "reads", "writes", "generation", "updated_at",
-					}).AddRow(int64(70), int64(8), "session", int64(3), "active", recoveryAt.Add(time.Hour),
+					}).AddRow(int64(70), int64(8), "session", int64(3), "active", leaseExpiresAt,
 						recoveryAt, recoveryAt, 0, 0, int64(4), recoveryAt))
 				mock.ExpectRollback()
 			},

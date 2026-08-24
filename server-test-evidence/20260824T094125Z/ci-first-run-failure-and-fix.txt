@@ -1,0 +1,14 @@
+first_run_id=32724159564
+first_run_head_sha=744a75a3b37dc67c3121d667ba536de0cc95a042
+failed_job=static-and-short-race
+failed_step=Run short race suite
+failed_test=TestHandleConfirmReplicaTakeoverMapsFencedStoreOutcomes/writer_lease_active
+observed_status=500
+expected_status=409
+
+root_cause=The fixture derived lease_expires_at from a fixed 2026-08-24 10:00 UTC recovery point. It therefore expired at 11:00 UTC, before the 11:55 UTC CI execution. The handler correctly used the real clock and continued beyond the active-lease fence, where no further SQL mock was configured.
+production_code_changed=no
+test_fix=Set lease_expires_at relative to test execution time plus one hour.
+ordinary_targeted_repetitions=100/100 PASS
+race_targeted_repetitions=100/100 PASS
+full_short_race_after_fix=PASS

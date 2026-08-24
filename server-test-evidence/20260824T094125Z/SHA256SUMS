@@ -34,6 +34,7 @@ fc93d9bb5e0a5f1b1219946c14548bfdf024172f4839d6a0515009191d19bbc8  ./browser-matr
 de75fa681cf9235a7c83f3624a45cc657c4522da41eaf1ea18221f9b3a172109  ./browser-matrix-public-final/webkit-320-login.png
 18e38e58d0830478b2f615afd639d9dbd76c67957e0088b57d0d1b0d84f39ec1  ./browser-matrix-public-final/webkit-375-login.png
 f6bb57145bbf5f042fdd50d870d4a833bd1f2a25fccc1162be0be8322630611c  ./browser-matrix-public-final/webkit-768-login.png
+e694369f3c42acb92c288dd8a138a32da3ec3459dc28a7634ab59021af76415e  ./ci-first-run-failure-and-fix.txt
 82216beb32ec2cd5f8522237356bce556d2e374a1612f997b315bd9ff7ab0d33  ./cloudflare-remediation.md
 880c8c54ee11ddf71da661506330876bdb309b35e8f15ba7e13f7c2c19dd1651  ./controller-final-build-info.txt
 7724a2ee6261fa3f563613d94515bd9fdc6c8c2f69741e6a81c62b7bb9f8cb81  ./controller-final-image.txt
@@ -41,9 +42,9 @@ b604b80877497cc2f2089672ce6b5bcdb9303c750ccdf67be50bc5da23e7a63b  ./controller-f
 a8e781165d766fe20aa55108f387eb49506e3fbbb42aa0e356c1c0a358f5db57  ./coverage-gate-selftest.log
 9e5bd02455c4123896d78e7c23d736977735d60f7318da20d89482cd4c83f6e1  ./docker-build-final.log
 bb0de64be4763f28a26e7df6cd0e9b1dde0d9aea356ce42952969bc04fb36ce1  ./environment.txt
-19646ed95219076c5bdf127f02583eebe5a4f38018bf7da424fd29196486e697  ./evidence-index.txt
+ce5e51868825177189c958288760691d1ff0d7cceb345f8a12e27f682bb3820b  ./evidence-index.txt
 119784f63ddb4971479978325f5af28ace89745f9cbc0ab6c7021dfca6e1db99  ./final-isolated-smoke.log
-55992c29cb039649d47fc154e78167d3efcca703debe6d3abefe551b5a3640eb  ./final-repository-safety.txt
+70768afd58c4038aa7986d4e3711b014f6d9ba55d3848e34c394b466fc50fe68  ./final-repository-safety.txt
 0c25449c87a30afab77c33569c20f87f56ce7df623d86bdb7ae94cf53cfb1a5d  ./final-system-state.txt
 d52bf20c8950912cb6358c631cc75493bf3487299cd2535078fc2bbdc36dff72  ./final-tls-edge.txt
 7d3b43746b095c0ed369a2cb41ad30631229f842956bedc5e66c91bc19f947ed  ./go-coverage-summary.txt

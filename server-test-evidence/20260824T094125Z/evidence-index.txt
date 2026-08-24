@@ -1,8 +1,8 @@
 Evidence root: server-test-evidence/20260824T094125Z
 Generated before the final delivery commit; final Git SHA is recorded separately.
 Format: relative path<TAB>size
+SHA256SUMS is the checksum manifest and is omitted from this list and from its own checksum.
 
-SHA256SUMS	7072 bytes
 actionlint.log	94 bytes
 backup-restore-final.txt	812 bytes
 browser-matrix-final-summary.txt	1028 bytes
@@ -39,6 +39,7 @@ browser-matrix-public-final/webkit-1440-login.png	32240 bytes
 browser-matrix-public-final/webkit-320-login.png	24863 bytes
 browser-matrix-public-final/webkit-375-login.png	25692 bytes
 browser-matrix-public-final/webkit-768-login.png	29257 bytes
+ci-first-run-failure-and-fix.txt	794 bytes
 cloudflare-remediation.md	1130 bytes
 controller-final-build-info.txt	811 bytes
 controller-final-image.txt	145 bytes
@@ -47,7 +48,7 @@ coverage-gate-selftest.log	30 bytes
 docker-build-final.log	4955 bytes
 environment.txt	424 bytes
 final-isolated-smoke.log	194 bytes
-final-repository-safety.txt	508 bytes
+final-repository-safety.txt	651 bytes
 final-system-state.txt	1705 bytes
 final-tls-edge.txt	1026 bytes
 go-coverage-summary.txt	57 bytes
