@@ -64,7 +64,7 @@ jobs:
     env:
       STCONTROL_TEST_POSTGRES_DSN: postgres://stcontrol_test:stcontrol_ci_only@127.0.0.1:5432/stcontrol_test?sslmode=disable
       STCONTROL_TEST_TAVERN_ROOT: /tmp/stcontrol-ci-Sillytarven-online
-      STCONTROL_TEST_PG_BIN: /tmp/stcontrol-ci-pg_dump-17
+      STCONTROL_TEST_PG_BIN: /tmp/stcontrol-ci-pg17/pg_dump
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -81,6 +81,7 @@ jobs:
           npm run postinstall --prefix "$STCONTROL_TEST_TAVERN_ROOT"
       - name: Provide PostgreSQL 17 pg_dump
         run: |
+          mkdir -p "$(dirname "$STCONTROL_TEST_PG_BIN")"
           printf '%s\n' '#!/bin/sh' 'exec docker run --rm --network host -e PGPASSWORD postgres:17-alpine pg_dump "$@"' >"$STCONTROL_TEST_PG_BIN"
           chmod 700 "$STCONTROL_TEST_PG_BIN"
           "$STCONTROL_TEST_PG_BIN" --version

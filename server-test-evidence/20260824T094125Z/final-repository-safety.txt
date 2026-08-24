@@ -14,6 +14,8 @@ browser_script_node_check=PASS
 browser_result_json_parse=PASS
 actionlint_1_7_12=PASS
 docker_compose_config=PASS
+postgres17_ci_wrapper_real_dump=PASS
+controller_disaster_backup_real_pgdump_e2e_with_ci_wrapper=PASS
 
 The user-owned scripts/seed-demo.sql and scripts/clear-demo.sql remain
 untracked and are intentionally excluded from the delivery commit.

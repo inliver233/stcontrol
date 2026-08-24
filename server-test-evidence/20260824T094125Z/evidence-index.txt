@@ -40,6 +40,7 @@ browser-matrix-public-final/webkit-320-login.png	24863 bytes
 browser-matrix-public-final/webkit-375-login.png	25692 bytes
 browser-matrix-public-final/webkit-768-login.png	29257 bytes
 ci-first-run-failure-and-fix.txt	794 bytes
+ci-second-run-failure-and-fix.txt	847 bytes
 cloudflare-remediation.md	1130 bytes
 controller-final-build-info.txt	811 bytes
 controller-final-image.txt	145 bytes
@@ -48,7 +49,7 @@ coverage-gate-selftest.log	30 bytes
 docker-build-final.log	4955 bytes
 environment.txt	424 bytes
 final-isolated-smoke.log	194 bytes
-final-repository-safety.txt	651 bytes
+final-repository-safety.txt	752 bytes
 final-system-state.txt	1705 bytes
 final-tls-edge.txt	1026 bytes
 go-coverage-summary.txt	57 bytes

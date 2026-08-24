@@ -1,0 +1,16 @@
+second_run_id=32724768955
+second_run_head_sha=041f2c7355f11f5eaf260a8c3730a2d97b4b3e45
+static_and_short_race=success
+failed_job=full-postgresql-coverage
+failed_step=Run full PostgreSQL and process acceptance suite
+failed_test=TestControllerDisasterBackupRunsRealPgDumpEndToEnd
+server_version=PostgreSQL 17.11
+unexpected_client_version=pg_dump 16.15
+
+root_cause=STCONTROL_TEST_PG_BIN pointed to /tmp/stcontrol-ci-pg_dump-17. The test prepends only that file's directory to PATH and production resolves the command name pg_dump, so the runner's preinstalled pg_dump 16 was selected instead of the wrapper.
+workflow_fix=Place the wrapper at /tmp/stcontrol-ci-pg17/pg_dump.
+production_code_changed=no
+postgres17_wrapper_version_check=PASS
+postgres17_wrapper_real_schema_dump=PASS
+controller_disaster_backup_real_pgdump_e2e=PASS
+actionlint_1_7_12=PASS
