@@ -1,0 +1,4 @@
+actionlint_version=1.7.12
+workflow=.github/workflows/server-gates.yml
+exit_code=0
+result=PASS

@@ -1,0 +1,20 @@
+2026-08-24T10:45:45Z	INFO	[vuln] Vulnerability scanning is enabled
+2026-08-24T10:45:46Z	INFO	Detected OS	family="alpine" version="3.24.1"
+2026-08-24T10:45:46Z	WARN	This OS version is not on the EOL list	family="alpine" version="3.24"
+2026-08-24T10:45:46Z	INFO	[alpine] Detecting vulnerabilities...	os_version="3.24" repository="3.24" pkg_num=18
+2026-08-24T10:45:46Z	INFO	Number of language-specific files	num=1
+2026-08-24T10:45:46Z	INFO	[gobinary] Detecting vulnerabilities...
+2026-08-24T10:45:46Z	WARN	Using severities from other vendors for some vulnerabilities. Read https://trivy.dev/docs/v0.73/guide/scanner/vulnerability#severity-selection for details.
+
+Report Summary
+
+┌────────────────────────────────────────────────────────────┬──────────┬─────────────────┐
+│                           Target                           │   Type   │ Vulnerabilities │
+├────────────────────────────────────────────────────────────┼──────────┼─────────────────┤
+│ stcontrol-controller:server-20260824-final (alpine 3.24.1) │  alpine  │        0        │
+├────────────────────────────────────────────────────────────┼──────────┼─────────────────┤
+│ app/controller                                             │ gobinary │        0        │
+└────────────────────────────────────────────────────────────┴──────────┴─────────────────┘
+Legend:
+- '-': Not scanned
+- '0': Clean (no security findings detected)

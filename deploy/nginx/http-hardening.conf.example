@@ -1,0 +1,10 @@
+# Include this file from nginx.conf inside the http { ... } block.
+# The format intentionally records only the normalized path. Never replace
+# $uri with $request or $request_uri, and never add Referer: those values can
+# contain one-use login, OAuth, or recovery credentials.
+ssl_protocols TLSv1.3;
+ssl_prefer_server_ciphers off;
+
+log_format stcontrol_safe '$remote_addr [$time_iso8601] '
+    '"$request_method $uri $server_protocol" $status $body_bytes_sent '
+    '$request_time "$http_user_agent"';

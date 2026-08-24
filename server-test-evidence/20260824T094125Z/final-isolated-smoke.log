@@ -1,0 +1,5 @@
+health_status=204
+migration_count=52
+tls13_cipher=TLSv1.3 TLS_AES_128_GCM_SHA256
+tls12_cipher=(NONE) (NONE)
+image=sha256:4be4f677ff45088e16592e785626c1aaee7c6d8de5be18d7af190021d4a8d117 running

@@ -95,6 +95,12 @@ func (a *Agent) syncTavernActivityLeases(ctx context.Context) error {
 		a.stateMu.Unlock()
 		return err
 	}
+	// The adapter contract requires an array even when the authoritative
+	// snapshot revokes every lease. A nil Go slice would encode as JSON null
+	// and make the fail-closed adapter reject the revocation indefinitely.
+	if state.Leases == nil {
+		state.Leases = []protocol.ActivityLeaseConfirmation{}
+	}
 	var response protocol.ApplyActivityLeaseConfirmationsResponse
 	err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/activity-leases/confirm",
 		protocol.ApplyActivityLeaseConfirmationsRequest{

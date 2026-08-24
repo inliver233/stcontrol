@@ -1,0 +1,23 @@
+direct_health=204
+origin_health=204
+public_health=204
+controller_image=sha256:4be4f677ff45088e16592e785626c1aaee7c6d8de5be18d7af190021d4a8d117 running 0
+migration_count=52
+core_row_counts=3,3,3
+origin_tls13=TLSv1.3 TLS_AES_256_GCM_SHA384
+origin_tls12=(NONE) (NONE)
+public_tls12=TLSv1.2 ECDHE-ECDSA-CHACHA20-POLY1305
+security_headers=
+HTTP/2 200
+server: nginx
+date: Mon, 24 Aug 2026 11:28:30 GMT
+content-type: text/html; charset=utf-8
+content-length: 397
+accept-ranges: bytes
+content-security-policy: default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'
+last-modified: Mon, 24 Aug 2026 10:45:20 GMT
+permissions-policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+referrer-policy: no-referrer
+strict-transport-security: max-age=63072000; includeSubDomains
+x-content-type-options: nosniff
+x-frame-options: DENY

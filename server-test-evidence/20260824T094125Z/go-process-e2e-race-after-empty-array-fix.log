@@ -1,0 +1,4 @@
+=== RUN   TestControllerAgentTavernProcessesRecoverAcrossRestarts
+--- PASS: TestControllerAgentTavernProcessesRecoverAcrossRestarts (216.26s)
+PASS
+ok  	stcontrol/internal/agent	217.292s

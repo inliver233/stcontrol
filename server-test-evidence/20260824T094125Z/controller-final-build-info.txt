@@ -1,0 +1,16 @@
+a8fff95929c2bf4aa37472da2f20444a9188ef9b344c40bf6865d148f6508147  /app/controller
+/tmp/stcontrol-controller-artifact.CU26P4/controller: go1.26.7
+	path	stcontrol/cmd/controller
+	mod	stcontrol	(devel)
+	dep	github.com/go-chi/chi/v5	v5.0.12	h1:9euLV5sTrTNTRUU9POmDUvfxyj6LAABLUcEWO+JJb4s=
+	dep	github.com/klauspost/compress	v1.17.9	h1:6KIumPrER1LHsvBVuDa0r5xaG0Es51mhhB9BQB2qeMA=
+	dep	github.com/lib/pq	v1.10.9	h1:YXG7RB+JIjhP29X+OtkiDnYaXQwpS4JEWq7dtCCRUEw=
+	dep	golang.org/x/crypto	v0.55.0	h1:+KWHjbgOaAQ66dh/YlkZKHlz9ZUlq61AFirAR9ntP8M=
+	dep	golang.org/x/text	v0.41.0	h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=
+	dep	gopkg.in/yaml.v3	v3.0.1	h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+	build	-buildmode=exe
+	build	-compiler=gc
+	build	CGO_ENABLED=0
+	build	GOARCH=amd64
+	build	GOOS=linux
+	build	GOAMD64=v1

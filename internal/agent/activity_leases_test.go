@@ -148,6 +148,42 @@ func TestActivityLeaseConfirmationRetriesFailedAdapterDeliveryAfterRestart(t *te
 	}
 }
 
+func TestActivityLeaseConfirmationEncodesEmptyRevocationAsArray(t *testing.T) {
+	t.Parallel()
+	confirmedAt := time.Now().UTC().UnixMilli()
+	adapter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var raw map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		if string(raw["leases"]) != "[]" {
+			http.Error(w, "leases must be an array", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(protocol.ApplyActivityLeaseConfirmationsResponse{
+			OK: true, ConfirmedAt: confirmedAt, AppliedLeases: 0,
+		})
+	}))
+	defer adapter.Close()
+	agent, err := New(&config.AgentConfig{
+		Role: "compute", NodeID: 9, AgentPSK: "controller-secret", TavernAdapterPSK: "adapter-secret",
+		ControllerGeneration: 3, TavernURL: adapter.URL, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.state.ActivityLeases = agentActivityLeaseState{
+		ControllerGeneration: 3, ConfirmedAt: confirmedAt,
+	}
+	if err := agent.syncTavernActivityLeases(context.Background()); err != nil {
+		t.Fatalf("apply empty revocation snapshot: %v", err)
+	}
+	if agent.state.ActivityLeases.AdapterConfirmedAt != confirmedAt {
+		t.Fatalf("empty revocation was not durably acknowledged: %+v", agent.state.ActivityLeases)
+	}
+}
+
 func TestActivityLeaseConfirmationValidationRejectsUnboundedAndDuplicateGrants(t *testing.T) {
 	t.Parallel()
 	confirmedAt := time.Now().UTC().UnixMilli()

@@ -1,0 +1,21 @@
+
+> sillytavern@1.15.0 postinstall
+> node post-install.js
+
+Created default file: ./config.yaml
+Synchronized missing files: ./public/
+Adding missing config values to config.yaml: [ 'autheliaAuth', 'authentikAuth' ]
+Migrating config values in config.yaml: [
+  {
+    oldKey: 'autheliaAuth',
+    newKey: 'sso.autheliaAuth',
+    oldValue: false,
+    newValue: false
+  },
+  {
+    oldKey: 'authentikAuth',
+    newKey: 'sso.authentikAuth',
+    oldValue: false,
+    newValue: false
+  }
+]

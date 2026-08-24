@@ -1,0 +1,56 @@
+checked_at_utc=2026-08-24T11:45:12Z
+host=Debian GNU/Linux 13 (trixie), Linux 7.1.8 x86_64
+go=1.26.7
+node=20.20.2
+npm=10.8.2
+docker=29.7.2
+postgres_client=17.11
+nginx=1.26.3
+chrony=4.6.1
+
+origin_api_health=204
+nginx_origin_api_health=204
+public_api_health=204
+controller_state=running
+controller_image=sha256:4be4f677ff45088e16592e785626c1aaee7c6d8de5be18d7af190021d4a8d117
+controller_restart_count=1
+database_state=running
+database_health=healthy
+database_image=sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+database_restart_count=0
+migration_max=52
+migration_count=52
+nodes=0
+users=0
+global_users=0
+
+ntp_active=yes
+ntp_synchronized=yes
+chrony_system_time=0.000042603_seconds_slow
+chrony_last_offset=+0.000000412_seconds
+chrony_leap_status=Normal
+
+public_tcp_listeners=22,80,443
+loopback_tcp_listeners=8443
+loopback_udp_listeners=323
+test_postgresql_listener_55432=absent
+running_containers=stcontrol-controller-1,stcontrol-db-1
+env_mode=0600
+compose_config_mode=0600
+tls_private_key_mode=0600
+tls_public_certificate_mode=0644
+
+nginx_global_access_log_query_markers=0
+nginx_site_access_log_query_markers=0
+controller_log_since_final_deploy_panic=0
+controller_log_since_final_deploy_fatal=0
+controller_log_since_final_deploy_ambiguous_sql=0
+controller_log_since_final_deploy_error_level=0
+postgres_expected_serialization_conflict_during_stress=1
+postgres_expected_admin_termination_during_deliberate_restart=6
+postgres_unexpected_panic=0
+nginx_config_test=PASS
+
+Host nftables INPUT policy is accept and fail2ban protects SSH. Effective
+exposure is restricted by the listeners above, but a persistent host-level
+default-deny policy remains an operational hardening recommendation.

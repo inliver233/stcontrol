@@ -1,0 +1,12 @@
+before_image=sha256:4be4f677ff45088e16592e785626c1aaee7c6d8de5be18d7af190021d4a8d117
+before_generation=10
+curl: (35) Send failure: Broken pipe
+controller_restart_1_health=204 generation=11
+curl: (35) Send failure: Broken pipe
+controller_restart_2_health=204 generation=12
+curl: (35) Send failure: Broken pipe
+controller_restart_3_health=204 generation=13
+postgres_restart_health=204 db_health=healthy
+after_image=sha256:4be4f677ff45088e16592e785626c1aaee7c6d8de5be18d7af190021d4a8d117 running 1
+migration_count=52
+core_counts=0,0,0

@@ -1,0 +1,15 @@
+recorded_at_utc=2026-08-24T11:45Z
+stcontrol_baseline_flash=2f1ee68e6641d5d4b50bcca96bc55ac1a7bef93b
+stcontrol_pre_final_commit_server=0cfaceccf49635870c2eb8ad13bc7111c75d0c05
+online_origin_sha=b4dd65b47c178ea87ea42f56ac1b7ef1a8a934cd
+os=Debian GNU/Linux 13 (trixie)
+kernel=Linux 7.1.8 x86_64
+go=go1.26.7 linux/amd64
+node=v20.20.2
+npm=10.8.2
+docker=29.7.2
+psql=17.11
+pg_dump=17.11
+nginx=1.26.3
+chrony=4.6.1
+playwright=1.62.0

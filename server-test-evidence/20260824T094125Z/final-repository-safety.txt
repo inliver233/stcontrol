@@ -1,0 +1,16 @@
+checked_at_utc=2026-08-24T11:50Z
+github_token_pattern_files=0
+non_markdown_merge_conflict_marker_files=0
+tracked_user_sql_helpers=0
+git_diff_check=PASS
+gofmt_diff=empty
+targeted_activity_lease_test=PASS
+coverage_gate_self_test=PASS
+exact_coverage_gate=PASS
+browser_script_node_check=PASS
+browser_result_json_parse=PASS
+actionlint_1_7_12=PASS
+docker_compose_config=PASS
+
+The user-owned scripts/seed-demo.sql and scripts/clear-demo.sql remain
+untracked and are intentionally excluded from the delivery commit.

@@ -138,6 +138,7 @@ Agent 将控制模式和模式世代写入 `data_dir/runtime-state.json`。默�
 
 - 总控↔子控：Agent 主动 HTTPS 长轮询；HMAC-SHA256 覆盖方法、路径、时间戳、nonce 和正文摘要，nonce 在 PostgreSQL 单次消费，每节点凭据加密存储并版本化。
 - Controller 和直接暴露的 Agent 监听均固定 TLS 1.3；明文监听被限制在 loopback，适用于同机可信 TLS 反向代理。证书和私钥必须成对配置。
+- 同机 Nginx 示例见 `deploy/nginx/`：入口和回源都只允许 TLS 1.3，HTTP 重定向丢弃 query，access log 只记录 `$uri` 且不记录 Referer。若公网前面还有 CDN，CDN 的 Minimum TLS Version 也必须单独设为 1.3；源站配置不会自动约束 CDN 边缘。
 - 登录短码：短命(60s) + 一次性原子核销 + 绑定节点/会话/活动世代/主控世代 + `no-store`/`no-referrer` + 仅通过 POST body 传递。
 - 用户密码：总控只保存不可逆登录 hash；节点密码同步使用酒馆兼容的 scrypt hash/salt，不保存可逆明文。`CONTROLLER_SECRET_KEY` 只用于控制面凭证等必须可恢复的机器密钥材料。
 - 备份数据可能含 API key：只允许 HTTPS 数据面、任务 capability 放在 Authorization 头而非 URL，临时/副本目录权限 0700/0600，不记录文件名或归档正文。首期原子发布只在 Linux 启用。

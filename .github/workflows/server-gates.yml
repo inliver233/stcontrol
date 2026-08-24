@@ -1,0 +1,99 @@
+name: server-gates
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-and-short-race:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.26.7
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20.20.2
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Verify Go and coverage gate parser
+        run: |
+          go mod verify
+          go vet ./...
+          go build ./...
+          scripts/test-check-go-coverage.sh
+      - name: Run short race suite
+        run: go test -short -race -p=1 -count=1 ./...
+      - name: Test and build Web
+        working-directory: web
+        run: |
+          npm ci
+          npm test
+          npm run build
+          npm audit --omit=dev
+
+  full-postgresql-coverage:
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/server' || github.base_ref == 'server'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: stcontrol_test
+          POSTGRES_PASSWORD: stcontrol_ci_only
+          POSTGRES_DB: stcontrol_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U stcontrol_test -d stcontrol_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      STCONTROL_TEST_POSTGRES_DSN: postgres://stcontrol_test:stcontrol_ci_only@127.0.0.1:5432/stcontrol_test?sslmode=disable
+      STCONTROL_TEST_TAVERN_ROOT: /tmp/stcontrol-ci-Sillytarven-online
+      STCONTROL_TEST_PG_BIN: /tmp/stcontrol-ci-pg_dump-17
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.26.7
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20.20.2
+      - name: Prepare pinned cross-repository fixture
+        run: |
+          git clone --depth=1 --branch online https://github.com/inliver233/Sillytarven-online.git "$STCONTROL_TEST_TAVERN_ROOT"
+          npm ci --ignore-scripts --prefix "$STCONTROL_TEST_TAVERN_ROOT"
+          npm run postinstall --prefix "$STCONTROL_TEST_TAVERN_ROOT"
+      - name: Provide PostgreSQL 17 pg_dump
+        run: |
+          printf '%s\n' '#!/bin/sh' 'exec docker run --rm --network host -e PGPASSWORD postgres:17-alpine pg_dump "$@"' >"$STCONTROL_TEST_PG_BIN"
+          chmod 700 "$STCONTROL_TEST_PG_BIN"
+          "$STCONTROL_TEST_PG_BIN" --version
+      - name: Run full PostgreSQL and process acceptance suite
+        run: go test -p=1 -count=1 -v -coverpkg=./... -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Enforce exact deduplicated 80 percent coverage
+        run: scripts/check-go-coverage.sh coverage.out 80
+      - name: Run full PostgreSQL race suite
+        run: go test -p=1 -race -count=1 ./...
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: server-coverage-${{ github.sha }}
+          path: coverage.out
+          if-no-files-found: error
+          retention-days: 14

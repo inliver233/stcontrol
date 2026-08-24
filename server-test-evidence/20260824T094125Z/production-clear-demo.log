@@ -1,0 +1,10 @@
+BEGIN
+DELETE 1
+DELETE 3
+DELETE 3
+DELETE 3
+DELETE 3
+COMMIT
+remaining_demo_nodes=0
+remaining_demo_users=0
+core_counts=0,0,0

@@ -1,0 +1,21 @@
+backup_created_utc=2026-08-24T09:30Z
+backup_path_outside_repository=/root/stcontrol-server-backups/20260824T0930Z
+database_dump_sha256=84053efa5f28fe20d26bebdbb3bed983ab0d3f4fb978c5f352e4ed1fbe27d9ca
+sha256_manifest_check=PASS
+archive_toc_entries=593
+
+fresh_restore_postgresql=17-alpine
+pg_isready=PASS
+pg_restore_no_owner_exit=0
+restored_migration_max=51
+restored_migration_count=51
+restored_nodes=3
+restored_users=3
+restored_global_users=3
+backup_restore_result=PASS
+temporary_restore_container_removed=yes
+
+The backup intentionally preserves the three demo records that existed before
+production cleanup. Current production has migration 52 and 0/0/0 core records.
+Configuration and certificate backup files are mode 0600. The old controller
+image is retained as stcontrol-controller:rollback-20260824T0930Z.
