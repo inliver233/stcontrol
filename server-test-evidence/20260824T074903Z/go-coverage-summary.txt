@@ -1,0 +1,4 @@
+covered_statements=14215
+total_statements=17761
+exact_statement_coverage=80.034908%
+threshold_margin_statements=6.20

@@ -342,3 +342,140 @@ func TestCompleteRestoreWorkflowRollsBackEveryFencedPublishMutation(t *testing.T
 		})
 	}
 }
+
+func expectRestoreInjectedExec(
+	mock sqlmock.Sqlmock,
+	expression, stage, current string,
+	injected error,
+	args ...driver.Value,
+) bool {
+	expected := mock.ExpectExec(expression).WithArgs(args...)
+	switch stage {
+	case current + " exec":
+		expected.WillReturnError(injected)
+		return true
+	case current + " rows":
+		expected.WillReturnResult(sqlmock.NewErrorResult(injected))
+		return true
+	default:
+		expected.WillReturnResult(sqlmock.NewResult(0, 1))
+		return false
+	}
+}
+
+func expectRestoreCompletionInjectedFailure(
+	mock sqlmock.Sqlmock,
+	p CompleteRestoreWorkflowParams,
+	stage string,
+	injected error,
+) {
+	expectRestoreCompletionReadyThroughAccounts(mock, p)
+	if expectRestoreInjectedExec(mock, `UPDATE snapshot_manifests`, stage, "snapshot", injected,
+		p.RestoreSnapshotID, p.WorkflowID, p.ManifestSHA256, p.ArchiveSHA256, p.FileCount, p.TotalBytes) {
+		return
+	}
+	dataVersion := mock.ExpectQuery(`SELECT COALESCE\(MAX\(data_version\),0\)\+1`).WithArgs(int64(7))
+	if stage == "data version query" {
+		dataVersion.WillReturnError(injected)
+		return
+	}
+	dataVersion.WillReturnRows(sqlmock.NewRows([]string{"data_version"}).AddRow(int64(6)))
+	if expectRestoreInjectedExec(mock, `UPDATE user_replicas SET kind='hot_standby'`, stage, "old home", injected,
+		int64(7), int64(8)) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `UPDATE user_replicas SET kind='home'`, stage, "target home", injected,
+		int64(7), int64(9), int64(6),
+		"0404040404040404040404040404040404040404040404040404040404040404", p.TotalBytes, p.Now) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `UPDATE users SET home_node_id`, stage, "legacy home", injected,
+		int64(7), int64(9)) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `UPDATE replica_copies SET is_authoritative=false`, stage, "old copies", injected,
+		int64(70), int64(8), p.Now) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `INSERT INTO replica_copies`, stage, "new copy", injected,
+		int64(70), int64(9), p.RestoreSnapshotID, p.Now) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `UPDATE node_accounts`, stage, "node accounts", injected,
+		int64(70), int64(9), p.Now, int64(8)) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `UPDATE user_activity_leases`, stage, "lease", injected,
+		int64(70), p.Now) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `UPDATE control_tickets`, stage, "tickets", injected,
+		int64(70), p.Now) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `UPDATE snapshot_transfer_capabilities`, stage, "capability", injected,
+		p.WorkflowID, p.Now, p.CapabilityHash) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `UPDATE workflows SET state='succeeded'`, stage, "workflow", injected,
+		p.WorkflowID, p.Now) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `UPDATE workflow_steps SET state='succeeded'`, stage, "steps", injected,
+		p.WorkflowID, p.Now) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `UPDATE restore_operations SET completed_at`, stage, "operation", injected,
+		p.WorkflowID, p.Now) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `INSERT INTO user_protection_states`, stage, "protection", injected,
+		int64(70), int64(9), p.Now) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `UPDATE user_data_faults SET state='resolved'`, stage, "resolve fault", injected,
+		int64(70), "restore", restoreCompletionOperationID, p.Now) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `UPDATE alerts SET state='resolved'`, stage, "resolve alert", injected,
+		int64(70), p.Now) {
+		return
+	}
+	if expectRestoreInjectedExec(mock, `INSERT INTO audit_events`, stage, "audit", injected,
+		int64(70), restoreCompletionOperationID, int64(4), int64(10), int64(9),
+		restoreCompletionSourceID, p.Now.Add(-2*time.Hour), p.RestoreSnapshotID, p.WorkflowID) {
+		return
+	}
+	panic("unhandled restore completion failure stage: " + stage)
+}
+
+func TestCompleteRestoreWorkflowPropagatesEveryPublishWriteFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 8, 40, 0, 0, time.UTC)
+	injected := errors.New("injected restore publish failure")
+	stages := []string{
+		"snapshot exec", "snapshot rows", "data version query",
+		"old home exec", "old home rows", "target home exec", "target home rows",
+		"legacy home exec", "legacy home rows", "old copies exec", "new copy exec",
+		"node accounts exec", "node accounts rows", "lease exec", "tickets exec",
+		"capability exec", "capability rows", "workflow exec", "workflow rows",
+		"steps exec", "operation exec", "operation rows", "protection exec",
+		"resolve fault exec", "resolve alert exec", "audit exec", "audit rows",
+	}
+	for _, stage := range stages {
+		stage := stage
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			st, mock, closeDB := newMockStore(t)
+			defer closeDB()
+			p := restoreCompletionParams(now)
+			mock.ExpectBegin()
+			expectRestoreCompletionInjectedFailure(mock, p, stage, injected)
+			mock.ExpectRollback()
+			if err := st.CompleteRestoreWorkflow(context.Background(), p); !errors.Is(err, injected) {
+				t.Fatalf("stage=%q error=%v, want injected failure", stage, err)
+			}
+			assertMockExpectations(t, mock)
+		})
+	}
+}

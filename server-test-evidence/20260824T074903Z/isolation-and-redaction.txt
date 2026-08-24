@@ -1,0 +1,14 @@
+The PostgreSQL integration suite used the disposable container
+stcontrol-acceptance-pg-20260824, bound only to 127.0.0.1:55432.
+It did not connect to or mutate the production PostgreSQL container.
+
+STCONTROL_TEST_POSTGRES_DSN and the disposable database password were
+provided only through the process environment. Neither value is stored
+in this evidence directory, the validation report, or repository files.
+The suite used the real pg_dump binary and /root/Sillytarven-online as the
+fixed Online test root.
+
+No production deployment, container restart, public configuration write,
+or write-type production administration operation was performed in this
+round. The unrelated user files scripts/seed-demo.sql and
+scripts/clear-demo.sql are intentionally excluded from delivery.

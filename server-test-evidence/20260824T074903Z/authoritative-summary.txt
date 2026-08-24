@@ -1,0 +1,33 @@
+stcontrol third authoritative server acceptance round
+started_utc=2026-08-24T07:49:03Z
+base_branch=server
+base_head=fff2b397c811e7739cad1ae3b05546820b4c071d
+production_source_change_in_this_round=none
+
+postgresql_full_command=go test -p=1 -count=1 -v -coverpkg=./... -covermode=atomic -coverprofile=go-coverage.out ./...
+postgresql_full_result=PASS
+go_packages_passed=9
+test_run_events=1774
+test_pass_events=1774
+test_fail_events=0
+test_skip_events=0
+covered_statements=14215
+total_statements=17761
+exact_deduplicated_statement_coverage=80.034908%
+coverage_gate=80.0%
+integer_statement_margin=6
+
+short_race_result=PASS (9 packages, 0 race reports)
+go_mod_verify_result=PASS
+go_vet_result=PASS
+go_build_result=PASS
+web_test_result=PASS (4 files, 25 tests)
+web_build_result=PASS
+web_production_audit_result=PASS (0 vulnerabilities)
+docker_compose_config_result=PASS
+
+The raw multi-package cover profile was deduplicated by source interval,
+keeping the maximum execution count for each block. This prevents the
+same coverpkg block emitted by multiple packages from inflating coverage.
+The release decision remains FAIL because external and operational gates
+listed in the Chinese validation report remain open.

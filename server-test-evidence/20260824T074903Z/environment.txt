@@ -1,0 +1,12 @@
+stcontrol_branch=server
+stcontrol_base_head=fff2b397c811e7739cad1ae3b05546820b4c071d
+online_branch=online
+online_head=b4dd65b47c178ea87ea42f56ac1b7ef1a8a934cd
+go=go1.26.7 linux/amd64
+node=v20.20.2
+npm=10.8.2
+postgresql_server=17.10
+psql_client=17.11
+pg_dump=17.11
+kernel=Linux 7.1.8-joeyblog-bbrv3 x86_64 GNU/Linux
+docker_compose=v5.5.0

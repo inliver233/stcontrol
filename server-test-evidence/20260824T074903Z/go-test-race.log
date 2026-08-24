@@ -1,0 +1,10 @@
+ok  	stcontrol/cmd/agent	1.063s
+ok  	stcontrol/cmd/controller	18.256s
+ok  	stcontrol/internal	4.130s
+ok  	stcontrol/internal/agent	18.006s
+ok  	stcontrol/internal/ai	1.153s
+ok  	stcontrol/internal/config	1.028s
+ok  	stcontrol/internal/controller	29.073s
+ok  	stcontrol/internal/crypto	14.760s
+?   	stcontrol/internal/protocol	[no test files]
+ok  	stcontrol/internal/store	5.362s

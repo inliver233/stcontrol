@@ -119,7 +119,7 @@ func TestAIHelperOrderingAndObservationParsing(t *testing.T) {
 func TestRegistrationFailureMessageNeverReflectsRawAgentText(t *testing.T) {
 	t.Parallel()
 	for _, code := range []string{
-		"node_unavailable", "policy_changed", "policy_expired", "command_timeout",
+		"node_unavailable", "node_rejected", "policy_changed", "policy_expired", "command_timeout",
 		"command_uncertain", "invalid_command_payload", "unknown-secret=password",
 	} {
 		message := registrationFailureMessage(code)
