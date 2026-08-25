@@ -241,7 +241,7 @@ func (s *Server) startAISupervisor(ctx context.Context) {
 	}
 	inspectEvery := time.Duration(policy.InspectEverySec) * time.Second
 	if inspectEvery <= 0 {
-		inspectEvery = 10 * time.Minute
+		inspectEvery = 200 * time.Minute
 	}
 	supervisor := ai.NewSupervisor(&aiStoreAdapter{st: s.Store}, provider, ai.NewRedactor(s.secretKey), mode, policy.Model, timeout)
 	// Decision ④: wire the adoption executor only in auto_low_risk mode.

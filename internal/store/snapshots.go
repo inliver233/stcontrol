@@ -830,6 +830,15 @@ func (s *Store) ScheduleSnapshotRetry(
 		if rows != 1 {
 			return 0, ErrSnapshotStateConflict
 		}
+		// A retry always receives a fresh capability and operation identity. Make
+		// any abandoned encrypted relay spool immediately eligible for cleanup so
+		// a failed source upload cannot leave a receiver and ciphertext behind.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE relay_transfers SET expires_at=LEAST(expires_at,$2),
+			  upload_lease_until=NULL,download_lease_until=NULL,updated_at=$2
+			WHERE workflow_id=$1 AND state NOT IN ('consumed','expired','failed')`, workflowID, now); err != nil {
+			return 0, err
+		}
 	}
 	result, err := tx.ExecContext(ctx, stepQuery, workflowID, errorCode, now)
 	if err != nil {
@@ -846,6 +855,72 @@ func (s *Store) ScheduleSnapshotRetry(
 		return 0, err
 	}
 	return attempt, nil
+}
+
+// DeferSnapshotWorkflow postpones work while a source or target node is
+// temporarily unschedulable. It intentionally preserves the state, attempt,
+// steps and capability: no data-plane action has begun, so node readiness must
+// not consume the bounded transport retry budget.
+func (s *Store) DeferSnapshotWorkflow(
+	ctx context.Context,
+	workflowID, errorCode, errorSummary string,
+	now time.Time,
+	delay time.Duration,
+) error {
+	if workflowID == "" || !ValidMachineReasonCode(errorCode) || delay <= 0 {
+		return ErrInvalidSnapshotWorkflow
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if len(errorSummary) > 512 {
+		errorSummary = errorSummary[:512]
+	}
+	result, err := s.DB.ExecContext(ctx, `
+		UPDATE workflows workflow SET next_attempt_at=$4,error_code=$2,
+		  error_summary=$3,lease_owner=NULL,lease_until=NULL,updated_at=$5
+		FROM controller_epochs epoch
+		WHERE workflow.id=$1 AND workflow.workflow_type='snapshot'
+		  AND workflow.state NOT IN ('succeeded','cancelled','failed')
+		  AND workflow.controller_generation=epoch.generation AND epoch.state='active'`,
+		workflowID, errorCode, nullIfEmpty(errorSummary), now.Add(delay), now)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrSnapshotStateConflict
+	}
+	return nil
+}
+
+func (s *Store) ClearSnapshotWorkflowDeferral(ctx context.Context, workflowID string, now time.Time) error {
+	if workflowID == "" {
+		return ErrInvalidSnapshotWorkflow
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	result, err := s.DB.ExecContext(ctx, `
+		UPDATE workflows workflow SET next_attempt_at=NULL,error_code=NULL,error_summary=NULL,updated_at=$2
+		FROM controller_epochs epoch
+		WHERE workflow.id=$1 AND workflow.workflow_type='snapshot'
+		  AND workflow.error_code IN ('source_not_ready','target_not_ready')
+		  AND workflow.controller_generation=epoch.generation AND epoch.state='active'`, workflowID, now)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrSnapshotStateConflict
+	}
+	return nil
 }
 
 // SwitchSnapshotWorkflowToRelay is a one-way durable transition. A workflow

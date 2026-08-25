@@ -37,6 +37,8 @@ func expectControllerWorkflowRetry(
 	if workflowType == "restore" {
 		mock.ExpectExec(`UPDATE snapshot_transfer_capabilities SET state='revoked'`).WithArgs(workflowID).
 			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(`UPDATE relay_transfers SET expires_at=LEAST`).WithArgs(workflowID, sqlmock.AnyArg()).
+			WillReturnResult(sqlmock.NewResult(0, 0))
 		expectedSteps = 4
 	}
 	mock.ExpectExec(`UPDATE workflow_steps SET state='retry_wait'`).WithArgs(workflowID, code, sqlmock.AnyArg()).

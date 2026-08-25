@@ -19,6 +19,7 @@ const (
 	snapshotWorkflowLeaseTTL   = 30 * time.Second
 	snapshotWorkflowLeaseRenew = 10 * time.Second
 	snapshotWorkflowCommandTTL = 8 * time.Hour
+	snapshotNodeReadinessDelay = 30 * time.Second
 	snapshotGenerationRecovery = "controller_generation_recovery"
 )
 
@@ -238,8 +239,34 @@ func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string)
 		(execution.TransferMode == "relay" && !s.relayAvailable()) {
 		return s.retrySnapshotWorkflow(ctx, execution, "target_unavailable", "目标数据面不可用", err)
 	}
+	// Rebuild completion proves credential and mode reconciliation, but an
+	// adapter compatibility probe may still be in flight. Temporary node
+	// unavailability is not a failed snapshot attempt: durably defer it without
+	// rotating the capability or consuming the bounded transport retry budget.
+	if !snapshotNodeReady(target) {
+		if execution.ErrorCode == snapshotGenerationRecovery {
+			if err := s.Store.DeferSnapshotWorkflow(
+				ctx, execution.WorkflowID, snapshotGenerationRecovery,
+				"主控换代，等待目标节点就绪后核对快照回执",
+				time.Now().UTC(), snapshotNodeReadinessDelay,
+			); err != nil {
+				return err
+			}
+			return fmt.Errorf("target_not_ready")
+		}
+		return s.deferSnapshotForNodeReadiness(ctx, execution, "target_not_ready", "目标节点尚未就绪")
+	}
 	if execution.ErrorCode == snapshotGenerationRecovery {
 		return s.recoverSnapshotAfterControllerGeneration(ctx, execution, target)
+	}
+	if !snapshotNodeReady(source) {
+		return s.deferSnapshotForNodeReadiness(ctx, execution, "source_not_ready", "源节点尚未就绪")
+	}
+	if execution.ErrorCode == "source_not_ready" || execution.ErrorCode == "target_not_ready" {
+		if err := s.Store.ClearSnapshotWorkflowDeferral(ctx, execution.WorkflowID, time.Now().UTC()); err != nil {
+			return err
+		}
+		execution.ErrorCode = ""
 	}
 	if execution.DestinationKind == "hot_standby" {
 		account, err := s.Store.GetWorkflowTargetAccountProvision(ctx, execution.WorkflowID)
@@ -335,6 +362,28 @@ func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string)
 		return s.retrySnapshotWorkflow(ctx, execution, "unexpected_relay_receipt", "直连传输返回了无效中转回执", nil)
 	}
 	return s.completeSnapshotExecution(ctx, execution, result.Snapshot)
+}
+
+func snapshotNodeReady(node *store.Node) bool {
+	return node != nil && node.ConnectivityState == "online" && node.OperationalState == "active" &&
+		node.CompatibilityState == "compatible" && node.ControlMode == "managed" &&
+		node.DesiredControlMode == "managed"
+}
+
+func (s *Server) deferSnapshotForNodeReadiness(
+	ctx context.Context,
+	execution *store.SnapshotWorkflowExecution,
+	code, summary string,
+) error {
+	if execution == nil {
+		return store.ErrInvalidSnapshotWorkflow
+	}
+	if err := s.Store.DeferSnapshotWorkflow(
+		ctx, execution.WorkflowID, code, summary, time.Now().UTC(), snapshotNodeReadinessDelay,
+	); err != nil {
+		return err
+	}
+	return fmt.Errorf("%s", code)
 }
 
 func (s *Server) recoverSnapshotAfterControllerGeneration(

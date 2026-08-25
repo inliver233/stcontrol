@@ -109,6 +109,50 @@ func TestControllerSnapshotWorkflowThroughDurableAgentCommands(t *testing.T) {
 		}
 	})
 
+	t.Run("node readiness defers without consuming retries", func(t *testing.T) {
+		user := createControllerBackupUser(t, ctx, st, source.ID, "node-readiness-deferral")
+		if err := server.queueUserBackup(ctx, user.ID, source.ID, "offline"); err != nil {
+			t.Fatalf("queue readiness workflow: %v", err)
+		}
+		workflowID := controllerBackupWorkflowID(t, ctx, st, user.GlobalID)
+		before := controllerBackupCommandCount(t, ctx, st)
+		if _, err := st.DB.ExecContext(ctx, `
+			UPDATE nodes SET compatibility_state='unknown',compatibility_reason_code='adapter_unavailable'
+			WHERE id=$1`, source.ID); err != nil {
+			t.Fatalf("make source temporarily unavailable: %v", err)
+		}
+		if err := server.executeSnapshotWorkflow(ctx, workflowID); err == nil || err.Error() != "source_not_ready" {
+			t.Fatalf("defer unavailable source: %v", err)
+		}
+		var state, errorCode string
+		var attempt int
+		var nextAttempt time.Time
+		if err := st.DB.QueryRowContext(ctx, `
+			SELECT state,attempt,COALESCE(error_code,''),next_attempt_at
+			FROM workflows WHERE id=$1`, workflowID).Scan(&state, &attempt, &errorCode, &nextAttempt); err != nil {
+			t.Fatalf("read deferred workflow: %v", err)
+		}
+		if state != "scheduled" || attempt != 0 || errorCode != "source_not_ready" || !nextAttempt.After(time.Now().UTC()) ||
+			controllerBackupCommandCount(t, ctx, st) != before {
+			t.Fatalf("deferred workflow state=%s attempt=%d code=%s next=%s", state, attempt, errorCode, nextAttempt)
+		}
+		if _, err := st.DB.ExecContext(ctx, `
+			UPDATE nodes SET compatibility_state='compatible',compatibility_reason_code=NULL WHERE id=$1`, source.ID); err != nil {
+			t.Fatalf("restore source readiness: %v", err)
+		}
+		if _, err := st.DB.ExecContext(ctx, `
+			UPDATE workflows SET next_attempt_at=now()-interval '1 second' WHERE id=$1`, workflowID); err != nil {
+			t.Fatalf("make deferred workflow due: %v", err)
+		}
+		if err := server.executeSnapshotWorkflow(ctx, workflowID); err != nil {
+			t.Fatalf("resume deferred source workflow: %v", err)
+		}
+		execution, err := st.GetSnapshotWorkflowExecution(ctx, workflowID)
+		if err != nil || execution == nil || execution.State != "succeeded" || execution.Attempt != 0 || execution.ErrorCode != "" {
+			t.Fatalf("resumed deferred execution=%+v err=%v", execution, err)
+		}
+	})
+
 	t.Run("normal publish is atomic and replay is idempotent", func(t *testing.T) {
 		user := createControllerBackupUser(t, ctx, st, source.ID, "backup-normal")
 		if err := server.TriggerUserBackup(ctx, user.ID, source.ID, "offline"); err != nil {
