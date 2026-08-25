@@ -522,7 +522,10 @@ func (s *Store) AdoptStaleConflictResolutions(ctx context.Context, now time.Time
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	// Candidate workflows are explicitly locked with SKIP LOCKED and every
+	// mutation is scoped by workflow ID. READ COMMITTED lets independent
+	// recovered conflicts advance concurrently instead of forming SSI pivots.
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return 0, err
 	}

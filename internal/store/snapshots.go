@@ -958,7 +958,10 @@ func (s *Store) ResumeSnapshotRetry(ctx context.Context, workflowID string, now 
 	if workflowID == "" || now.IsZero() {
 		return ErrInvalidSnapshotWorkflow
 	}
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	// The conditional workflow UPDATE is the claim. All following relay and step
+	// mutations are scoped to that workflow, so READ COMMITTED preserves the
+	// fence while allowing independent recovered workflows to resume together.
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
