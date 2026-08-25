@@ -47,7 +47,7 @@ type AISupervisorPolicy struct {
 	Model           string `yaml:"model"`             // pinned model snapshot (user-defined)
 	APIKeyEnv       string `yaml:"api_key_env"`       // env var name holding the API key; default STCONTROL_AI_API_KEY
 	TimeoutMS       int    `yaml:"timeout_ms"`        // per-call timeout; default 5000
-	InspectEverySec int    `yaml:"inspect_every_sec"` // proactive monitoring cadence; default 12000 (~3h20m)
+	InspectEverySec int    `yaml:"inspect_every_sec"` // proactive monitoring cadence; default 1800 (30m)
 	// AutoAdoptMinConfidence is the decision-④ hard gate: an advisory needs at
 	// least this confidence before the auto_low_risk executor may apply it.
 	// Default 0.8; the controller clamps to [0.5,1).
@@ -231,7 +231,7 @@ func DefaultController() *ControllerConfig {
 		},
 		AISupervisor: AISupervisorPolicy{
 			Enabled: false, Mode: "shadow", Provider: "openai_compatible",
-			APIKeyEnv: "STCONTROL_AI_API_KEY", TimeoutMS: 5000, InspectEverySec: 12000,
+			APIKeyEnv: "STCONTROL_AI_API_KEY", TimeoutMS: 5000, InspectEverySec: 1800,
 			AutoAdoptMinConfidence: 0.8,
 		},
 	}

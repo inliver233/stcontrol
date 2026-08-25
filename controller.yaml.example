@@ -82,5 +82,5 @@ ai_supervisor:
   model: example-model
   api_key_env: STCONTROL_AI_API_KEY
   timeout_ms: 60000
-  inspect_every_sec: 12000
+  inspect_every_sec: 1800
   auto_adopt_min_confidence: 0.8

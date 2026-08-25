@@ -119,7 +119,7 @@ func TestDefaultControllerHasExplicitDisasterBackupAndImportScanPolicies(t *test
 	if cfg.ImportScan.Enabled || cfg.ImportScan.IntervalSec != 6*3600 || cfg.ImportScan.MaxNodesPerRun != 2 {
 		t.Fatalf("import scan defaults=%+v", cfg.ImportScan)
 	}
-	if cfg.AISupervisor.InspectEverySec != 12000 {
+	if cfg.AISupervisor.InspectEverySec != 1800 {
 		t.Fatalf("AI proactive inspection default=%d", cfg.AISupervisor.InspectEverySec)
 	}
 }
