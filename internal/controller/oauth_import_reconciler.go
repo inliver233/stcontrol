@@ -5,16 +5,21 @@ import (
 	"time"
 
 	controlcrypto "stcontrol/internal/crypto"
-	"stcontrol/internal/protocol"
 	"stcontrol/internal/store"
 )
 
 const oauthImportReconcileEvery = 2 * time.Minute
 
 type oauthImportFingerprintKey struct {
-	nodeID      int64
-	provider    string
-	fingerprint string
+	nodeID               int64
+	controllerGeneration int64
+	provider             string
+	fingerprint          string
+}
+
+type oauthImportCredentialKey struct {
+	nodeID               int64
+	controllerGeneration int64
 }
 
 type oauthImportReconcileDecision struct {
@@ -64,33 +69,48 @@ func (s *Server) reconcileOAuthImportsOnce(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	wantedNodes := make(map[int64]struct{}, len(candidates))
+	wantedCredentials := make(map[oauthImportCredentialKey]struct{}, len(candidates))
 	for _, candidate := range candidates {
-		wantedNodes[candidate.NodeID] = struct{}{}
+		wantedCredentials[oauthImportCredentialKey{
+			nodeID: candidate.NodeID, controllerGeneration: candidate.ControllerGeneration,
+		}] = struct{}{}
+	}
+	nodesByID := make(map[int64]*store.Node, len(nodes))
+	for _, node := range nodes {
+		if node != nil {
+			nodesByID[node.ID] = node
+		}
 	}
 	matches := make(map[oauthImportFingerprintKey][]oauthImportIdentityMatch)
-	for _, node := range nodes {
+	for credentialKey := range wantedCredentials {
+		node := nodesByID[credentialKey.nodeID]
 		if node == nil || node.Role != "compute" {
 			continue
 		}
-		if _, wanted := wantedNodes[node.ID]; !wanted {
+		ciphertext, err := s.Store.GetAgentCredentialForGeneration(
+			ctx, node.ID, credentialKey.controllerGeneration,
+		)
+		if err != nil || len(ciphertext) == 0 {
 			continue
 		}
-		psk, err := s.agentPSK(ctx, node)
-		if err != nil || psk == "" {
+		plaintext, err := controlcrypto.Decrypt(s.secretKey, string(ciphertext))
+		if err != nil || len(plaintext) == 0 {
 			continue
 		}
+		psk := string(plaintext)
 		for _, identity := range identities {
-			fingerprint := controlcrypto.AgentInventoryFingerprint(
-				psk, "oauth-subject", identity.Provider,
-				protocol.CanonicalOAuthSubject(identity.Provider, identity.Subject),
-			)
-			key := oauthImportFingerprintKey{
-				nodeID: node.ID, provider: identity.Provider, fingerprint: fingerprint,
+			for _, subject := range compatibleOAuthFingerprintSubjects(identity.Provider, identity.Subject) {
+				fingerprint := controlcrypto.AgentInventoryFingerprint(
+					psk, "oauth-subject", identity.Provider, subject,
+				)
+				key := oauthImportFingerprintKey{
+					nodeID: node.ID, controllerGeneration: credentialKey.controllerGeneration,
+					provider: identity.Provider, fingerprint: fingerprint,
+				}
+				matches[key] = append(matches[key], oauthImportIdentityMatch{
+					globalUserID: identity.GlobalUserID, subject: identity.Subject,
+				})
 			}
-			matches[key] = append(matches[key], oauthImportIdentityMatch{
-				globalUserID: identity.GlobalUserID, subject: identity.Subject,
-			})
 		}
 	}
 	for _, decision := range decideOAuthImportReconciliation(candidates, matches) {
@@ -121,7 +141,8 @@ func decideOAuthImportReconciliation(
 		complete := true
 		for provider, fingerprint := range candidate.Identities {
 			key := oauthImportFingerprintKey{
-				nodeID: candidate.NodeID, provider: provider, fingerprint: fingerprint,
+				nodeID: candidate.NodeID, controllerGeneration: candidate.ControllerGeneration,
+				provider: provider, fingerprint: fingerprint,
 			}
 			identityMatches := matches[key]
 			if len(identityMatches) == 0 {

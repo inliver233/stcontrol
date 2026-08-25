@@ -266,13 +266,14 @@ func (s *Server) resolvedOAuthUnmatchedAfterLogin(ctx context.Context, provider,
 		if err != nil || psk == "" {
 			continue
 		}
-		fingerprint := controlcrypto.AgentInventoryFingerprint(
-			psk, "oauth-subject", provider,
-			protocol.CanonicalOAuthSubject(provider, subject),
-		)
-		_, _ = s.Store.ResolveOAuthUnmatchedCandidates(
-			ctx, provider, fingerprint, globalUserID, time.Now().UTC(),
-		)
+		for _, compatibleSubject := range compatibleOAuthFingerprintSubjects(provider, subject) {
+			fingerprint := controlcrypto.AgentInventoryFingerprint(
+				psk, "oauth-subject", provider, compatibleSubject,
+			)
+			_, _ = s.Store.ResolveOAuthUnmatchedCandidates(
+				ctx, provider, fingerprint, globalUserID, time.Now().UTC(),
+			)
+		}
 	}
 }
 

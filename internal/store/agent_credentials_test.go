@@ -10,6 +10,20 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
+func TestGetAgentCredentialForGenerationIncludesRevokedHistoryWithoutActivatingIt(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	mock.ExpectQuery(`(?s)SELECT secret_ciphertext FROM agent_credentials.*controller_generation=\$2`).
+		WithArgs(int64(22), int64(31)).
+		WillReturnRows(sqlmock.NewRows([]string{"secret_ciphertext"}).AddRow([]byte("historical-ciphertext")))
+	ciphertext, err := st.GetAgentCredentialForGeneration(context.Background(), 22, 31)
+	if err != nil || !bytes.Equal(ciphertext, []byte("historical-ciphertext")) {
+		t.Fatalf("ciphertext=%q err=%v", ciphertext, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
 func TestEnsureAgentCredentialRotationAfterGenerationPromotion(t *testing.T) {
 	t.Parallel()
 	st, mock, closeDB := newMockStore(t)

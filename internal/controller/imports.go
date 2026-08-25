@@ -374,12 +374,13 @@ func (s *Server) buildAccountImportBatch(
 	}
 	identityMatches := make(map[string][]int64, len(identitySubjects))
 	for _, identity := range identitySubjects {
-		fingerprint := controlcrypto.AgentInventoryFingerprint(
-			psk, "oauth-subject", identity.Provider,
-			protocol.CanonicalOAuthSubject(identity.Provider, identity.Subject),
-		)
-		key := identity.Provider + "\n" + fingerprint
-		identityMatches[key] = append(identityMatches[key], identity.GlobalUserID)
+		for _, subject := range compatibleOAuthFingerprintSubjects(identity.Provider, identity.Subject) {
+			fingerprint := controlcrypto.AgentInventoryFingerprint(
+				psk, "oauth-subject", identity.Provider, subject,
+			)
+			key := identity.Provider + "\n" + fingerprint
+			identityMatches[key] = append(identityMatches[key], identity.GlobalUserID)
+		}
 	}
 
 	normalized := append([]protocol.ScanExistingUser(nil), users...)
@@ -443,6 +444,17 @@ func (s *Server) buildAccountImportBatch(
 		InventoryDigest: digest[:], Source: source, CreatedByAdminID: adminID,
 		Candidates: candidates, Now: now,
 	}, nil
+}
+
+func compatibleOAuthFingerprintSubjects(provider, subject string) []string {
+	canonical := protocol.CanonicalOAuthSubject(provider, subject)
+	if canonical == subject {
+		return []string{canonical}
+	}
+	// Agent 0.4.0 hashed the representation stored by the node verbatim;
+	// 0.4.1 hashes the canonical provider-qualified form. Accept both during a
+	// rolling upgrade, but never transmit either value outside the Controller.
+	return []string{canonical, subject}
 }
 
 func validScannedInventoryUser(user protocol.ScanExistingUser) bool {

@@ -9,26 +9,30 @@ import (
 func TestDecideOAuthImportReconciliationHandlesEquivalentAndSplitIdentities(t *testing.T) {
 	t.Parallel()
 	candidates := []store.OAuthUnmatchedCandidateFingerprints{
-		{CandidateID: "single", NodeID: 22, Identities: map[string]string{"discord": "fp-a"}},
-		{CandidateID: "same-user", NodeID: 22, Identities: map[string]string{
+		{CandidateID: "single", NodeID: 22, ControllerGeneration: 7,
+			Identities: map[string]string{"discord": "fp-a"}},
+		{CandidateID: "same-user", NodeID: 22, ControllerGeneration: 7, Identities: map[string]string{
 			"discord": "fp-a", "linuxdo": "fp-b",
 		}},
-		{CandidateID: "split", NodeID: 22, Identities: map[string]string{
+		{CandidateID: "split", NodeID: 22, ControllerGeneration: 7, Identities: map[string]string{
 			"discord": "fp-a", "linuxdo": "fp-c",
 		}},
-		{CandidateID: "partial", NodeID: 22, Identities: map[string]string{
+		{CandidateID: "partial", NodeID: 22, ControllerGeneration: 7, Identities: map[string]string{
 			"discord": "fp-a", "linuxdo": "fp-unknown",
 		}},
-		{CandidateID: "unknown", NodeID: 24, Identities: map[string]string{"discord": "fp-a"}},
+		{CandidateID: "wrong-generation", NodeID: 22, ControllerGeneration: 8,
+			Identities: map[string]string{"discord": "fp-a"}},
+		{CandidateID: "unknown", NodeID: 24, ControllerGeneration: 7,
+			Identities: map[string]string{"discord": "fp-a"}},
 	}
 	matches := map[oauthImportFingerprintKey][]oauthImportIdentityMatch{
-		{nodeID: 22, provider: "discord", fingerprint: "fp-a"}: {
+		{nodeID: 22, controllerGeneration: 7, provider: "discord", fingerprint: "fp-a"}: {
 			{globalUserID: 70, subject: "discord-subject"},
 		},
-		{nodeID: 22, provider: "linuxdo", fingerprint: "fp-b"}: {
+		{nodeID: 22, controllerGeneration: 7, provider: "linuxdo", fingerprint: "fp-b"}: {
 			{globalUserID: 70, subject: "linuxdo-subject"},
 		},
-		{nodeID: 22, provider: "linuxdo", fingerprint: "fp-c"}: {
+		{nodeID: 22, controllerGeneration: 7, provider: "linuxdo", fingerprint: "fp-c"}: {
 			{globalUserID: 80, subject: "other-linuxdo-subject"},
 		},
 	}

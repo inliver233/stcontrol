@@ -37,8 +37,7 @@ func TestBuildAccountImportBatchMatchesOnlyNodeScopedOAuthFingerprints(t *testin
 			AddRow(int64(80), "linuxdo", "other-subject"))
 	server := New(config.DefaultController(), &store.Store{DB: db}, secretKey)
 	fingerprint := controlcrypto.AgentInventoryFingerprint(
-		"node-psk", "oauth-subject", "discord",
-		protocol.CanonicalOAuthSubject("discord", "stable-subject"),
+		"node-psk", "oauth-subject", "discord", "stable-subject",
 	)
 	params, err := server.buildAccountImportBatch(
 		context.Background(), &store.Node{ID: 12},

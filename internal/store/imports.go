@@ -31,9 +31,10 @@ type OAuthIdentitySubject struct {
 // OAuthUnmatchedCandidateFingerprints contains only node-scoped HMAC values;
 // raw provider subjects never leave the Controller's identity table.
 type OAuthUnmatchedCandidateFingerprints struct {
-	CandidateID string
-	NodeID      int64
-	Identities  map[string]string
+	CandidateID          string
+	NodeID               int64
+	ControllerGeneration int64
+	Identities           map[string]string
 }
 
 type OAuthIdentityMatchProof struct {
@@ -579,8 +580,10 @@ func (s *Store) ListOAuthUnmatchedCandidateFingerprints(
 		limit = 1000
 	}
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT candidate.id::text,candidate.node_id,candidate.identity_fingerprints
+		SELECT candidate.id::text,candidate.node_id,batch.controller_generation,
+		  candidate.identity_fingerprints
 		FROM account_import_candidates candidate
+		JOIN account_import_batches batch ON batch.id=candidate.batch_id
 		WHERE candidate.resolution_state='oauth_unmatched'
 		  AND candidate.identity_fingerprints<> '{}'::jsonb
 		ORDER BY candidate.created_at,candidate.node_id,candidate.local_user_id
@@ -593,7 +596,10 @@ func (s *Store) ListOAuthUnmatchedCandidateFingerprints(
 	for rows.Next() {
 		var candidate OAuthUnmatchedCandidateFingerprints
 		var encoded []byte
-		if err := rows.Scan(&candidate.CandidateID, &candidate.NodeID, &encoded); err != nil {
+		if err := rows.Scan(
+			&candidate.CandidateID, &candidate.NodeID,
+			&candidate.ControllerGeneration, &encoded,
+		); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(encoded, &candidate.Identities); err != nil {

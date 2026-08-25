@@ -40,6 +40,28 @@ type EnsureAgentCredentialRotationParams struct {
 	ExpiresAt            time.Time
 }
 
+// GetAgentCredentialForGeneration returns an encrypted historical node HMAC
+// key for verifying durable facts created in that Controller generation.
+// Revoked credentials remain authentication-ineligible; this read is only for
+// recomputing non-reversible inventory fingerprints inside the Controller.
+func (s *Store) GetAgentCredentialForGeneration(
+	ctx context.Context,
+	nodeID, generation int64,
+) ([]byte, error) {
+	if nodeID <= 0 || generation <= 0 {
+		return nil, ErrAgentCredentialRotation
+	}
+	var ciphertext []byte
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT secret_ciphertext FROM agent_credentials
+		WHERE node_id=$1 AND controller_generation=$2
+		ORDER BY credential_version DESC LIMIT 1`, nodeID, generation).Scan(&ciphertext)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return ciphertext, err
+}
+
 // ListAgentAuthenticationCredentials returns the active credential plus a
 // bounded pending successor. A pending secret may only be used by the HTTP
 // middleware on the confirmation route.
