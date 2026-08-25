@@ -145,6 +145,17 @@ export interface AdminNode {
   task_queue_depth: number
   tavern_version: NullString
   allow_register: boolean
+  registration_policy_state: string
+  registration_methods: Record<string, {
+    enabled: boolean
+    invitation_required: boolean
+    guild_membership?: {
+      enabled: boolean
+      guild_id: string
+      guild_name: string
+      minimum_days: number
+    }
+  }>
   is_backup_target: boolean
   recommendation_weight: number
 }

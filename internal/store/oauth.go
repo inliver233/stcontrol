@@ -166,25 +166,31 @@ func (s *Store) ConsumeOAuthBindingState(
 }
 
 type CreateOAuthPendingParams struct {
-	ID              string
-	TokenHash       []byte
-	Provider        string
-	ProviderSubject string
-	DisplayName     string
-	AvatarURL       string
-	ExpiresAt       time.Time
-	Now             time.Time
+	ID                          string
+	TokenHash                   []byte
+	Provider                    string
+	ProviderSubject             string
+	DisplayName                 string
+	AvatarURL                   string
+	NodeID                      int64
+	PolicyVersion               int64
+	DiscordMembershipVerifiedAt time.Time
+	ExpiresAt                   time.Time
+	Now                         time.Time
 }
 
 type OAuthPendingEnrollment struct {
-	ID               string
-	Provider         string
-	ProviderSubject  string
-	DisplayName      string
-	AvatarURL        string
-	ResultUserID     int64
-	ClaimID          string
-	AlreadyCompleted bool
+	ID                          string
+	Provider                    string
+	ProviderSubject             string
+	DisplayName                 string
+	AvatarURL                   string
+	NodeID                      int64
+	PolicyVersion               int64
+	DiscordMembershipVerifiedAt time.Time
+	ResultUserID                int64
+	ClaimID                     string
+	AlreadyCompleted            bool
 }
 
 func (s *Store) CreateOAuthPending(ctx context.Context, p CreateOAuthPendingParams) error {
@@ -195,18 +201,25 @@ func (s *Store) CreateOAuthPending(ctx context.Context, p CreateOAuthPendingPara
 	if p.Now.IsZero() {
 		p.Now = time.Now().UTC()
 	}
-	if !p.ExpiresAt.After(p.Now) {
+	if !p.ExpiresAt.After(p.Now) || p.NodeID < 0 || p.PolicyVersion < 0 ||
+		(p.NodeID == 0) != (p.PolicyVersion == 0) ||
+		(!p.DiscordMembershipVerifiedAt.IsZero() && (p.Provider != "discord" || p.NodeID == 0 ||
+			p.DiscordMembershipVerifiedAt.After(p.Now.Add(time.Minute)))) {
 		return ErrInvalidOAuthFlow
 	}
 	result, err := s.DB.ExecContext(ctx, `
 		INSERT INTO oauth_pending_enrollments (
 		  id, token_hash, provider, provider_subject, display_name, avatar_url,
+		  node_id,registration_policy_version,discord_membership_verified_at,
 		  state, controller_generation, expires_at, created_at, updated_at
 		)
-		SELECT $1,$2,$3,$4,$5,$6,'pending',generation,$7,$8,$8
+		SELECT $1,$2,$3,$4,$5,$6,NULLIF($7,0),NULLIF($8,0),$9,
+		  'pending',generation,$10,$11,$11
 		FROM controller_epochs WHERE state='active'`,
 		p.ID, p.TokenHash, p.Provider, p.ProviderSubject, p.DisplayName,
-		nullIfEmpty(p.AvatarURL), p.ExpiresAt, p.Now)
+		nullIfEmpty(p.AvatarURL), p.NodeID, p.PolicyVersion,
+		nullTimeValue(sql.NullTime{Time: p.DiscordMembershipVerifiedAt, Valid: !p.DiscordMembershipVerifiedAt.IsZero()}),
+		p.ExpiresAt, p.Now)
 	if err != nil {
 		return fmt.Errorf("create pending oauth enrollment: %w", err)
 	}
@@ -242,24 +255,28 @@ func (s *Store) ClaimOAuthPending(
 	defer func() { _ = tx.Rollback() }()
 
 	var (
-		out         OAuthPendingEnrollment
-		state       string
-		avatar      sql.NullString
-		storedClaim sql.NullString
-		claimUntil  sql.NullTime
-		resultUser  sql.NullInt64
+		out                  OAuthPendingEnrollment
+		state                string
+		avatar               sql.NullString
+		storedClaim          sql.NullString
+		claimUntil           sql.NullTime
+		resultUser           sql.NullInt64
+		nodeID               sql.NullInt64
+		policyVersion        sql.NullInt64
+		membershipVerifiedAt sql.NullTime
 	)
 	err = tx.QueryRowContext(ctx, `
 		SELECT pending.id, pending.provider, pending.provider_subject,
 		  pending.display_name, pending.avatar_url, pending.state,
-		  pending.claim_id, pending.claim_until, pending.result_user_id
+		  pending.claim_id, pending.claim_until, pending.result_user_id,
+		  pending.node_id,pending.registration_policy_version,pending.discord_membership_verified_at
 		FROM oauth_pending_enrollments pending
 		JOIN controller_epochs epoch
 		  ON epoch.generation=pending.controller_generation AND epoch.state='active'
 		WHERE pending.token_hash=$1 AND pending.expires_at>$2
 		FOR UPDATE OF pending`, tokenHash, now).
 		Scan(&out.ID, &out.Provider, &out.ProviderSubject, &out.DisplayName, &avatar,
-			&state, &storedClaim, &claimUntil, &resultUser)
+			&state, &storedClaim, &claimUntil, &resultUser, &nodeID, &policyVersion, &membershipVerifiedAt)
 	if err == sql.ErrNoRows {
 		return OAuthPendingEnrollment{}, false, nil
 	}
@@ -267,6 +284,11 @@ func (s *Store) ClaimOAuthPending(
 		return OAuthPendingEnrollment{}, false, fmt.Errorf("get pending oauth enrollment: %w", err)
 	}
 	out.AvatarURL = avatar.String
+	out.NodeID = nodeID.Int64
+	out.PolicyVersion = policyVersion.Int64
+	if membershipVerifiedAt.Valid {
+		out.DiscordMembershipVerifiedAt = membershipVerifiedAt.Time
+	}
 	if state == "consumed" {
 		if !resultUser.Valid {
 			return OAuthPendingEnrollment{}, false, fmt.Errorf("consumed oauth enrollment missing result")

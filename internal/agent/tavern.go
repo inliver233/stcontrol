@@ -21,9 +21,10 @@ import (
 const tavernAdapterBodyLimit = 1 << 20
 
 type adapterRegistrationPolicy struct {
-	OK      bool   `json:"ok"`
-	Mode    string `json:"mode"`
-	Version int64  `json:"version"`
+	OK      bool                                               `json:"ok"`
+	Mode    string                                             `json:"mode"`
+	Version int64                                              `json:"version"`
+	Methods map[string]protocol.RegistrationMethodPolicyReport `json:"methods"`
 }
 
 type adapterHealth struct {
@@ -42,7 +43,7 @@ type adapterSessionResponse struct {
 
 var requiredAdapterCapabilities = []string{
 	"account_inventory_paging", "account_restore", "activity_leases", "activity_ownership", "local_account_proof", "login_handoff", "node_admin_handoff", "node_admin_verify", "oauth_identity_sync", "password_update", "registration_policy",
-	"snapshot_boundary", "user_data_fault_freeze", "user_data_fault_release", "user_provision", "write_gate", "control_mode", "independent_reconciliation",
+	"snapshot_boundary", "user_data_fault_freeze", "user_data_fault_release", "user_provision", "write_gate", "control_mode", "independent_reconciliation", "registration_policy_methods",
 }
 
 func (a *Agent) verifyLocalUser(ctx context.Context, req protocol.VerifyLocalUserRequest) (protocol.VerifyLocalUserResponse, error) {
@@ -257,7 +258,8 @@ func (a *Agent) registrationPolicy(ctx context.Context) protocol.RegistrationPol
 		return report
 	}
 	if !response.OK || response.Version <= 0 ||
-		(response.Mode != "open" && response.Mode != "invitation_required" && response.Mode != "closed") {
+		(response.Mode != "open" && response.Mode != "invitation_required" && response.Mode != "closed") ||
+		!validRegistrationMethods(response.Mode, response.Methods) {
 		report.ErrorCode = "invalid_policy"
 		return report
 	}
@@ -269,8 +271,60 @@ func (a *Agent) registrationPolicy(ctx context.Context) protocol.RegistrationPol
 		freshness = 5 * time.Minute
 	}
 	return protocol.RegistrationPolicyReport{
-		State: response.Mode, Version: response.Version, ExpiresAt: now.Add(freshness),
+		State: response.Mode, Version: response.Version, ExpiresAt: now.Add(freshness), Methods: response.Methods,
 	}
+}
+
+func validRegistrationMethods(mode string, methods map[string]protocol.RegistrationMethodPolicyReport) bool {
+	allowed := map[string]bool{"password": true, "github": true, "discord": true, "linuxdo": true}
+	if len(methods) != len(allowed) {
+		return false
+	}
+	enabled := 0
+	allInvitationRequired := true
+	for name := range allowed {
+		method, ok := methods[name]
+		if !ok || method.GuildMembership != nil && name != "discord" {
+			return false
+		}
+		if method.Enabled {
+			enabled++
+			allInvitationRequired = allInvitationRequired && method.InvitationRequired
+		}
+	}
+	for name := range methods {
+		if !allowed[name] {
+			return false
+		}
+	}
+	discord := methods["discord"]
+	if discord.GuildMembership == nil {
+		return false
+	}
+	guild := discord.GuildMembership
+	if len(guild.GuildName) > 128 || guild.MinimumDays < 0 || guild.MinimumDays > 36500 {
+		return false
+	}
+	if guild.Enabled {
+		if !discord.Enabled || len(guild.GuildID) < 5 || len(guild.GuildID) > 32 {
+			return false
+		}
+		for _, char := range guild.GuildID {
+			if char < '0' || char > '9' {
+				return false
+			}
+		}
+	} else if guild.GuildID != "" || guild.GuildName != "" || guild.MinimumDays != 0 {
+		return false
+	}
+	expectedMode := "closed"
+	if enabled > 0 {
+		expectedMode = "open"
+		if allInvitationRequired {
+			expectedMode = "invitation_required"
+		}
+	}
+	return mode == expectedMode
 }
 
 func (a *Agent) compatibilityReport(ctx context.Context, info protocol.NodeInfo) protocol.NodeCompatibilityReport {

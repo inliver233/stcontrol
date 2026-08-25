@@ -152,12 +152,13 @@ func TestOAuthCallbackCreatesPendingEnrollmentWithoutSelectedNode(t *testing.T) 
 	expectOAuthLoginState(mock, nil)
 	mock.ExpectQuery(`FROM auth_identities identity`).WithArgs("linuxdo", "4242").WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec(`INSERT INTO oauth_pending_enrollments`).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "linuxdo", "4242", "Alice", nil, sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "linuxdo", "4242", "Alice", nil,
+			int64(0), int64(0), nil, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	req := oauthCallbackRequest(t, false)
 	recorder := httptest.NewRecorder()
 	server.handleOAuthCallback(recorder, req)
-	if recorder.Code != http.StatusFound || recorder.Header().Get("Location") != "/select-node" {
+	if recorder.Code != http.StatusFound || recorder.Header().Get("Location") != "/select-node?provider=linuxdo" {
 		t.Fatalf("status=%d location=%q body=%s", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
 	}
 	if len(recorder.Result().Cookies()) < 2 {
@@ -178,7 +179,7 @@ func TestOAuthCallbackFencesPendingCreationAndDisabledIdentity(t *testing.T) {
 		{
 			name: "pending persistence",
 			setup: func(mock sqlmock.Sqlmock) {
-				expectOAuthLoginState(mock, int64(12))
+				expectOAuthLoginState(mock, nil)
 				mock.ExpectQuery(`FROM auth_identities identity`).WillReturnError(sql.ErrNoRows)
 				mock.ExpectExec(`INSERT INTO oauth_pending_enrollments`).WillReturnError(errors.New("write failed"))
 			},

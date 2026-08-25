@@ -109,6 +109,9 @@ export default function RegisterPage() {
   }
 
   const selectedPolicy = nodes.find(node => node.id === selectedNode)
+  const passwordPolicy = selectedPolicy?.registration_methods?.password
+  const discordPolicy = selectedPolicy?.registration_methods?.discord
+  const linuxdoPolicy = selectedPolicy?.registration_methods?.linuxdo
 
   const oauth = (provider: string) => {
     if (!selectedNode || busy) {
@@ -185,13 +188,13 @@ export default function RegisterPage() {
               <input type="password" value={confirm} onChange={e => { setConfirm(e.target.value); resetOperation() }} required />
             </div>
             <div className="field">
-              <label>邀请码{selectedPolicy?.invitation_required ? '（该节点必填）' : '（可选）'}</label>
+              <label>邀请码{passwordPolicy?.invitation_required ? '（该方式必填）' : '（可选）'}</label>
               <input value={inviteCode} onChange={e => { setInviteCode(e.target.value); resetOperation() }}
-                placeholder={selectedPolicy?.invitation_required ? '请输入该节点邀请码' : '无邀请码可留空'}
-                required={selectedPolicy?.invitation_required} />
+                placeholder={passwordPolicy?.invitation_required ? '请输入该节点邀请码' : '无邀请码可留空'}
+                required={passwordPolicy?.invitation_required} />
             </div>
-            <button className="btn" type="submit" disabled={busy || !selectedNode}>
-              {busy ? '注册中…' : '注 册'}
+            <button className="btn" type="submit" disabled={busy || !selectedNode || !passwordPolicy?.registrable}>
+              {busy ? '注册中…' : passwordPolicy?.registrable ? '注 册' : '该节点未开放账号密码注册'}
             </button>
           </form>
         ) : (
@@ -200,13 +203,18 @@ export default function RegisterPage() {
               通过第三方账号验证后，将再次确认上方所选节点及其邀请码：
             </p>
             <div style={{ display: 'flex', gap: 10 }}>
-              <button className="btn secondary" onClick={() => oauth('discord')} disabled={!selectedNode || busy}>
+              <button className="btn secondary" onClick={() => oauth('discord')} disabled={!selectedNode || busy || !discordPolicy?.registrable}>
                 使用 Discord 注册
               </button>
-              <button className="btn secondary" onClick={() => oauth('linuxdo')} disabled={!selectedNode || busy}>
+              <button className="btn secondary" onClick={() => oauth('linuxdo')} disabled={!selectedNode || busy || !linuxdoPolicy?.registrable}>
                 使用 LinuxDo 注册
               </button>
             </div>
+            {discordPolicy?.registrable && discordPolicy.minimum_days !== undefined && discordPolicy.minimum_days > 0 && (
+              <p style={{ color: 'var(--text-dim)', fontSize: 13, marginTop: 12 }}>
+                Discord 新用户需加入{discordPolicy.guild_name ? `“${discordPolicy.guild_name}”` : '指定服务器'}满 {discordPolicy.minimum_days} 天。
+              </p>
+            )}
           </div>
         )}
 

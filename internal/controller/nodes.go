@@ -32,6 +32,18 @@ func (s *Server) aiOrderingHint(ctx context.Context, kind, target string) []int6
 // dimension is safe. Busy nodes remain selectable but sort below open nodes;
 // only durable full/unknown states close allocation.
 func (s *Server) nodeRegistrable(n *store.Node) bool {
+	for _, method := range []string{"password", "discord", "linuxdo"} {
+		if s.nodeRegistrableForMethod(n, method) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) nodeRegistrableForMethod(n *store.Node, method string) bool {
+	if n == nil {
+		return false
+	}
 	if n.Role != "compute" || !nodeReadyForManagedOperation(n) ||
 		(n.CapacityState != "open" && n.CapacityState != "busy") || !n.AllowRegister {
 		return false
@@ -41,7 +53,8 @@ func (s *Server) nodeRegistrable(n *store.Node) bool {
 		!n.RegistrationPolicyExpiresAt.Time.After(time.Now().UTC()) {
 		return false
 	}
-	return true
+	policy, ok := n.RegistrationMethods[method]
+	return ok && policy.Enabled
 }
 
 // nodeStatusLabel 计算节点状态标签（注册页显示用）。
@@ -60,6 +73,9 @@ func (s *Server) nodeStatusLabel(n *store.Node) string {
 	case (n.RegistrationPolicyState != "open" && n.RegistrationPolicyState != "invitation_required") ||
 		!n.RegistrationPolicyExpiresAt.Valid || !n.RegistrationPolicyExpiresAt.Time.After(time.Now().UTC()):
 		return "维护"
+	case !registrationMethodEnabled(n, "password") && !registrationMethodEnabled(n, "discord") &&
+		!registrationMethodEnabled(n, "linuxdo"):
+		return "注册关闭"
 	case n.CapacityState == "full":
 		return "满载"
 	case n.CapacityState == "busy":
@@ -72,17 +88,26 @@ func (s *Server) nodeStatusLabel(n *store.Node) string {
 }
 
 type availableNode struct {
-	ID                   int64  `json:"id"`
-	Name                 string `json:"name"`
-	Region               string `json:"region"`
-	BaseURL              string `json:"base_url"`
-	StatusLabel          string `json:"status_label"`
-	Registrable          bool   `json:"registrable"`
-	Recommended          bool   `json:"recommended"`
-	InvitationRequired   bool   `json:"invitation_required"`
+	ID                   int64                                  `json:"id"`
+	Name                 string                                 `json:"name"`
+	Region               string                                 `json:"region"`
+	BaseURL              string                                 `json:"base_url"`
+	StatusLabel          string                                 `json:"status_label"`
+	Registrable          bool                                   `json:"registrable"`
+	Recommended          bool                                   `json:"recommended"`
+	InvitationRequired   bool                                   `json:"invitation_required"`
+	RegistrationMethods  map[string]availableRegistrationMethod `json:"registration_methods"`
 	capacityState        string
 	recommendationWeight int
 	clientLatencyMS      int64
+}
+
+type availableRegistrationMethod struct {
+	Registrable             bool   `json:"registrable"`
+	InvitationRequired      bool   `json:"invitation_required"`
+	GuildMembershipRequired bool   `json:"guild_membership_required,omitempty"`
+	GuildName               string `json:"guild_name,omitempty"`
+	MinimumDays             int    `json:"minimum_days,omitempty"`
 }
 
 // handleAvailableNodes 注册页：列出产品状态，前端再测延迟。
@@ -94,6 +119,20 @@ func (s *Server) handleAvailableNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]availableNode, 0, len(nodes))
 	for _, n := range nodes {
+		methods := make(map[string]availableRegistrationMethod, 3)
+		for _, method := range []string{"password", "discord", "linuxdo"} {
+			policy := n.RegistrationMethods[method]
+			view := availableRegistrationMethod{
+				Registrable:        s.nodeRegistrableForMethod(n, method),
+				InvitationRequired: policy.InvitationRequired,
+			}
+			if method == "discord" && policy.GuildMembership != nil && policy.GuildMembership.Enabled {
+				view.GuildMembershipRequired = true
+				view.GuildName = policy.GuildMembership.GuildName
+				view.MinimumDays = policy.GuildMembership.MinimumDays
+			}
+			methods[method] = view
+		}
 		out = append(out, availableNode{
 			ID:                   n.ID,
 			Name:                 n.Name,
@@ -101,7 +140,8 @@ func (s *Server) handleAvailableNodes(w http.ResponseWriter, r *http.Request) {
 			BaseURL:              n.BaseURL,
 			StatusLabel:          s.nodeStatusLabel(n),
 			Registrable:          s.nodeRegistrable(n),
-			InvitationRequired:   n.RegistrationPolicyState == "invitation_required",
+			InvitationRequired:   anyInvitationRequired(methods),
+			RegistrationMethods:  methods,
 			capacityState:        n.CapacityState,
 			recommendationWeight: n.RecommendationWeight,
 			clientLatencyMS:      n.ClientLatencyMS.Int64,
@@ -145,6 +185,20 @@ func (s *Server) handleAvailableNodes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{"nodes": out})
+}
+
+func registrationMethodEnabled(node *store.Node, method string) bool {
+	policy, ok := node.RegistrationMethods[method]
+	return ok && policy.Enabled
+}
+
+func anyInvitationRequired(methods map[string]availableRegistrationMethod) bool {
+	for _, method := range methods {
+		if method.Registrable && method.InvitationRequired {
+			return true
+		}
+	}
+	return false
 }
 
 // availableNodeRank orders registrable nodes by capacity, then lets the

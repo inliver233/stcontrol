@@ -516,12 +516,13 @@ func normalizeRegistrationPolicy(
 	report protocol.RegistrationPolicyReport,
 	now time.Time,
 ) store.NodeRegistrationPolicy {
+	methods, methodsValid := normalizeRegistrationMethods(report.State, report.Methods)
 	fact := store.NodeRegistrationPolicy{
 		State: report.State, Version: report.Version, ExpiresAt: report.ExpiresAt,
-		ObservedAt: now, ErrorCode: report.ErrorCode,
+		ObservedAt: now, ErrorCode: report.ErrorCode, Methods: methods,
 	}
 	validState := report.State == "open" || report.State == "invitation_required" || report.State == "closed"
-	if validState && report.Version > 0 && report.ExpiresAt.After(now) &&
+	if validState && methodsValid && report.Version > 0 && report.ExpiresAt.After(now) &&
 		!report.ExpiresAt.After(now.Add(10*time.Minute)) {
 		fact.ErrorCode = ""
 		return fact
@@ -538,6 +539,63 @@ func normalizeRegistrationPolicy(
 		fact.ErrorCode = "invalid_policy_report"
 	}
 	return fact
+}
+
+func normalizeRegistrationMethods(
+	state string,
+	reported map[string]protocol.RegistrationMethodPolicyReport,
+) (store.RegistrationMethodPolicies, bool) {
+	allowed := []string{"password", "github", "discord", "linuxdo"}
+	if len(reported) != len(allowed) {
+		return nil, false
+	}
+	methods := make(store.RegistrationMethodPolicies, len(reported))
+	enabled := 0
+	allInvitationRequired := true
+	for _, name := range allowed {
+		report, ok := reported[name]
+		if !ok || report.GuildMembership != nil && name != "discord" {
+			return nil, false
+		}
+		method := store.RegistrationMethodPolicy{
+			Enabled: report.Enabled, InvitationRequired: report.InvitationRequired,
+		}
+		if report.Enabled {
+			enabled++
+			allInvitationRequired = allInvitationRequired && report.InvitationRequired
+		}
+		if name == "discord" {
+			guild := report.GuildMembership
+			if guild == nil || len(guild.GuildName) > 128 || guild.MinimumDays < 0 || guild.MinimumDays > 36500 {
+				return nil, false
+			}
+			if guild.Enabled {
+				if !report.Enabled || len(guild.GuildID) < 5 || len(guild.GuildID) > 32 {
+					return nil, false
+				}
+				for _, char := range guild.GuildID {
+					if char < '0' || char > '9' {
+						return nil, false
+					}
+				}
+			} else if guild.GuildID != "" || guild.GuildName != "" || guild.MinimumDays != 0 {
+				return nil, false
+			}
+			method.GuildMembership = &store.DiscordGuildMembershipPolicy{
+				Enabled: guild.Enabled, GuildID: guild.GuildID,
+				GuildName: guild.GuildName, MinimumDays: guild.MinimumDays,
+			}
+		}
+		methods[name] = method
+	}
+	expectedState := "closed"
+	if enabled > 0 {
+		expectedState = "open"
+		if allInvitationRequired {
+			expectedState = "invitation_required"
+		}
+	}
+	return methods, state == expectedState
 }
 
 // ---------- 离线备份调度辅助 ----------

@@ -134,7 +134,7 @@ type OAuthProvider struct {
 	AuthURL     string `yaml:"auth_url"`
 	TokenURL    string `yaml:"token_url"`
 	UserInfoURL string `yaml:"user_info_url"`
-	// Discord 公会校验
+	// Discord 公会校验（仅保留旧配置读取兼容；新注册规则由节点同步）
 	GuildID string `yaml:"guild_id"`
 }
 

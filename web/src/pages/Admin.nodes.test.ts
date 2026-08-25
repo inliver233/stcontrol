@@ -35,6 +35,8 @@ const node = (overrides: Partial<AdminNode>): AdminNode => ({
   allow_register: false,
   is_backup_target: false,
   recommendation_weight: 0,
+  registration_policy_state: 'closed',
+  registration_methods: {},
   ...overrides,
 })
 

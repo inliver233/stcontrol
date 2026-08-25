@@ -93,7 +93,8 @@ func TestCreateAndClaimOAuthPending(t *testing.T) {
 		ExpiresAt: now.Add(10 * time.Minute), Now: now,
 	}
 	mock.ExpectExec(`INSERT INTO oauth_pending_enrollments`).
-		WithArgs(p.ID, hash, p.Provider, p.ProviderSubject, p.DisplayName, nil, p.ExpiresAt, now).
+		WithArgs(p.ID, hash, p.Provider, p.ProviderSubject, p.DisplayName, nil,
+			int64(0), int64(0), nil, p.ExpiresAt, now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := store.CreateOAuthPending(context.Background(), p); err != nil {
 		t.Fatalf("CreateOAuthPending: %v", err)
@@ -105,8 +106,10 @@ func TestCreateAndClaimOAuthPending(t *testing.T) {
 		WithArgs(hash, now).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "provider", "provider_subject", "display_name", "avatar_url", "state",
-			"claim_id", "claim_until", "result_user_id",
-		}).AddRow(p.ID, p.Provider, p.ProviderSubject, p.DisplayName, nil, "pending", nil, nil, nil))
+			"claim_id", "claim_until", "result_user_id", "node_id",
+			"registration_policy_version", "discord_membership_verified_at",
+		}).AddRow(p.ID, p.Provider, p.ProviderSubject, p.DisplayName, nil, "pending",
+			nil, nil, nil, nil, nil, nil))
 	mock.ExpectExec(`UPDATE oauth_pending_enrollments`).
 		WithArgs(p.ID, claimID, now.Add(2*time.Minute), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -129,9 +132,10 @@ func TestClaimOAuthPendingRejectsConcurrentProcessor(t *testing.T) {
 		WithArgs(hash, now).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "provider", "provider_subject", "display_name", "avatar_url", "state",
-			"claim_id", "claim_until", "result_user_id",
+			"claim_id", "claim_until", "result_user_id", "node_id",
+			"registration_policy_version", "discord_membership_verified_at",
 		}).AddRow("pending-id", "discord", "subject", "Alice", nil, "processing",
-			"other-claim", now.Add(time.Minute), nil))
+			"other-claim", now.Add(time.Minute), nil, nil, nil, nil))
 	mock.ExpectRollback()
 	_, found, err := store.ClaimOAuthPending(context.Background(), hash, "new-claim", now, 2*time.Minute)
 	if found || !errors.Is(err, ErrOAuthPendingBusy) {
@@ -151,9 +155,10 @@ func TestClaimOAuthPendingReplaysCompletedUser(t *testing.T) {
 		WithArgs(hash, now).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "provider", "provider_subject", "display_name", "avatar_url", "state",
-			"claim_id", "claim_until", "result_user_id",
+			"claim_id", "claim_until", "result_user_id", "node_id",
+			"registration_policy_version", "discord_membership_verified_at",
 		}).AddRow("pending-id", "discord", "subject", "Alice", "https://avatar", "consumed",
-			nil, nil, int64(7)))
+			nil, nil, int64(7), nil, nil, nil))
 	mock.ExpectCommit()
 	pending, found, err := store.ClaimOAuthPending(context.Background(), hash, "new-claim", now, 2*time.Minute)
 	if err != nil || !found || !pending.AlreadyCompleted || pending.ResultUserID != 7 {
@@ -194,4 +199,17 @@ func TestOAuthPendingCompleteReleaseAndCleanup(t *testing.T) {
 		t.Fatalf("CleanupOAuthArtifacts removed=%d err=%v", removed, err)
 	}
 	assertMockExpectations(t, mock)
+}
+
+func TestOAuthPendingRejectsUnboundDiscordMembershipProof(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	err := (&Store{}).CreateOAuthPending(context.Background(), CreateOAuthPendingParams{
+		ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TokenHash: make([]byte, 32),
+		Provider: "discord", ProviderSubject: "subject", DisplayName: "Alice",
+		DiscordMembershipVerifiedAt: now, ExpiresAt: now.Add(time.Minute), Now: now,
+	})
+	if !errors.Is(err, ErrInvalidOAuthFlow) {
+		t.Fatalf("CreateOAuthPending error=%v, want ErrInvalidOAuthFlow", err)
+	}
 }

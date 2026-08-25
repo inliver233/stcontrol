@@ -83,11 +83,12 @@ func TestExchangeDiscordChecksConfiguredGuildMembership(t *testing.T) {
 			body = `{"access_token":"discord-token"}`
 		case "/api/users/@me":
 			body = `{"id":"42","username":"alice","global_name":"Alice","avatar":"avatar-hash"}`
-		case "/api/users/@me/guilds/guild-1/member":
+		case "/api/v10/users/@me/guilds/guild-1/member":
 			seenMembership = true
 			if request.Header.Get("Authorization") != "Bearer discord-token" {
 				t.Fatalf("membership request missing bearer token")
 			}
+			body = `{"joined_at":"2026-08-01T00:00:00Z"}`
 		default:
 			t.Fatalf("unexpected Discord URL: %s", request.URL.String())
 		}

@@ -823,6 +823,13 @@ function NodesAdmin() {
               <td>{n.role === 'compute' ? '计算' : '存储'}</td>
               <td style={{ fontSize: 12 }}>
                 <StatusBadge node={n} healthLabel={healthLabel} reasonLabel={reasonLabel} />
+                {n.role === 'compute' && <div style={{ marginTop: 4 }}>
+                  注册总控：{n.allow_register ? '开启' : '关闭'} · 节点策略：
+                  {n.registration_methods?.password?.enabled ? ' 密码' : ''}
+                  {n.registration_methods?.discord?.enabled ? ' Discord' : ''}
+                  {n.registration_methods?.linuxdo?.enabled ? ' LinuxDo' : ''}
+                  {!Object.values(n.registration_methods || {}).some(method => method.enabled) && ' 无开放方式'}
+                </div>}
                 {retirement && <div style={{ marginTop: 4 }}>
                   退役：{healthLabel(retirement.state)}，{retirement.completed_items}/{retirement.total_items} 完成
                   {retirement.waiting_items > 0 && `，${retirement.waiting_items} 等待离线`}
@@ -854,8 +861,9 @@ function NodesAdmin() {
               <td style={{ fontSize: 12 }}>{n.online_users} / {n.task_queue_depth}</td>
               <td style={{ fontSize: 12 }}>{String(n.tavern_version?.String ?? n.tavern_version ?? '-')}</td>
               <td style={{ whiteSpace: 'nowrap' }}>
-                <button className="btn-sm" onClick={() => toggle(n, 'allow_register')}>
-                  {n.allow_register ? '关注册' : '开注册'}
+                <button className="btn-sm" onClick={() => toggle(n, 'allow_register')}
+                  title="总控最高优先级开关，不修改节点自身的分方式策略">
+                  {n.allow_register ? '一键关闭注册' : '一键开启注册'}
                 </button>{' '}
                 <button className="btn-sm" onClick={() => toggle(n, 'is_backup_target')} title={n.role === 'storage' ? '切换是否接收新的归档备份' : '切换是否允许作为计算热备目标'}>
                   {n.role === 'storage'

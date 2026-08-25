@@ -167,7 +167,7 @@ func TestUpdateNodeRecoveryHeartbeatKeepsNodeOffline(t *testing.T) {
 			int64(20<<30), int64(100<<30), int64(200<<30), int64(180<<30), 3, 2,
 			10.0, 10.0, 20.0, 20.0, 30.0, 30.0, "open", "", nil, nil, now, nil,
 			"compatible", strings.Repeat("a", 64), "", "invitation_required", int64(9),
-			now.Add(time.Minute), "", "directory_fallback", false,
+			now.Add(time.Minute), "", "directory_fallback", false, sqlmock.AnyArg(),
 		).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	if err := st.UpdateNodeRecoveryHeartbeat(

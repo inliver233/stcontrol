@@ -9,6 +9,13 @@ export interface Node {
   registrable: boolean
   recommended: boolean
   invitation_required: boolean
+  registration_methods: Record<'password' | 'discord' | 'linuxdo', {
+    registrable: boolean
+    invitation_required: boolean
+    guild_membership_required?: boolean
+    guild_name?: string
+    minimum_days?: number
+  }>
   // 前端实测延迟(非后端字段)
   latency_ms?: number
 }

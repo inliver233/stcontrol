@@ -134,15 +134,17 @@ func (s *Store) CreateRegistrationWorkflow(
 	var allowRegister bool
 	var policyVersion int64
 	var policyExpiresAt sql.NullTime
+	var registrationMethods RegistrationMethodPolicies
 	err = tx.QueryRowContext(ctx, `
 		SELECT role,status,connectivity_state,operational_state,compatibility_state,capacity_state,
 		  control_mode,desired_control_mode,allow_register,registration_policy_state,
-		  registration_policy_version,registration_policy_expires_at
+		  registration_policy_version,registration_policy_expires_at,registration_methods
 		FROM nodes WHERE id=$1
 		  AND controller_generation=(SELECT generation FROM controller_epochs WHERE state='active')
 		FOR SHARE`, p.NodeID).
 		Scan(&role, &nodeStatus, &connectivityState, &operationalState, &compatibilityState, &capacityState,
-			&controlMode, &desiredControlMode, &allowRegister, &policyState, &policyVersion, &policyExpiresAt)
+			&controlMode, &desiredControlMode, &allowRegister, &policyState, &policyVersion, &policyExpiresAt,
+			&registrationMethods)
 	if err == sql.ErrNoRows {
 		return RegistrationWorkflow{}, ErrRegistrationNodeUnavailable
 	}
@@ -157,7 +159,11 @@ func (s *Store) CreateRegistrationWorkflow(
 		policyVersion != p.PolicyVersion || !policyExpiresAt.Valid || !policyExpiresAt.Time.After(p.Now) {
 		return RegistrationWorkflow{}, ErrRegistrationNodeUnavailable
 	}
-	if policyState == "invitation_required" && p.InvitationCiphertext == "" {
+	methodPolicy, methodAllowed := registrationMethods[p.AuthProvider]
+	if !methodAllowed || !methodPolicy.Enabled {
+		return RegistrationWorkflow{}, ErrRegistrationNodeUnavailable
+	}
+	if methodPolicy.InvitationRequired && p.InvitationCiphertext == "" {
 		return RegistrationWorkflow{}, ErrRegistrationInvitationRequired
 	}
 	var occupied int

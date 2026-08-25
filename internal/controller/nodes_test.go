@@ -23,6 +23,9 @@ func TestNodeRegistrableRequiresFreshNodeOwnedPolicy(t *testing.T) {
 		ControlMode: "managed", DesiredControlMode: "managed",
 		CapacityState: "open", CompatibilityState: "compatible", AllowRegister: true,
 		RegistrationPolicyState: "open", RegistrationPolicyVersion: 4,
+		RegistrationMethods: store.RegistrationMethodPolicies{
+			"password": {Enabled: true},
+		},
 		RegistrationPolicyExpiresAt: sql.NullTime{Time: time.Now().UTC().Add(time.Minute), Valid: true},
 	}
 	if !server.nodeRegistrable(node) {
@@ -68,6 +71,12 @@ func TestNormalizeRegistrationPolicyRejectsInvalidFreshnessAndDiagnostics(t *tes
 	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
 	fact := normalizeRegistrationPolicy(protocol.RegistrationPolicyReport{
 		State: "open", Version: 3, ExpiresAt: now.Add(time.Minute),
+		Methods: map[string]protocol.RegistrationMethodPolicyReport{
+			"password": {Enabled: true},
+			"github":   {Enabled: false},
+			"discord":  {Enabled: false, GuildMembership: &protocol.DiscordGuildMembershipPolicyReport{}},
+			"linuxdo":  {Enabled: false},
+		},
 	}, now)
 	if fact.State != "open" || fact.Version != 3 || fact.ErrorCode != "" {
 		t.Fatalf("valid fact=%+v", fact)
@@ -87,7 +96,10 @@ func TestNodeStatusLabelsUseOnlyProductHealthStates(t *testing.T) {
 		Role: "compute", ConnectivityState: "online", OperationalState: "active",
 		ControlMode: "managed", DesiredControlMode: "managed",
 		CapacityState: "open", CompatibilityState: "compatible", AllowRegister: true,
-		RegistrationPolicyState:     "open",
+		RegistrationPolicyState: "open",
+		RegistrationMethods: store.RegistrationMethodPolicies{
+			"password": {Enabled: true},
+		},
 		RegistrationPolicyExpiresAt: sql.NullTime{Time: time.Now().UTC().Add(time.Minute), Valid: true},
 	}
 	if label := server.nodeStatusLabel(node); label != "开放" {

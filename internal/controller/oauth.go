@@ -48,9 +48,13 @@ func (s *Server) handleOAuthBegin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		node, err := s.Store.GetNodeByID(r.Context(), parsed)
-		if err != nil || node == nil || !s.nodeRegistrable(node) {
-			protocol.WriteError(w, http.StatusConflict, "节点当前不可注册")
+		if err != nil || node == nil || !s.nodeRegistrableForMethod(node, provider) {
+			protocol.WriteError(w, http.StatusConflict, "节点当前不允许使用该方式注册")
 			return
+		}
+		if provider == "discord" {
+			policy := node.RegistrationMethods[provider]
+			cfg.RequestGuildMembership = policy.GuildMembership != nil && policy.GuildMembership.Enabled
 		}
 		nodeID = &parsed
 	}
@@ -130,11 +134,12 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	oauthID, displayName, avatarURL, err := s.exchangeOAuthUser(r.Context(), provider, cfg, code)
+	identity, err := s.exchangeOAuthIdentity(r.Context(), provider, cfg, code)
 	if err != nil {
 		protocol.WriteError(w, http.StatusBadGateway, "OAuth 验证失败")
 		return
 	}
+	oauthID, displayName, avatarURL := identity.Subject, identity.DisplayName, identity.AvatarURL
 	if bindingSession != nil {
 		if err := s.Store.BindOAuthIdentity(r.Context(), bindingSession.GlobalUserID, provider, oauthID, now); err != nil {
 			if errors.Is(err, store.ErrIdentityConflict) {
@@ -157,6 +162,27 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if user == nil {
+		var pendingNodeID, pendingPolicyVersion int64
+		var membershipVerifiedAt time.Time
+		if registrationNodeID != nil {
+			node, nodeErr := s.Store.GetNodeByID(ctx, *registrationNodeID)
+			if nodeErr != nil || node == nil || !s.nodeRegistrableForMethod(node, provider) {
+				protocol.WriteError(w, http.StatusConflict, "节点当前不允许使用该方式注册")
+				return
+			}
+			pendingNodeID = node.ID
+			pendingPolicyVersion = node.RegistrationPolicyVersion
+			methodPolicy := node.RegistrationMethods[provider]
+			if provider == "discord" && methodPolicy.GuildMembership != nil && methodPolicy.GuildMembership.Enabled {
+				if err := s.verifyDiscordRegistrationMembership(
+					ctx, identity.AccessToken, methodPolicy.GuildMembership, time.Now().UTC(),
+				); err != nil {
+					protocol.WriteError(w, http.StatusForbidden, "Discord 服务器成员资格或入群时间不符合该节点注册要求")
+					return
+				}
+				membershipVerifiedAt = time.Now().UTC()
+			}
+		}
 		pendingToken, err := randomBearerToken()
 		if err != nil {
 			protocol.WriteError(w, http.StatusInternalServerError, "待注册凭证生成失败")
@@ -175,15 +201,20 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		if err := s.Store.CreateOAuthPending(ctx, store.CreateOAuthPendingParams{
 			ID: pendingID, TokenHash: pendingHash[:], Provider: provider,
 			ProviderSubject: oauthID, DisplayName: displayName, AvatarURL: avatarURL,
-			ExpiresAt: now.Add(oauthPendingTTL), Now: now,
+			NodeID: pendingNodeID, PolicyVersion: pendingPolicyVersion,
+			DiscordMembershipVerifiedAt: membershipVerifiedAt,
+			ExpiresAt:                   now.Add(oauthPendingTTL), Now: now,
 		}); err != nil {
 			protocol.WriteError(w, http.StatusServiceUnavailable, "待注册状态保存失败")
 			return
 		}
 		s.setOAuthPendingCookie(w, r, pendingToken, int(oauthPendingTTL.Seconds()))
-		selectNodeURL := "/select-node"
+		selectNodeURL := "/select-node?provider=" + url.QueryEscape(provider)
 		if registrationNodeID != nil {
-			selectNodeURL += "?node_id=" + strconv.FormatInt(*registrationNodeID, 10)
+			selectNodeURL += "&node_id=" + strconv.FormatInt(*registrationNodeID, 10)
+			if provider == "discord" && !membershipVerifiedAt.IsZero() {
+				selectNodeURL += "&membership_verified=1"
+			}
 		}
 		http.Redirect(w, r, selectNodeURL, http.StatusFound)
 		return
@@ -208,7 +239,6 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
-
 
 // resolvedOAuthUnmatchedAfterLogin recomputes the node-scoped OAuth subject
 // fingerprint for every active node and resolves oauth_unmatched import
@@ -303,12 +333,24 @@ func (s *Server) handleOAuthComplete(w http.ResponseWriter, r *http.Request) {
 		}
 		if user == nil {
 			node, nodeErr := s.Store.GetNodeByID(r.Context(), req.NodeID)
-			if nodeErr != nil || node == nil || !s.nodeRegistrable(node) {
+			if nodeErr != nil || node == nil || !s.nodeRegistrableForMethod(node, pending.Provider) {
 				_ = s.Store.ReleaseOAuthPending(r.Context(), pending.ID, pending.ClaimID, time.Now().UTC())
-				protocol.WriteError(w, http.StatusConflict, "该节点当前不可注册")
+				protocol.WriteError(w, http.StatusConflict, "该节点当前不允许使用该方式注册")
 				return
 			}
-			if node.RegistrationPolicyState == "invitation_required" && req.InvitationCode == "" {
+			if pending.NodeID > 0 && (pending.NodeID != node.ID || pending.PolicyVersion != node.RegistrationPolicyVersion) {
+				_ = s.Store.ReleaseOAuthPending(r.Context(), pending.ID, pending.ClaimID, time.Now().UTC())
+				protocol.WriteError(w, http.StatusConflict, "节点注册策略已变化，请重新进行第三方授权")
+				return
+			}
+			methodPolicy := node.RegistrationMethods[pending.Provider]
+			if pending.Provider == "discord" && methodPolicy.GuildMembership != nil &&
+				methodPolicy.GuildMembership.Enabled && pending.DiscordMembershipVerifiedAt.IsZero() {
+				_ = s.Store.ReleaseOAuthPending(r.Context(), pending.ID, pending.ClaimID, time.Now().UTC())
+				protocol.WriteError(w, http.StatusConflict, "请从注册页重新进行 Discord 授权以验证服务器成员资格")
+				return
+			}
+			if methodPolicy.InvitationRequired && req.InvitationCode == "" {
 				_ = s.Store.ReleaseOAuthPending(r.Context(), pending.ID, pending.ClaimID, time.Now().UTC())
 				protocol.WriteError(w, http.StatusBadRequest, "该节点需要邀请码")
 				return
@@ -435,29 +477,60 @@ func (s *Server) oauthProviderConfig(provider string) (cfg oauthCfg, ok bool) {
 }
 
 type oauthCfg struct {
-	Enabled      bool
-	ClientID     string
-	ClientSecret string
-	CallbackURL  string
-	AuthURL      string
-	TokenURL     string
-	UserInfoURL  string
-	GuildID      string
+	Enabled                bool
+	ClientID               string
+	ClientSecret           string
+	CallbackURL            string
+	AuthURL                string
+	TokenURL               string
+	UserInfoURL            string
+	GuildID                string
+	RequestGuildMembership bool
+}
+
+type oauthIdentity struct {
+	Subject     string
+	DisplayName string
+	AvatarURL   string
+	AccessToken string
 }
 
 // exchangeOAuthUser exchanges a short-lived authorization code using a bounded,
 // injectable HTTP client so provider dependencies can be safely tested.
 func (s *Server) exchangeOAuthUser(ctx context.Context, provider string, cfg oauthCfg, code string) (string, string, string, error) {
+	identity, err := s.exchangeOAuthIdentity(ctx, provider, cfg, code)
+	if err != nil {
+		return "", "", "", err
+	}
+	return identity.Subject, identity.DisplayName, identity.AvatarURL, nil
+}
+
+func (s *Server) exchangeOAuthIdentity(ctx context.Context, provider string, cfg oauthCfg, code string) (oauthIdentity, error) {
 	switch provider {
 	case "discord":
-		return s.exchangeDiscord(ctx, cfg, code)
+		return s.exchangeDiscordIdentity(ctx, cfg, code)
 	case "linuxdo":
-		return s.exchangeLinuxDo(ctx, cfg, code)
+		id, name, avatar, err := s.exchangeLinuxDo(ctx, cfg, code)
+		return oauthIdentity{Subject: id, DisplayName: name, AvatarURL: avatar}, err
 	}
-	return "", "", "", fmt.Errorf("未知 provider")
+	return oauthIdentity{}, fmt.Errorf("未知 provider")
 }
 
 func (s *Server) exchangeDiscord(ctx context.Context, cfg oauthCfg, code string) (string, string, string, error) {
+	identity, err := s.exchangeDiscordIdentity(ctx, cfg, code)
+	if err != nil {
+		return "", "", "", err
+	}
+	if cfg.GuildID != "" {
+		policy := &store.DiscordGuildMembershipPolicy{Enabled: true, GuildID: cfg.GuildID}
+		if err := s.verifyDiscordRegistrationMembership(ctx, identity.AccessToken, policy, time.Now().UTC()); err != nil {
+			return "", "", "", err
+		}
+	}
+	return identity.Subject, identity.DisplayName, identity.AvatarURL, nil
+}
+
+func (s *Server) exchangeDiscordIdentity(ctx context.Context, cfg oauthCfg, code string) (oauthIdentity, error) {
 	resp, err := s.postOAuthForm(ctx, "https://discord.com/api/oauth2/token", url.Values{
 		"client_id":     {cfg.ClientID},
 		"client_secret": {cfg.ClientSecret},
@@ -466,22 +539,22 @@ func (s *Server) exchangeDiscord(ctx context.Context, cfg oauthCfg, code string)
 		"redirect_uri":  {cfg.CallbackURL},
 	})
 	if err != nil {
-		return "", "", "", err
+		return oauthIdentity{}, err
 	}
 	var tok struct {
 		AccessToken string `json:"access_token"`
 	}
 	if err := decodeOAuthResponse(resp, &tok); err != nil || tok.AccessToken == "" {
-		return "", "", "", fmt.Errorf("获取 access_token 失败")
+		return oauthIdentity{}, fmt.Errorf("获取 access_token 失败")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://discord.com/api/users/@me", nil)
 	if err != nil {
-		return "", "", "", err
+		return oauthIdentity{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	uresp, err := s.oauthClient().Do(req)
 	if err != nil {
-		return "", "", "", err
+		return oauthIdentity{}, err
 	}
 	var me struct {
 		ID         string `json:"id"`
@@ -490,22 +563,7 @@ func (s *Server) exchangeDiscord(ctx context.Context, cfg oauthCfg, code string)
 		Avatar     string `json:"avatar"`
 	}
 	if err := decodeOAuthResponse(uresp, &me); err != nil || me.ID == "" || me.Username == "" {
-		return "", "", "", fmt.Errorf("获取 Discord 用户失败")
-	}
-	if cfg.GuildID != "" {
-		membershipURL := "https://discord.com/api/users/@me/guilds/" + url.PathEscape(cfg.GuildID) + "/member"
-		membershipReq, err := http.NewRequestWithContext(ctx, http.MethodGet, membershipURL, nil)
-		if err != nil {
-			return "", "", "", err
-		}
-		membershipReq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
-		membershipResp, err := s.oauthClient().Do(membershipReq)
-		if err != nil {
-			return "", "", "", err
-		}
-		if err := decodeOAuthResponse(membershipResp, &struct{}{}); err != nil {
-			return "", "", "", fmt.Errorf("Discord 公会成员校验失败")
-		}
+		return oauthIdentity{}, fmt.Errorf("获取 Discord 用户失败")
 	}
 	name := me.GlobalName
 	if name == "" {
@@ -515,7 +573,47 @@ func (s *Server) exchangeDiscord(ctx context.Context, cfg oauthCfg, code string)
 	if me.Avatar != "" {
 		avatar = fmt.Sprintf("https://cdn.discordapp.com/avatars/%s/%s.png", me.ID, me.Avatar)
 	}
-	return me.ID, name, avatar, nil
+	return oauthIdentity{
+		Subject: me.ID, DisplayName: name, AvatarURL: avatar, AccessToken: tok.AccessToken,
+	}, nil
+}
+
+func (s *Server) verifyDiscordRegistrationMembership(
+	ctx context.Context,
+	accessToken string,
+	policy *store.DiscordGuildMembershipPolicy,
+	now time.Time,
+) error {
+	if policy == nil || !policy.Enabled {
+		return nil
+	}
+	if accessToken == "" || policy.GuildID == "" || policy.MinimumDays < 0 {
+		return fmt.Errorf("Discord 公会成员校验配置无效")
+	}
+	membershipURL := "https://discord.com/api/v10/users/@me/guilds/" + url.PathEscape(policy.GuildID) + "/member"
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, membershipURL, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	response, err := s.oauthClient().Do(request)
+	if err != nil {
+		return err
+	}
+	var membership struct {
+		JoinedAt string `json:"joined_at"`
+	}
+	if err := decodeOAuthResponse(response, &membership); err != nil {
+		return fmt.Errorf("Discord 公会成员校验失败")
+	}
+	joinedAt, err := time.Parse(time.RFC3339Nano, membership.JoinedAt)
+	if err != nil || joinedAt.After(now) {
+		return fmt.Errorf("Discord 入群时间不可用")
+	}
+	if now.Sub(joinedAt) < time.Duration(policy.MinimumDays)*24*time.Hour {
+		return fmt.Errorf("Discord 入群时间不足")
+	}
+	return nil
 }
 
 func (s *Server) exchangeLinuxDo(ctx context.Context, cfg oauthCfg, code string) (string, string, string, error) {
@@ -628,7 +726,11 @@ func oauthAuthorizationURL(provider string, cfg oauthCfg, state string) (string,
 	}
 	switch provider {
 	case "discord":
-		values.Set("scope", "identify")
+		scope := "identify"
+		if cfg.RequestGuildMembership {
+			scope += " guilds.members.read"
+		}
+		values.Set("scope", scope)
 		return "https://discord.com/api/oauth2/authorize?" + values.Encode(), nil
 	case "linuxdo":
 		base := cfg.AuthURL

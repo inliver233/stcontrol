@@ -225,10 +225,28 @@ type NodeCompatibilityReport struct {
 // policy. The Controller treats every unrecognized, stale, or error report as
 // fail-closed and never infers policy from its own invitation tables.
 type RegistrationPolicyReport struct {
-	State     string    `json:"state"`
-	Version   int64     `json:"version"`
-	ExpiresAt time.Time `json:"expires_at"`
-	ErrorCode string    `json:"error_code,omitempty"`
+	State     string                                    `json:"state"`
+	Version   int64                                     `json:"version"`
+	ExpiresAt time.Time                                 `json:"expires_at"`
+	ErrorCode string                                    `json:"error_code,omitempty"`
+	Methods   map[string]RegistrationMethodPolicyReport `json:"methods,omitempty"`
+}
+
+// RegistrationMethodPolicyReport is the node-owned new-account policy for one
+// authentication method. It deliberately contains no OAuth client credential.
+type RegistrationMethodPolicyReport struct {
+	Enabled            bool                                `json:"enabled"`
+	InvitationRequired bool                                `json:"invitation_required"`
+	GuildMembership    *DiscordGuildMembershipPolicyReport `json:"guild_membership,omitempty"`
+}
+
+// DiscordGuildMembershipPolicyReport contains only the public rule needed by
+// the Controller to validate a new Discord registration with its own OAuth app.
+type DiscordGuildMembershipPolicyReport struct {
+	Enabled     bool   `json:"enabled"`
+	GuildID     string `json:"guild_id"`
+	GuildName   string `json:"guild_name"`
+	MinimumDays int    `json:"minimum_days"`
 }
 
 // NodeInfo 子控探测到的节点自身信息（注册/心跳时上报）。

@@ -47,7 +47,8 @@ func TestControllerPasswordRegistrationSurvivesResponseLoss(t *testing.T) {
 	if _, err := st.DB.ExecContext(ctx, `
 		UPDATE nodes SET allow_register=true,registration_policy_state='invitation_required',
 		  registration_policy_version=7,registration_policy_expires_at=now()+interval '1 hour',
-		  registration_policy_observed_at=now()
+		  registration_policy_observed_at=now(),
+		  registration_methods='{"password":{"enabled":true,"invitation_required":true}}'::jsonb
 		WHERE id=$1`, node.ID); err != nil {
 		t.Fatalf("publish node-owned registration policy: %v", err)
 	}

@@ -42,6 +42,9 @@ export function NodeCard({ node, selected, onSelect }: {
         <span className={`badge ${badgeClass(node.status_label)}`}>{node.status_label}</span>
         {node.recommended && <span className="badge green">推荐</span>}
         {node.invitation_required && <span className="badge gray">需邀请码</span>}
+        {node.registration_methods?.password?.registrable && <span className="badge gray">密码注册</span>}
+        {node.registration_methods?.discord?.registrable && <span className="badge gray">Discord注册</span>}
+        {node.registration_methods?.linuxdo?.registrable && <span className="badge gray">LinuxDo注册</span>}
         <span className={`latency ${latencyClass(node.latency_ms)}`}>{latencyText(node.latency_ms)}</span>
       </div>
     </div>

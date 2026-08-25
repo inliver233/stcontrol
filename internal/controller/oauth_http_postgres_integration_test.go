@@ -50,7 +50,11 @@ func TestControllerOAuthHTTPStatePendingLoginAndIdentityBinding(t *testing.T) {
 		UPDATE nodes SET allow_register=true,
 		  registration_policy_state='open',registration_policy_version=1,
 		  registration_policy_expires_at=now()+interval '1 hour',
-		  registration_policy_observed_at=now()
+		  registration_policy_observed_at=now(),
+		  registration_methods='{
+		    "linuxdo":{"enabled":true},
+		    "discord":{"enabled":true,"guild_membership":{"enabled":true,"guild_id":"424242","guild_name":"Test Guild","minimum_days":15}}
+		  }'::jsonb
 		WHERE id=$1`, node.ID); err != nil {
 		t.Fatalf("open node-owned OAuth registration policy: %v", err)
 	}
@@ -66,7 +70,6 @@ func TestControllerOAuthHTTPStatePendingLoginAndIdentityBinding(t *testing.T) {
 	}
 	cfg.OAuth.Discord = config.OAuthProvider{
 		Enabled: true, ClientID: "discord-client", ClientSecret: "discord-secret",
-		GuildID: "guild-42",
 	}
 	server := New(cfg, st, []byte("0123456789abcdef0123456789abcdef"))
 	// This scenario deliberately exercises many invalid and replayed OAuth
@@ -112,8 +115,8 @@ func TestControllerOAuthHTTPStatePendingLoginAndIdentityBinding(t *testing.T) {
 				return oauthProviderResponse(request, http.StatusOK,
 					`{"id":"discord-99","username":"discord-user","global_name":"Discord User","avatar":"avatar-hash"}`), nil
 			case request.Method == http.MethodGet && request.URL.Host == "discord.com" &&
-				request.URL.Path == "/api/users/@me/guilds/guild-42/member":
-				return oauthProviderResponse(request, http.StatusOK, `{}`), nil
+				request.URL.Path == "/api/v10/users/@me/guilds/424242/member":
+				return oauthProviderResponse(request, http.StatusOK, `{"joined_at":"2026-08-01T00:00:00Z"}`), nil
 			default:
 				t.Errorf("unexpected OAuth provider request: %s %s", request.Method, request.URL.Redacted())
 				return oauthProviderResponse(request, http.StatusNotFound, `{}`), nil
@@ -186,7 +189,7 @@ func TestControllerOAuthHTTPStatePendingLoginAndIdentityBinding(t *testing.T) {
 	}
 	status, headers, body := controllerHTTPRequest(t, client, http.MethodGet,
 		httpServer.URL+"/api/auth/oauth/linuxdo/callback?code=new-code&state="+url.QueryEscape(state), nil, false)
-	if status != http.StatusFound || headers.Get("Location") != "/select-node?node_id="+strconv.FormatInt(node.ID, 10) {
+	if status != http.StatusFound || headers.Get("Location") != "/select-node?provider=linuxdo&node_id="+strconv.FormatInt(node.ID, 10) {
 		t.Fatalf("new OAuth callback: status=%d location=%q body=%s", status, headers.Get("Location"), body)
 	}
 	pendingToken := controllerCookieValue(t, client, httpServer.URL+"/api/auth/oauth/complete", oauthPendingCookie)
@@ -205,6 +208,26 @@ func TestControllerOAuthHTTPStatePendingLoginAndIdentityBinding(t *testing.T) {
 	}
 	assertControllerHTTPStatus(t, client, http.MethodGet,
 		httpServer.URL+"/api/auth/oauth/linuxdo/callback?code=new-code&state="+url.QueryEscape(state), nil, false, http.StatusBadRequest)
+
+	// A Discord new-user registration follows the selected node's guild rule,
+	// requests the additional scope only for that registration, and carries a
+	// short-lived proof into the node-selection completion page.
+	discordRegistrationClient := newOAuthClient()
+	status, headers, body = controllerHTTPRequest(t, discordRegistrationClient, http.MethodGet,
+		httpServer.URL+"/api/auth/oauth/discord?node_id="+strconv.FormatInt(node.ID, 10), nil, false)
+	authorizationURL, parseErr := url.Parse(headers.Get("Location"))
+	if status != http.StatusFound || parseErr != nil ||
+		!strings.Contains(authorizationURL.Query().Get("scope"), "guilds.members.read") {
+		t.Fatalf("Discord registration authorization: status=%d location=%q body=%s err=%v",
+			status, headers.Get("Location"), body, parseErr)
+	}
+	discordState := authorizationURL.Query().Get("state")
+	status, headers, body = controllerHTTPRequest(t, discordRegistrationClient, http.MethodGet,
+		httpServer.URL+"/api/auth/oauth/discord/callback?code=discord-registration&state="+url.QueryEscape(discordState), nil, false)
+	wantDiscordLocation := "/select-node?provider=discord&node_id=" + strconv.FormatInt(node.ID, 10) + "&membership_verified=1"
+	if status != http.StatusFound || headers.Get("Location") != wantDiscordLocation {
+		t.Fatalf("Discord registration callback: status=%d location=%q body=%s", status, headers.Get("Location"), body)
+	}
 
 	completeURL := httpServer.URL + "/api/auth/oauth/complete"
 	assertControllerHTTPStatus(t, newOAuthClient(), http.MethodPost, completeURL,
@@ -273,7 +296,7 @@ func TestControllerOAuthHTTPStatePendingLoginAndIdentityBinding(t *testing.T) {
 		t.Fatalf("decode Discord binding response: response=%+v err=%v", bindingResponse, err)
 	}
 	bindingURL, err := url.Parse(bindingResponse.AuthorizationURL)
-	if err != nil || bindingURL.Query().Get("state") == "" {
+	if err != nil || bindingURL.Query().Get("state") == "" || bindingURL.Query().Get("scope") != "identify" {
 		t.Fatalf("parse Discord binding URL %q: %v", bindingResponse.AuthorizationURL, err)
 	}
 	bindingState := bindingURL.Query().Get("state")
@@ -318,8 +341,8 @@ func TestControllerOAuthHTTPStatePendingLoginAndIdentityBinding(t *testing.T) {
 		WHERE actor=$1 AND action IN ('identity-bind','identity-unbind')`, user.Username).Scan(&auditCount); err != nil || auditCount != 4 {
 		t.Fatalf("identity audit count=%d err=%v, want 4", auditCount, err)
 	}
-	if providerCalls["GET discord.com/api/users/@me/guilds/guild-42/member"] != 1 {
-		t.Fatalf("Discord guild membership checks=%d, want 1", providerCalls["GET discord.com/api/users/@me/guilds/guild-42/member"])
+	if providerCalls["GET discord.com/api/v10/users/@me/guilds/424242/member"] != 1 {
+		t.Fatalf("Discord guild membership checks=%d, want 1", providerCalls["GET discord.com/api/v10/users/@me/guilds/424242/member"])
 	}
 }
 
@@ -341,7 +364,8 @@ func TestOAuthCompleteNewEnrollmentAndFailClosedMatrixPostgres(t *testing.T) {
 	if _, err := st.DB.ExecContext(ctx, `
 		UPDATE nodes SET allow_register=true,registration_policy_state='open',
 		  registration_policy_version=3,registration_policy_expires_at=now()+interval '1 hour',
-		  registration_policy_observed_at=now()
+		  registration_policy_observed_at=now(),
+		  registration_methods='{"linuxdo":{"enabled":true}}'::jsonb
 		WHERE id=$1`, node.ID); err != nil {
 		t.Fatalf("publish open OAuth registration policy: %v", err)
 	}
@@ -477,7 +501,9 @@ func TestOAuthCompleteNewEnrollmentAndFailClosedMatrixPostgres(t *testing.T) {
 	if _, err := st.DB.ExecContext(ctx, `
 		UPDATE nodes SET allow_register=true,registration_policy_state='invitation_required',
 		  registration_policy_version=4,registration_policy_expires_at=now()+interval '1 hour',
-		  registration_policy_observed_at=now() WHERE id=$1`, node.ID); err != nil {
+		  registration_policy_observed_at=now(),
+		  registration_methods='{"linuxdo":{"enabled":true,"invitation_required":true}}'::jsonb
+		WHERE id=$1`, node.ID); err != nil {
 		t.Fatal(err)
 	}
 	invitationClient, invitationPendingID := newPendingClient("invitation-required")
@@ -492,7 +518,9 @@ func TestOAuthCompleteNewEnrollmentAndFailClosedMatrixPostgres(t *testing.T) {
 	if _, err := st.DB.ExecContext(ctx, `
 		UPDATE nodes SET allow_register=true,registration_policy_state='open',
 		  registration_policy_version=5,registration_policy_expires_at=now()+interval '1 hour',
-		  registration_policy_observed_at=now() WHERE id=$1`, node.ID); err != nil {
+		  registration_policy_observed_at=now(),
+		  registration_methods='{"linuxdo":{"enabled":true}}'::jsonb
+		WHERE id=$1`, node.ID); err != nil {
 		t.Fatal(err)
 	}
 	disabledUser := &store.User{

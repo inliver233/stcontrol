@@ -39,9 +39,10 @@ func TestCreateRegistrationWorkflowReservesHandleUnderFreshSelectedNodePolicy(t 
 			"role", "status", "connectivity_state", "operational_state", "compatibility_state",
 			"capacity_state",
 			"control_mode", "desired_control_mode", "allow_register", "registration_policy_state",
-			"registration_policy_version", "registration_policy_expires_at",
+			"registration_policy_version", "registration_policy_expires_at", "registration_methods",
 		}).AddRow("compute", "online", "online", "active", "compatible", "busy", "managed", "managed",
-			true, "invitation_required", int64(7), now.Add(time.Minute)))
+			true, "invitation_required", int64(7), now.Add(time.Minute),
+			`{"password":{"enabled":true,"invitation_required":true}}`))
 	mock.ExpectQuery(`SELECT 1 FROM users`).WithArgs("alice").
 		WillReturnRows(sqlmock.NewRows([]string{"one"}))
 	mock.ExpectQuery(`INSERT INTO workflows`).WithArgs(p.WorkflowID, p.OperationID, int64(12), now).
@@ -77,9 +78,10 @@ func TestCreateRegistrationWorkflowRejectsNonManagedNodeWithoutErasingPolicy(t *
 			"role", "status", "connectivity_state", "operational_state", "compatibility_state",
 			"capacity_state",
 			"control_mode", "desired_control_mode", "allow_register", "registration_policy_state",
-			"registration_policy_version", "registration_policy_expires_at",
+			"registration_policy_version", "registration_policy_expires_at", "registration_methods",
 		}).AddRow("compute", "online", "online", "maintenance", "compatible", "open", "managed", "managed",
-			true, "open", int64(7), now.Add(time.Minute)))
+			true, "open", int64(7), now.Add(time.Minute),
+			`{"password":{"enabled":true}}`))
 	mock.ExpectRollback()
 	if _, err := st.CreateRegistrationWorkflow(context.Background(), p); !errors.Is(err, ErrRegistrationNodeUnavailable) {
 		t.Fatalf("maintenance registration error=%v", err)
@@ -102,9 +104,10 @@ func TestCreateRegistrationWorkflowRejectsDurablyFullNode(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"role", "status", "connectivity_state", "operational_state", "compatibility_state",
 			"capacity_state", "control_mode", "desired_control_mode", "allow_register",
-			"registration_policy_state", "registration_policy_version", "registration_policy_expires_at",
+			"registration_policy_state", "registration_policy_version", "registration_policy_expires_at", "registration_methods",
 		}).AddRow("compute", "online", "online", "active", "compatible", "full", "managed", "managed",
-			true, "open", int64(7), now.Add(time.Minute)))
+			true, "open", int64(7), now.Add(time.Minute),
+			`{"password":{"enabled":true}}`))
 	mock.ExpectRollback()
 	if _, err := st.CreateRegistrationWorkflow(context.Background(), p); !errors.Is(err, ErrRegistrationNodeUnavailable) {
 		t.Fatalf("full-node registration error=%v", err)

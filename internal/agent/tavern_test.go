@@ -141,6 +141,15 @@ func TestRegistrationPolicyRequiresFreshVersionedAdapterFact(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(adapterRegistrationPolicy{
 			OK: true, Mode: "invitation_required", Version: 8,
+			Methods: map[string]protocol.RegistrationMethodPolicyReport{
+				"password": {Enabled: false},
+				"github":   {Enabled: false},
+				"discord": {
+					Enabled: true, InvitationRequired: true,
+					GuildMembership: &protocol.DiscordGuildMembershipPolicyReport{},
+				},
+				"linuxdo": {Enabled: false},
+			},
 		})
 	}))
 	defer server.Close()
@@ -154,7 +163,7 @@ func TestRegistrationPolicyRequiresFreshVersionedAdapterFact(t *testing.T) {
 	before := time.Now().UTC()
 	report := a.registrationPolicy(context.Background())
 	if report.State != "invitation_required" || report.Version != 8 ||
-		!report.ExpiresAt.After(before.Add(59*time.Second)) {
+		!report.ExpiresAt.After(before.Add(59*time.Second)) || !report.Methods["discord"].Enabled {
 		t.Fatalf("report=%+v", report)
 	}
 }

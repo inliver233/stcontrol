@@ -88,4 +88,4 @@ func (a *Agent) adapterPSK() string {
 }
 
 // Version 子控版本。
-const Version = "0.2.0"
+const Version = "0.3.0"

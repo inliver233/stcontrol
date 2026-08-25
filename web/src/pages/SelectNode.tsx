@@ -20,6 +20,8 @@ export default function SelectNodePage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const requestedNodeID = Number(searchParams.get('node_id') || 0)
+  const provider = searchParams.get('provider') === 'linuxdo' ? 'linuxdo' : 'discord'
+  const membershipVerified = searchParams.get('membership_verified') === '1'
   const resetOperation = () => { operationID.current = crypto.randomUUID() }
 
   useEffect(() => {
@@ -31,7 +33,7 @@ export default function SelectNodePage() {
         const { nodes: list } = await api.availableNodes()
         if (cancelled) return
         setNodes(list)
-        if (Number.isSafeInteger(requestedNodeID) && list.some(node => node.id === requestedNodeID && node.registrable)) {
+        if (Number.isSafeInteger(requestedNodeID) && list.some(node => node.id === requestedNodeID && node.registration_methods?.[provider]?.registrable)) {
           setSelected(requestedNodeID)
         }
         setLoading(false)
@@ -80,6 +82,11 @@ export default function SelectNodePage() {
     if (!selected || busy) return
     setBusy(true)
     setError('')
+    const policy = nodes.find(node => node.id === selected)?.registration_methods?.[provider]
+    if (provider === 'discord' && policy?.guild_membership_required && !membershipVerified) {
+      window.location.href = `/api/auth/oauth/discord?node_id=${selected}`
+      return
+    }
     try {
       const started = await api.completeOAuth(selected, operationID.current, invitationCode || undefined)
       if (started.state !== 'succeeded') await waitForRegistration()
@@ -92,6 +99,7 @@ export default function SelectNodePage() {
   }
 
   const selectedPolicy = nodes.find(node => node.id === selected)
+  const selectedMethodPolicy = selectedPolicy?.registration_methods?.[provider]
 
   return (
     <div className="page">
@@ -115,14 +123,14 @@ export default function SelectNodePage() {
             <div className="node-grid">
               {nodes.map(n => (
                 <NodeCard key={n.id} node={n} selected={selected === n.id} onSelect={() => {
-                  if (n.registrable && !busy) {
+                  if (n.registration_methods?.[provider]?.registrable && !busy) {
                     setSelected(n.id)
                     resetOperation()
                   }
                 }} />
               ))}
             </div>
-            {selectedPolicy?.invitation_required && (
+            {selectedMethodPolicy?.invitation_required && (
               <div className="field">
                 <label>该节点邀请码</label>
                 <input value={invitationCode} onChange={event => {
@@ -132,8 +140,9 @@ export default function SelectNodePage() {
               </div>
             )}
             <button className="btn" onClick={confirm}
-              disabled={!selected || busy || (!!selectedPolicy?.invitation_required && !invitationCode)}>
-              {busy ? '正在完成注册…' : '确认并继续'}
+              disabled={!selected || busy || !selectedMethodPolicy?.registrable || (!!selectedMethodPolicy?.invitation_required && !invitationCode)}>
+              {busy ? '正在完成注册…' : provider === 'discord' && selectedMethodPolicy?.guild_membership_required && !membershipVerified
+                ? '授权验证成员资格并继续' : '确认并继续'}
             </button>
           </>
         )}

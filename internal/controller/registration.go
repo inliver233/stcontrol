@@ -75,11 +75,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusBadRequest, "节点不存在")
 		return
 	}
-	if !s.nodeRegistrable(node) {
-		protocol.WriteError(w, http.StatusConflict, "该节点当前不可注册")
+	if !s.nodeRegistrableForMethod(node, "password") {
+		protocol.WriteError(w, http.StatusConflict, "该节点当前不可使用账号密码注册")
 		return
 	}
-	if node.RegistrationPolicyState == "invitation_required" && req.InvitationCode == "" {
+	if node.RegistrationMethods["password"].InvitationRequired && req.InvitationCode == "" {
 		protocol.WriteError(w, http.StatusBadRequest, "该节点需要邀请码")
 		return
 	}
@@ -346,17 +346,11 @@ func (s *Server) executeRegistrationWorkflow(ctx context.Context, workflowID str
 	if err != nil || execution == nil {
 		return err
 	}
-	now = time.Now().UTC()
 	if execution.NodePolicyVersion != execution.PolicyVersion {
 		return s.failRegistrationTransition(ctx, workflowID, "policy_changed")
 	}
-	if execution.NodeStatus != "online" ||
-		(execution.NodePolicyState != "open" && execution.NodePolicyState != "invitation_required") ||
-		!execution.NodePolicyExpiresAt.Valid || !execution.NodePolicyExpiresAt.Time.After(now) {
-		return s.retryRegistrationTransition(ctx, execution, "node_unavailable")
-	}
 	node, err := s.Store.GetNodeByID(ctx, execution.NodeID)
-	if err != nil || node == nil {
+	if err != nil || node == nil || !s.nodeRegistrableForMethod(node, execution.AuthProvider) {
 		return s.retryRegistrationTransition(ctx, execution, "node_unavailable")
 	}
 	var invitationCode string

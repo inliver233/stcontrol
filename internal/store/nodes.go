@@ -147,7 +147,8 @@ const nodeSelectColumns = `
   disk_quota_bytes,expected_disk_quota_bytes,quota_policy_version,quota_sync_state,
   quota_sync_at,quota_sync_error_code,allocated_disk_bytes,online_users,task_queue_depth,telemetry_source,
   client_latency_ms,client_latency_observed_at,
-  allow_register,recommendation_weight,is_backup_target,registration_policy_state,
+  allow_register,recommendation_weight,is_backup_target,
+  jsonb_build_object('state',registration_policy_state,'methods',registration_methods) AS registration_policy,
   registration_policy_version,registration_policy_expires_at,
   registration_policy_observed_at,registration_policy_error_code,created_at`
 
@@ -168,7 +169,7 @@ func scanNode(scanner nodeScanner, n *Node) error {
 		&n.DiskQuotaBytes, &n.ExpectedDiskQuotaBytes, &n.QuotaPolicyVersion, &n.QuotaSyncState,
 		&n.QuotaSyncAt, &n.QuotaSyncErrorCode, &n.AllocatedDiskBytes, &n.OnlineUsers, &n.TaskQueueDepth, &n.TelemetrySource,
 		&n.ClientLatencyMS, &n.ClientLatencyObservedAt,
-		&n.AllowRegister, &n.RecommendationWeight, &n.IsBackupTarget, &n.RegistrationPolicyState,
+		&n.AllowRegister, &n.RecommendationWeight, &n.IsBackupTarget, nodeRegistrationPolicyScan{node: n},
 		&n.RegistrationPolicyVersion, &n.RegistrationPolicyExpiresAt,
 		&n.RegistrationPolicyObservedAt, &n.RegistrationPolicyErrorCode, &n.CreatedAt,
 	)
@@ -375,22 +376,39 @@ func (s *Store) updateNodeHeartbeat(
 	    compatibility_reason_code=NULLIF($29,''),compatibility_reported_at=$8::timestamptz,telemetry_source=$34,
 	    registration_policy_state=CASE
 	      WHEN $30 IN ('open','invitation_required','closed')
-	        AND ($31>registration_policy_version
-	          OR ($31=registration_policy_version AND $30=registration_policy_state)) THEN $30
+	        AND (($36::jsonb<>'{}'::jsonb AND registration_methods='{}'::jsonb)
+	          OR $31>registration_policy_version
+	          OR ($31=registration_policy_version AND $30=registration_policy_state
+	            AND $36::jsonb=registration_methods)) THEN $30
 	      ELSE 'error' END,
-	    registration_policy_version=GREATEST(registration_policy_version,$31),
+	    registration_policy_version=CASE
+	      WHEN $30 IN ('open','invitation_required','closed')
+	        AND $36::jsonb<>'{}'::jsonb AND registration_methods='{}'::jsonb THEN $31
+	      ELSE GREATEST(registration_policy_version,$31) END,
+	    registration_methods=CASE
+	      WHEN $30 IN ('open','invitation_required','closed')
+	        AND (($36::jsonb<>'{}'::jsonb AND registration_methods='{}'::jsonb)
+	          OR $31>registration_policy_version
+	          OR ($31=registration_policy_version AND $30=registration_policy_state
+	            AND $36::jsonb=registration_methods)) THEN $36::jsonb
+	      ELSE registration_methods END,
 	    registration_policy_expires_at=CASE
 	      WHEN $30 IN ('open','invitation_required','closed')
-	        AND ($31>registration_policy_version
-	          OR ($31=registration_policy_version AND $30=registration_policy_state)) THEN $32::timestamptz
+	        AND (($36::jsonb<>'{}'::jsonb AND registration_methods='{}'::jsonb)
+	          OR $31>registration_policy_version
+	          OR ($31=registration_policy_version AND $30=registration_policy_state
+	            AND $36::jsonb=registration_methods)) THEN $32::timestamptz
 	      ELSE $8::timestamptz END,
 	    registration_policy_observed_at=$8::timestamptz,
 	    registration_policy_error_code=CASE
 	      WHEN $30 IN ('open','invitation_required','closed')
-	        AND ($31>registration_policy_version
-	          OR ($31=registration_policy_version AND $30=registration_policy_state)) THEN NULL
+	        AND (($36::jsonb<>'{}'::jsonb AND registration_methods='{}'::jsonb)
+	          OR $31>registration_policy_version
+	          OR ($31=registration_policy_version AND $30=registration_policy_state
+	            AND $36::jsonb=registration_methods)) THEN NULL
 	      WHEN $31<registration_policy_version THEN 'version_rollback'
-	      WHEN $31=registration_policy_version AND $30<>registration_policy_state THEN 'version_reuse'
+	      WHEN $31=registration_policy_version
+	        AND ($30<>registration_policy_state OR $36::jsonb<>registration_methods) THEN 'version_reuse'
 	      ELSE $33 END,
 	    quota_sync_state=CASE
 	      WHEN expected_disk_quota_bytes=0 THEN 'synced'
@@ -415,7 +433,7 @@ func (s *Store) updateNodeHeartbeat(
 		effectiveCompatibilityReason,
 		facts.RegistrationPolicy.State, facts.RegistrationPolicy.Version,
 		facts.RegistrationPolicy.ExpiresAt, facts.RegistrationPolicy.ErrorCode, facts.TelemetrySource,
-		publishOnline)
+		publishOnline, facts.RegistrationPolicy.Methods)
 	if err != nil {
 		return fmt.Errorf("update node heartbeat facts: %w", err)
 	}

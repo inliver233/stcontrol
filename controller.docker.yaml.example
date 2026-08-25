@@ -54,7 +54,7 @@ oauth:
     client_id: ""
     client_secret: ""
     callback_url: https://account.example.com:8443/api/auth/oauth/discord/callback
-    guild_id: ""
+    # 注册公会与最低入群天数由每个 SillyTavern 节点同步，不在总控重复配置。
   linuxdo:
     enabled: false
     client_id: ""
