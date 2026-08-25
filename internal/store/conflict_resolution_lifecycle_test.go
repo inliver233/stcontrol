@@ -281,16 +281,16 @@ func TestRestartConflictResolutionRearmsFailedWorkflowAtomically(t *testing.T) {
 		WithArgs(int64(70), operationID).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"workflow_id", "conflict_id", "snapshot_id", "base_node_id", "node_name", "conflict_state", "generation",
-		}).AddRow(workflowID, conflictID, snapshotID, int64(9), "compute-b", "awaiting_decision", int64(4)))
+		}).AddRow(workflowID, conflictID, snapshotID, int64(9), "compute-b", "awaiting_decision", int64(3)))
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(4)))
 	mock.ExpectExec(`UPDATE snapshot_manifests`).WithArgs(snapshotID, make([]byte, 32)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`UPDATE workflows SET state='scheduled'`).WithArgs(workflowID, now).
+	mock.ExpectExec(`UPDATE workflows SET state='scheduled'`).WithArgs(workflowID, now, int64(4)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE workflow_steps SET state='pending'`).WithArgs(workflowID, now).
 		WillReturnResult(sqlmock.NewResult(0, 5))
-	mock.ExpectExec(`UPDATE replica_conflicts SET state='resolving'`).WithArgs(conflictID, now).
+	mock.ExpectExec(`UPDATE replica_conflicts SET state='resolving'`).WithArgs(conflictID, now, int64(4)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO audit_events`).
 		WithArgs(int64(70), operationID, int64(4), conflictID, int64(9), now).
@@ -303,10 +303,10 @@ func TestRestartConflictResolutionRearmsFailedWorkflowAtomically(t *testing.T) {
 	assertMockExpectations(t, mock)
 }
 
-func TestRestartConflictResolutionFencesConflictAndGeneration(t *testing.T) {
+func TestRestartConflictResolutionFencesConflictAndManifest(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 24, 7, 20, 0, 0, time.UTC)
-	for _, stage := range []string{"missing", "conflict state", "generation", "manifest"} {
+	for _, stage := range []string{"missing", "conflict state", "manifest"} {
 		stage := stage
 		t.Run(stage, func(t *testing.T) {
 			t.Parallel()
@@ -326,12 +326,8 @@ func TestRestartConflictResolutionFencesConflictAndGeneration(t *testing.T) {
 					"workflow_id", "conflict_id", "snapshot_id", "base_node_id", "node_name", "conflict_state", "generation",
 				}).AddRow("workflow", "conflict", "snapshot", int64(9), "compute-b", conflictState, int64(4)))
 				if stage != "conflict state" {
-					activeGeneration := int64(4)
-					if stage == "generation" {
-						activeGeneration = 5
-					}
 					mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
-						WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(activeGeneration))
+						WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(4)))
 					if stage == "manifest" {
 						mock.ExpectExec(`UPDATE snapshot_manifests`).WithArgs("snapshot", make([]byte, 32)).
 							WillReturnResult(sqlmock.NewResult(0, 0))

@@ -110,7 +110,11 @@ func (s *Store) ClaimConflictEvidenceTask(
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	// Claiming is an atomic conditional UPDATE. READ COMMITTED still makes
+	// concurrent claimers re-check the predicate after the row lock is released,
+	// while avoiding SSI aborts caused by unrelated node heartbeats and conflict
+	// reconciliation touching the same case.
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return 0, false, err
 	}

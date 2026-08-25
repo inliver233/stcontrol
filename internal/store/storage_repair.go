@@ -439,7 +439,7 @@ func (s *Store) ClaimAndCreateStorageRepair(
 		    WHERE cleanup.user_id=$4 AND cleanup.node_id=node.id
 		      AND cleanup.state IN ('pending','running','retry_wait')
 		  )
-		ORDER BY CASE WHEN $5 IS NOT NULL AND node.id=$5 THEN 0 ELSE 1 END,
+		ORDER BY CASE WHEN $5::bigint IS NOT NULL AND node.id=$5::bigint THEN 0 ELSE 1 END,
 		  CASE node.capacity_state WHEN 'open' THEN 0 ELSE 1 END,
 		  LEAST(node.disk_available_bytes,node.disk_quota_bytes-node.allocated_disk_bytes)-
 		    COALESCE((SELECT sum(reservation.reserved_bytes)

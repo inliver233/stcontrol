@@ -254,6 +254,8 @@ export const api = {
   }),
   conflictResolutionStatus: (operation_id: string) =>
     request<ConflictResolutionStatus>(`/api/conflicts/me/resolutions/${encodeURIComponent(operation_id)}`),
+  currentConflictResolution: () =>
+    request<ConflictResolutionStatus>('/api/conflicts/me/resolutions/current'),
   retryConflictResolution: (operation_id: string) =>
     request<ConflictResolutionStatus>(`/api/conflicts/me/resolutions/${encodeURIComponent(operation_id)}/retry`, { method: 'POST' }),
   conflictLogout: () => request<{ ok: boolean }>('/api/conflicts/auth/logout', { method: 'POST' }),

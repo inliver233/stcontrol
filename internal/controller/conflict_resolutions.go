@@ -67,6 +67,19 @@ func (s *Server) handleStartConflictResolution(w http.ResponseWriter, r *http.Re
 		protocol.WriteError(w, http.StatusServiceUnavailable, "读取冲突事实失败")
 		return
 	}
+	if conflict != nil {
+		existing, statusErr := s.Store.GetConflictResolutionStatusForConflict(
+			r.Context(), sess.GlobalUserID, conflict.ID,
+		)
+		if statusErr != nil {
+			protocol.WriteError(w, http.StatusServiceUnavailable, "读取既有冲突处理任务失败")
+			return
+		}
+		if existing != nil {
+			protocol.WriteJSON(w, http.StatusAccepted, publicConflictResolution(existing))
+			return
+		}
+	}
 	if conflict == nil || conflict.State != "awaiting_decision" || conflict.Version != req.ExpectedConflictVersion {
 		protocol.WriteError(w, http.StatusConflict, "冲突证据或版本已变化，请刷新后重新确认")
 		return
@@ -121,6 +134,14 @@ func (s *Server) handleStartConflictResolution(w http.ResponseWriter, r *http.Re
 		DefaultAction: req.DefaultAction, Decisions: decisions, Transfers: transfers, Now: now,
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrConflictResolutionState) {
+			if status, statusErr := s.Store.GetConflictResolutionStatusForConflict(
+				r.Context(), sess.GlobalUserID, conflict.ID,
+			); statusErr == nil && status != nil {
+				protocol.WriteJSON(w, http.StatusAccepted, publicConflictResolution(status))
+				return
+			}
+		}
 		s.writeConflictResolutionError(w, err)
 		return
 	}
@@ -156,6 +177,35 @@ func (s *Server) handleConflictResolutionStatus(w http.ResponseWriter, r *http.R
 	protocol.WriteJSON(w, http.StatusOK, publicConflictResolution(status))
 }
 
+func (s *Server) handleCurrentConflictResolutionStatus(w http.ResponseWriter, r *http.Request) {
+	sess := currentSession(r)
+	if sess == nil || sess.GlobalUserID <= 0 || sess.IsAdmin {
+		protocol.WriteError(w, http.StatusUnauthorized, "需要冲突恢复认证")
+		return
+	}
+	conflict, err := s.Store.GetOpenReplicaConflict(r.Context(), sess.GlobalUserID)
+	if err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "读取冲突事实失败")
+		return
+	}
+	if conflict == nil {
+		protocol.WriteError(w, http.StatusNotFound, "没有待处理的副本冲突")
+		return
+	}
+	status, err := s.Store.GetConflictResolutionStatusForConflict(
+		r.Context(), sess.GlobalUserID, conflict.ID,
+	)
+	if err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "冲突处理状态暂不可用")
+		return
+	}
+	if status == nil {
+		protocol.WriteError(w, http.StatusNotFound, "冲突处理操作不存在")
+		return
+	}
+	protocol.WriteJSON(w, http.StatusOK, publicConflictResolution(status))
+}
+
 func (s *Server) handleRetryConflictResolution(w http.ResponseWriter, r *http.Request) {
 	operationID := chi.URLParam(r, "operationID")
 	if !isUUID(operationID) {
@@ -169,6 +219,14 @@ func (s *Server) handleRetryConflictResolution(w http.ResponseWriter, r *http.Re
 	}
 	_, err := s.Store.RestartConflictResolution(r.Context(), sess.GlobalUserID, operationID, time.Now().UTC())
 	if err != nil {
+		if errors.Is(err, store.ErrConflictResolutionState) {
+			if status, statusErr := s.Store.GetConflictResolutionStatus(
+				r.Context(), sess.GlobalUserID, operationID,
+			); statusErr == nil && status != nil && status.State != "failed" {
+				protocol.WriteJSON(w, http.StatusAccepted, publicConflictResolution(status))
+				return
+			}
+		}
 		s.writeConflictResolutionError(w, err)
 		return
 	}
@@ -753,6 +811,17 @@ func (s *Server) resumeConflictResolutions(ctx context.Context) {
 	}
 	if _, err := s.Store.AdoptStaleConflictResolutions(ctx, time.Now().UTC(), 100); err != nil {
 		return
+	}
+	failed, err := s.Store.ListFailedConflictResolutionsFromOlderGenerations(ctx, 100)
+	if err != nil {
+		return
+	}
+	for _, item := range failed {
+		if _, err := s.Store.RestartConflictResolution(
+			ctx, item.UserID, item.OperationID, time.Now().UTC(),
+		); err != nil && !errors.Is(err, store.ErrConflictResolutionState) {
+			return
+		}
 	}
 	ids, err := s.Store.ListResumableConflictResolutionIDs(ctx, 100)
 	if err != nil {

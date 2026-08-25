@@ -103,17 +103,31 @@ export default function ConflictPage() {
     if (!conflict?.id || resolution) return
     const key = `stcontrol_conflict_resolution:${conflict.id}`
     const savedOperation = window.sessionStorage.getItem(key)
-    if (!savedOperation) return
-    operationID.current = savedOperation
-    // Restore a durable in-flight operation immediately and let the regular
-    // bounded poller resolve it. A transient refresh-time 404/network/5xx must
-    // not discard the only browser reference or enable a duplicate submit.
-    setResolution({
-      operation_id: savedOperation,
-      state: 'retrying',
-      base_node_id: 0,
-      base_node_name: '',
-    })
+    if (savedOperation) {
+      operationID.current = savedOperation
+      // Restore a durable in-flight operation immediately and let the regular
+      // bounded poller resolve it. A transient refresh-time 404/network/5xx must
+      // not discard the only browser reference or enable a duplicate submit.
+      setResolution({
+        operation_id: savedOperation,
+        state: 'retrying',
+        base_node_id: 0,
+        base_node_name: '',
+      })
+      return
+    }
+    // A session can outlive sessionStorage and users may switch browsers. Ask
+    // the Controller for the one durable operation bound to this conflict
+    // before enabling another submission.
+    void api.currentConflictResolution()
+      .then(status => {
+        operationID.current = status.operation_id
+        window.sessionStorage.setItem(key, status.operation_id)
+        setResolution(status)
+      })
+      .catch((err: any) => {
+        if (err?.status !== 404) setError(err.message)
+      })
   }, [conflict?.id, resolution])
 
   useEffect(() => {
@@ -188,7 +202,8 @@ export default function ConflictPage() {
         acknowledge_freeze: true,
         decisions: Object.values(decisions).sort((left, right) => left.path.localeCompare(right.path)),
       })
-      window.sessionStorage.setItem(`stcontrol_conflict_resolution:${conflict.id}`, operationID.current)
+      operationID.current = status.operation_id
+      window.sessionStorage.setItem(`stcontrol_conflict_resolution:${conflict.id}`, status.operation_id)
       setResolution(status)
     } catch (err: any) {
       setError(err.message)

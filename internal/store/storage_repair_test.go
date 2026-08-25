@@ -1,9 +1,11 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -41,6 +43,17 @@ func TestListActiveStorageRepairUserIDsFencesLegacyOfflineScheduler(t *testing.T
 		t.Fatal("active storage repair user was not fenced")
 	}
 	assertMockExpectations(t, mock)
+}
+
+func TestStorageRepairPreferredTargetParameterHasExplicitPostgresType(t *testing.T) {
+	t.Parallel()
+	source, err := os.ReadFile("storage_repair.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(source, []byte("$5::bigint IS NOT NULL")) {
+		t.Fatal("nullable preferred target parameter must be explicitly typed for PostgreSQL")
+	}
 }
 
 func TestScheduleStorageRepairTasksPersistsOneFencedIntent(t *testing.T) {

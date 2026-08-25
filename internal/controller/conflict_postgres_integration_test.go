@@ -187,7 +187,7 @@ func TestControllerConflictEvidenceAndResolutionThroughDurableCommands(t *testin
 	}
 	// Agent-only nodes intentionally have no public data URL. Resolution must
 	// still be accepted; production uses the Controller's encrypted relay.
-	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET transfer_url='',agent_version='0.4.5' WHERE id IN ($1,$2)`,
+	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET transfer_url='',agent_version='0.4.6' WHERE id IN ($1,$2)`,
 		base.ID, source.ID); err != nil {
 		t.Fatalf("clear conflict node transfer URLs: %v", err)
 	}

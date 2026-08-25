@@ -184,6 +184,7 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Get("/me", s.handleMyReplicaConflict)
 		r.Get("/me/differences", s.handleMyReplicaConflictDifferences)
 		r.Post("/me/resolutions", s.handleStartConflictResolution)
+		r.Get("/me/resolutions/current", s.handleCurrentConflictResolutionStatus)
 		r.Get("/me/resolutions/{operationID}", s.handleConflictResolutionStatus)
 		r.Post("/me/resolutions/{operationID}/retry", s.handleRetryConflictResolution)
 		r.Post("/auth/logout", s.handleLogout)

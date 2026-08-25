@@ -35,6 +35,9 @@ func TestConflictResolutionStoreRejectsInvalidPublicInputs(t *testing.T) {
 	if _, err := store.GetConflictResolutionStatus(ctx, 0, ""); !errors.Is(err, ErrInvalidConflictResolution) {
 		t.Fatalf("GetConflictResolutionStatus error=%v", err)
 	}
+	if _, err := store.GetConflictResolutionStatusForConflict(ctx, 0, ""); !errors.Is(err, ErrInvalidConflictResolution) {
+		t.Fatalf("GetConflictResolutionStatusForConflict error=%v", err)
+	}
 	if err := store.CompleteConflictResolution(ctx, CompleteConflictResolutionParams{}); !errors.Is(err, ErrInvalidConflictResolution) {
 		t.Fatalf("CompleteConflictResolution error=%v", err)
 	}

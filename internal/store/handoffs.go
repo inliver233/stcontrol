@@ -57,8 +57,8 @@ type LoginHandoff struct {
 }
 
 // CreateLoginHandoff establishes/preserves the single-writer lease and inserts
-// its one-use ticket in the same serializable transaction. A committed lease
-// can therefore never exist without the corresponding handoff result.
+// its one-use ticket in the same transaction. A committed lease can therefore
+// never exist without the corresponding handoff result.
 func (s *Store) CreateLoginHandoff(ctx context.Context, p CreateLoginHandoffParams) (LoginHandoff, error) {
 	if !validUUIDText(p.OperationID) || !validUUIDText(p.JTI) || len(p.SecretHash) != 32 || p.UserID <= 0 ||
 		p.RequestedNodeID <= 0 || !validUUIDText(p.SessionID) || p.Issuer == "" || !validUUIDText(p.Subject) ||
@@ -78,7 +78,11 @@ func (s *Store) CreateLoginHandoff(ctx context.Context, p CreateLoginHandoffPara
 }
 
 func (s *Store) createLoginHandoffOnce(ctx context.Context, p CreateLoginHandoffParams) (LoginHandoff, error) {
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	// The global-user row serializes every lease decision, while the epoch and
+	// target-node rows are explicitly share-locked. READ COMMITTED therefore
+	// preserves the same fencing guarantees without SSI aborts whenever a normal
+	// Agent heartbeat updates an unrelated field on the selected node.
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return LoginHandoff{}, err
 	}

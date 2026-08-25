@@ -820,6 +820,34 @@ func (s *Store) GetConflictResolutionStatus(ctx context.Context, userID int64, o
 	return &out, err
 }
 
+// GetConflictResolutionStatusForConflict lets a browser recover the durable
+// operation after a refresh, session loss, or a Controller restart. There is
+// at most one operation per conflict, so returning it is also the idempotent
+// answer when an older client submits a fresh operation ID for the same case.
+func (s *Store) GetConflictResolutionStatusForConflict(
+	ctx context.Context,
+	userID int64,
+	conflictID string,
+) (*ConflictResolutionStatus, error) {
+	if userID <= 0 || conflictID == "" {
+		return nil, ErrInvalidConflictResolution
+	}
+	var out ConflictResolutionStatus
+	var errorSummary sql.NullString
+	err := s.DB.QueryRowContext(ctx, `SELECT operation.operation_id::text,workflow.state,
+		operation.base_node_id,node.name,workflow.error_summary
+		FROM conflict_resolution_operations operation
+		JOIN workflows workflow ON workflow.id=operation.workflow_id
+		JOIN nodes node ON node.id=operation.base_node_id
+		WHERE operation.user_id=$1 AND operation.conflict_id=$2`, userID, conflictID).Scan(
+		&out.OperationID, &out.State, &out.BaseNodeID, &out.BaseNodeName, &errorSummary)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	out.ErrorSummary = errorSummary.String
+	return &out, err
+}
+
 func (s *Store) CompleteConflictResolution(ctx context.Context, p CompleteConflictResolutionParams) error {
 	if p.WorkflowID == "" || p.OperationID == "" || p.ConflictID == "" || p.ResultSnapshotID == "" ||
 		len(p.EntriesSHA256) != 32 || p.FileCount < 0 || p.FileCount > 100000 ||
@@ -1028,13 +1056,16 @@ func (s *Store) RestartConflictResolution(
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	// The failed workflow, conflict and both user rows are explicitly locked
+	// below. READ COMMITTED avoids heartbeat-driven SSI aborts while preserving
+	// the immutable operation and generation fences during a restart.
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	var workflowID, conflictID, snapshotID, conflictState, nodeName string
-	var baseNodeID, generation int64
+	var baseNodeID, previousGeneration int64
 	err = tx.QueryRowContext(ctx, `
 		SELECT operation.workflow_id::text,operation.conflict_id::text,
 		  operation.result_snapshot_id::text,operation.base_node_id,node.name,
@@ -1046,8 +1077,8 @@ func (s *Store) RestartConflictResolution(
 		JOIN users legacy ON legacy.id=global_user.legacy_user_id AND legacy.status='conflict'
 		JOIN nodes node ON node.id=operation.base_node_id
 		WHERE operation.user_id=$1 AND operation.operation_id=$2
-		FOR UPDATE OF workflow,conflict,global_user,legacy,node`, userID, operationID).Scan(
-		&workflowID, &conflictID, &snapshotID, &baseNodeID, &nodeName, &conflictState, &generation)
+		FOR UPDATE OF workflow,conflict,global_user,legacy`, userID, operationID).Scan(
+		&workflowID, &conflictID, &snapshotID, &baseNodeID, &nodeName, &conflictState, &previousGeneration)
 	if err == sql.ErrNoRows {
 		return nil, ErrConflictResolutionState
 	}
@@ -1060,9 +1091,6 @@ func (s *Store) RestartConflictResolution(
 	var activeGeneration int64
 	if err := tx.QueryRowContext(ctx, `SELECT generation FROM controller_epochs WHERE state='active' FOR SHARE`).Scan(&activeGeneration); err != nil {
 		return nil, err
-	}
-	if generation != activeGeneration {
-		return nil, ErrConflictResolutionState
 	}
 	zeroDigest := make([]byte, 32)
 	result, err := tx.ExecContext(ctx, `UPDATE snapshot_manifests
@@ -1078,17 +1106,18 @@ func (s *Store) RestartConflictResolution(
 		return nil, ErrConflictResolutionState
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE workflows SET state='scheduled',resume_state=NULL,
-		attempt=0,next_attempt_at=NULL,error_code=NULL,error_summary=NULL,finished_at=NULL,
-		lease_owner=NULL,lease_until=NULL,updated_at=$2 WHERE id=$1`, workflowID, now); err != nil {
+		controller_generation=$3,attempt=attempt+1,generation_recovery_count=attempt+1,
+		next_attempt_at=NULL,error_code=NULL,error_summary=NULL,finished_at=NULL,
+		lease_owner=NULL,lease_until=NULL,updated_at=$2 WHERE id=$1`, workflowID, now, activeGeneration); err != nil {
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE workflow_steps SET state='pending',attempt=0,
-		lease_owner=NULL,lease_until=NULL,error_code=NULL,started_at=NULL,finished_at=NULL,updated_at=$2
+		lease_owner=NULL,lease_until=NULL,result=NULL,error_code=NULL,started_at=NULL,finished_at=NULL,updated_at=$2
 		WHERE workflow_id=$1`, workflowID, now); err != nil {
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE replica_conflicts SET state='resolving',version=version+1,
-		updated_at=$2 WHERE id=$1`, conflictID, now); err != nil {
+		controller_generation=$3,updated_at=$2 WHERE id=$1`, conflictID, now, activeGeneration); err != nil {
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events (
@@ -1096,7 +1125,7 @@ func (s *Store) RestartConflictResolution(
 		controller_generation,outcome,detail
 		) VALUES ($6,'user',$1::text,'retry-conflict-resolution','global_user',$1::text,$2,$3,
 		'scheduled',jsonb_build_object('conflict_id',$4::text,'base_node_id',$5::bigint))`,
-		userID, operationID, generation, conflictID, baseNodeID, now); err != nil {
+		userID, operationID, activeGeneration, conflictID, baseNodeID, now); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1105,4 +1134,45 @@ func (s *Store) RestartConflictResolution(
 	return &ConflictResolutionStatus{
 		OperationID: operationID, State: "scheduled", BaseNodeID: baseNodeID, BaseNodeName: nodeName,
 	}, nil
+}
+
+type FailedConflictResolution struct {
+	UserID      int64
+	OperationID string
+}
+
+// ListFailedConflictResolutionsFromOlderGenerations returns user-approved,
+// immutable operations that failed before the current Controller generation.
+// They can be safely replayed once after an upgrade without inventing a new
+// decision or discarding any frozen source.
+func (s *Store) ListFailedConflictResolutionsFromOlderGenerations(
+	ctx context.Context,
+	limit int,
+) ([]FailedConflictResolution, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT operation.user_id,operation.operation_id::text
+		FROM conflict_resolution_operations operation
+		JOIN workflows workflow ON workflow.id=operation.workflow_id AND workflow.state='failed'
+		JOIN replica_conflicts conflict ON conflict.id=operation.conflict_id
+		  AND conflict.state='awaiting_decision'
+		JOIN global_users global_user ON global_user.id=operation.user_id AND global_user.status='conflict'
+		JOIN users legacy ON legacy.id=global_user.legacy_user_id AND legacy.status='conflict'
+		JOIN controller_epochs epoch ON epoch.state='active'
+		WHERE workflow.controller_generation<>epoch.generation
+		ORDER BY workflow.updated_at,operation.operation_id LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FailedConflictResolution
+	for rows.Next() {
+		var item FailedConflictResolution
+		if err := rows.Scan(&item.UserID, &item.OperationID); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
