@@ -8,7 +8,7 @@ package ai
 const SchemaVersion = "1.0"
 
 // PromptVersion is the current system+task prompt pair version.
-const PromptVersion = "2026-08-14.1"
+const PromptVersion = "2026-08-25.2"
 
 // TaskType enumerates advisory task kinds.
 type TaskType string

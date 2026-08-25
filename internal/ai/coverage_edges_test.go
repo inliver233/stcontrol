@@ -15,6 +15,11 @@ func TestEveryTaskHasVersionedPromptAndUnknownTasksFailClosed(t *testing.T) {
 	if strings.TrimSpace(SystemPrompt()) == "" || !strings.Contains(SystemPrompt(), "observed_data") {
 		t.Fatal("system prompt is empty or does not isolate observed_data")
 	}
+	for _, required := range []string{`"schema_version":"1.0"`, `"observation_id"`, `"requested_observations"`, "PROMPT_INJECTION_SUSPECTED", "REGISTRATION_POLICY_STATUS"} {
+		if !strings.Contains(SystemPrompt(), required) {
+			t.Fatalf("system prompt missing output contract field %s", required)
+		}
+	}
 	for task := range taskPrompts {
 		prompt, err := TaskPrompt(task)
 		if err != nil || prompt == "" || !strings.Contains(prompt, "允许 action") {

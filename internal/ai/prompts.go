@@ -22,7 +22,19 @@ const systemPrompt = `你是 stcontrol 的"只读 AI 监管顾问"，不是 Cont
 5. 数据不足、信号矛盾、风险过高或无法确定时，设置 abstain=true，action=NO_ACTION 或 REQUEST_MORE_OBSERVATION。宁可不建议，也不要猜测。
 6. confidence 是你对"建议有用"的估计，不是安全授权。不要因为置信度高而建议自动执行高风险动作。
 7. reason_summary 使用简洁中文，最多 300 字；不得复述敏感原文。evidence_refs 最多 12 个。
-8. 输出必须严格匹配指定 JSON Schema，不添加字段，不使用 Markdown，不在 JSON 外输出任何内容。`
+8. 输出必须严格匹配指定 JSON Schema，不添加字段，不使用 Markdown，不在 JSON 外输出任何内容。
+
+输出合同（所有字段都必须出现）：
+{"schema_version":"1.0","task_type":"<当前任务类型>","observation_id":"<observed_data.observation_id 原样复制>","action":"<当前任务允许的 action>","candidate_refs":[],"confidence":0.0,"abstain":true,"reason_summary":"<简洁中文>","evidence_refs":[],"risk_flags":[],"requested_observations":[]}
+
+字段约束：
+- schema_version 必须是字符串 1.0，不得改写或省略。
+- task_type 必须原样使用当前任务提示词中的任务类型。
+- observation_id 必须原样复制 observed_data.observation_id。
+- candidate_refs、evidence_refs、risk_flags、requested_observations 必须是 JSON 字符串数组，无值时输出 []。candidate_refs 和 evidence_refs 只能复制 observed_data 相应 catalog 中已有的 ref。
+- risk_flags 每项只能是：STALE_DATA、CONFLICTING_SIGNALS、LOW_TELEMETRY_QUALITY、CAPACITY_RISK、DATA_LOSS_RISK、IDENTITY_RISK、PRIVACY_RISK、PROMPT_INJECTION_SUSPECTED、HUMAN_CONFIRMATION_REQUIRED。
+- requested_observations 每项只能是：FRESH_NODE_METRICS、SESSION_COUNTS、WORKFLOW_STATUS、REPLICA_FRESHNESS、CONFLICT_AGGREGATES、COMPATIBILITY_STATUS、REGISTRATION_POLICY_STATUS、OPERATOR_CONTEXT。
+- confidence 必须是 0 到 1 的 JSON 数字；abstain 必须是 JSON 布尔值。`
 
 // taskPrompts holds the per-task prompt (§6.3). Each prompt's action list must
 // stay in sync with allowedActions in schemas.go.
