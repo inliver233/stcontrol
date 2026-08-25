@@ -517,7 +517,9 @@ func (s *Store) PrepareRecoveredSnapshotCompletion(
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	// Recovery is fenced by the exact workflow generation and conditional state
+	// predicates below; independent workflows need not conflict through SSI.
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
@@ -578,7 +580,9 @@ func (s *Store) ResetRecoveredSnapshotWorkflow(
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	// The workflow and backup job are explicitly locked below. READ COMMITTED
+	// lets independent backup recoveries reset concurrently after a restart.
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
