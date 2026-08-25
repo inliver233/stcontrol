@@ -572,7 +572,10 @@ func validConflictEvidencePageRequest(req protocol.ReadConflictEvidencePageReque
 
 func definitiveProvisionError(code string) bool {
 	switch code {
-	case "invitation_invalid", "handle_conflict", "policy_changed", "registration_closed":
+	case "invitation_invalid", "handle_conflict", "policy_changed", "registration_closed",
+		// Rolling-upgrade compatibility with SillyTavern builds that predate the
+		// canonical adapter error vocabulary.
+		"invalid_invitation_code", "user_already_exists", "registration_policy_changed":
 		return true
 	default:
 		return false

@@ -162,6 +162,9 @@ func (a *Agent) completeIndependentSync(ctx context.Context, req protocol.Comple
 func (a *Agent) provisionUser(ctx context.Context, req *protocol.ProvisionUserRequest) (*protocol.ProvisionUserResponse, error) {
 	var out protocol.ProvisionUserResponse
 	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/users/provision", req, &out); err != nil {
+		if out.Error != "" {
+			return &out, err
+		}
 		return nil, err
 	}
 	if !out.OK {
@@ -424,6 +427,12 @@ func (a *Agent) callTavernAdapter(ctx context.Context, path string, body any, ou
 		}
 	}
 	if status < 200 || status >= 300 {
+		// Preserve a bounded JSON business error from the authenticated loopback
+		// adapter. Callers still have to allow-list the code before treating the
+		// outcome as definitive; malformed and 5xx responses remain uncertain.
+		if status >= 400 && status < 500 && out != nil && len(responseBody) != 0 {
+			_ = json.Unmarshal(responseBody, out)
+		}
 		return fmt.Errorf("node adapter returned status %d", status)
 	}
 	if out != nil && len(responseBody) != 0 {

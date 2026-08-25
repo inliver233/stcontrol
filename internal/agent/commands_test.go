@@ -696,6 +696,7 @@ func TestDefinitiveProvisionErrorAllowsOnlyNodeOwnedBusinessRejections(t *testin
 	t.Parallel()
 	for _, code := range []string{
 		"invitation_invalid", "handle_conflict", "policy_changed", "registration_closed",
+		"invalid_invitation_code", "user_already_exists", "registration_policy_changed",
 	} {
 		if !definitiveProvisionError(code) {
 			t.Errorf("code %q should be definitive", code)
@@ -727,6 +728,22 @@ func TestProvisionCommandDistinguishesDefinitiveRejectionFromUncertainFailure(t 
 			wantCode:   "provision_rejected",
 		},
 		{
+			name: "canonical conflict in a 409 response",
+			response: protocol.ProvisionUserResponse{
+				OK: false, Error: "handle_conflict",
+			},
+			statusCode: http.StatusConflict,
+			wantCode:   "provision_rejected",
+		},
+		{
+			name: "legacy conflict in a 409 response",
+			response: protocol.ProvisionUserResponse{
+				OK: false, Error: "user_already_exists",
+			},
+			statusCode: http.StatusConflict,
+			wantCode:   "provision_rejected",
+		},
+		{
 			name:       "transport failure may have executed",
 			statusCode: http.StatusServiceUnavailable,
 			wantCode:   "provision_unavailable",
@@ -736,8 +753,9 @@ func TestProvisionCommandDistinguishesDefinitiveRejectionFromUncertainFailure(t 
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(test.statusCode)
-				if test.statusCode == http.StatusOK {
+				if test.response.Error != "" {
 					_ = json.NewEncoder(w).Encode(test.response)
 				}
 			}))
