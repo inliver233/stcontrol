@@ -21,6 +21,7 @@ type Agent struct {
 	backupJobs map[int64]context.CancelFunc
 
 	httpClient          *http.Client
+	inventoryHTTPClient *http.Client
 	commandSlots        chan struct{}
 	transferSlots       chan struct{}
 	witnessSlots        chan struct{}
@@ -58,6 +59,15 @@ func New(cfg *config.AgentConfig) (*Agent, error) {
 		backupJobs: make(map[int64]context.CancelFunc),
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		// Verifying a legacy inventory page may read the complete contents of
+		// hundreds of user directories. Keep its wider timeout isolated from
+		// latency-sensitive health and control calls.
+		inventoryHTTPClient: &http.Client{
+			Timeout: 15 * time.Minute,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 				return http.ErrUseLastResponse
 			},

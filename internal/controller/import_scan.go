@@ -61,7 +61,7 @@ func (s *Server) reconcileImportScans(ctx context.Context, maxPerRun int) {
 		}
 		// Same idempotent inventory scan used by the admin button; failures are
 		// simply retried on the next interval (no durable state needed).
-		if _, err := s.scanAccountInventory(ctx, node, attemptID); err != nil {
+		if _, _, err := s.scanAccountInventory(ctx, node, attemptID); err != nil {
 			continue
 		}
 	}

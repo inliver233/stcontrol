@@ -96,6 +96,13 @@ func (a *Agent) ScanExistingUsersPage(
 	if errors.Is(err, errInvalidAdapterInventory) {
 		return protocol.ScanExistingPageResult{}, err
 	}
+	// A slow authenticated adapter may still be computing exact password/OAuth
+	// facts. Falling back after its deadline would silently downgrade the same
+	// page to identity-blind data, so fail closed and let the durable Controller
+	// operation retry it instead.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return protocol.ScanExistingPageResult{}, err
+	}
 	return a.scanExistingUsersFromDiskPage(req)
 }
 
@@ -104,7 +111,13 @@ func (a *Agent) scanExistingUsersFromAdapterPage(
 	req protocol.ScanExistingPageRequest,
 ) (protocol.ScanExistingPageResult, error) {
 	var response adapterInventoryResponse
-	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/users/scan", req, &response); err != nil {
+	client := a.inventoryHTTPClient
+	if client == nil {
+		client = a.httpClient
+	}
+	if err := a.callTavernAdapterWithClient(
+		ctx, client, "/api/stcontrol/internal/users/scan", req, &response,
+	); err != nil {
 		return protocol.ScanExistingPageResult{}, err
 	}
 	if !validAdapterInventoryPage(req, response) {

@@ -22,6 +22,16 @@ type scanExistingRequest struct {
 	OperationID string `json:"operation_id"`
 }
 
+var errAccountInventoryPending = errors.New("account inventory page is still running")
+
+type accountInventoryProgress struct {
+	OperationID    string `json:"operation_id"`
+	Pending        bool   `json:"pending"`
+	CompletedPages int    `json:"completed_pages"`
+	CompletedUsers int    `json:"completed_users"`
+	TotalUsers     int    `json:"total_users,omitempty"`
+}
+
 type claimImportedAccountRequest struct {
 	OperationID string `json:"operation_id"`
 	NodeID      int64  `json:"node_id"`
@@ -174,13 +184,19 @@ func (s *Server) handleAdminScanExisting(w http.ResponseWriter, r *http.Request)
 		protocol.WriteJSON(w, http.StatusOK, existing)
 		return
 	}
-	scanAttemptID, err := newUUID()
+	// Bind every durable page command to the administrator's stable operation
+	// ID. A large node can therefore finish one page at a time across HTTP
+	// polls, browser refreshes and Controller restarts without rescanning pages
+	// that have already been acknowledged.
+	scanAttemptID := deriveWorkflowOperationID(req.OperationID, "account-inventory-scan")
+	users, progress, err := s.scanAccountInventory(r.Context(), node, scanAttemptID)
 	if err != nil {
-		protocol.WriteError(w, http.StatusInternalServerError, "创建扫描尝试失败")
-		return
-	}
-	users, err := s.scanAccountInventory(r.Context(), node, scanAttemptID)
-	if err != nil {
+		if errors.Is(err, errAccountInventoryPending) {
+			progress.OperationID = req.OperationID
+			progress.Pending = true
+			protocol.WriteJSON(w, http.StatusAccepted, progress)
+			return
+		}
 		protocol.WriteError(w, http.StatusBadGateway, "扫描结果尚未确认，请使用同一操作重试")
 		return
 	}
@@ -260,11 +276,12 @@ func (s *Server) scanAccountInventory(
 	ctx context.Context,
 	node *store.Node,
 	attemptID string,
-) ([]protocol.ScanExistingUser, error) {
+) ([]protocol.ScanExistingUser, accountInventoryProgress, error) {
 	if node == nil || !isUUID(attemptID) {
-		return nil, store.ErrInvalidAccountImport
+		return nil, accountInventoryProgress{}, store.ErrInvalidAccountImport
 	}
 	state := accountInventoryScan{}
+	progress := accountInventoryProgress{}
 	cursor := 0
 	maxPages := (protocol.MaxAccountInventoryUsers + protocol.MaxAccountInventoryPageUsers - 1) /
 		protocol.MaxAccountInventoryPageUsers
@@ -272,25 +289,37 @@ func (s *Server) scanAccountInventory(
 		operationID := deriveWorkflowOperationID(
 			attemptID, fmt.Sprintf("scan-existing-page-%04d", pageIndex),
 		)
-		result, err := s.runAgentCommandWithOperation(
-			ctx, node, "scan_existing_page", protocol.ScanExistingPageRequest{
-				Cursor: cursor, InventoryRevision: state.revision,
-				Limit: protocol.MaxAccountInventoryPageUsers,
-			}, operationID, 45*time.Second,
-		)
+		payload := protocol.ScanExistingPageRequest{
+			Cursor: cursor, InventoryRevision: state.revision,
+			Limit: protocol.MaxAccountInventoryPageUsers,
+		}
+		// Inventory reads are side-effect free, so an exact terminal transport
+		// attempt may be safely requeued while completed pages stay immutable.
+		if _, err := s.enqueueAgentCommandAtGeneration(
+			ctx, node, "scan_existing_page", payload, operationID, 0, true,
+		); err != nil {
+			return nil, progress, err
+		}
+		result, err := s.waitAgentCommandSummary(ctx, operationID, 3*time.Second)
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return nil, progress, errAccountInventoryPending
+		}
 		if err != nil || result.InventoryPage == nil {
-			return nil, store.ErrInvalidAccountImport
+			return nil, progress, store.ErrInvalidAccountImport
 		}
 		complete, err := state.appendPage(cursor, *result.InventoryPage)
 		if err != nil {
-			return nil, err
+			return nil, progress, err
 		}
+		progress.CompletedPages++
+		progress.CompletedUsers = len(state.users)
+		progress.TotalUsers = state.total
 		if complete {
-			return state.users, nil
+			return state.users, progress, nil
 		}
 		cursor = result.InventoryPage.NextCursor
 	}
-	return nil, store.ErrInvalidAccountImport
+	return nil, progress, store.ErrInvalidAccountImport
 }
 
 func (scan *accountInventoryScan) appendPage(

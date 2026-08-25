@@ -457,6 +457,33 @@ func TestScanExistingUsersDoesNotFallbackAfterInvalidAdapterInventory(t *testing
 	}
 }
 
+func TestScanExistingUsersDoesNotDowngradeTimedOutAdapterIdentityFacts(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(adapterInventoryResponse{OK: true})
+	}))
+	defer server.Close()
+	tavernDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tavernDir, "data", "alice"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(&config.AgentConfig{
+		TavernURL: server.URL, TavernDir: tavernDir, AgentPSK: "agent-secret",
+		NodeID: 12, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.inventoryHTTPClient = &http.Client{Timeout: 10 * time.Millisecond}
+	page, err := a.ScanExistingUsersPage(context.Background(), protocol.ScanExistingPageRequest{
+		Limit: protocol.MaxAccountInventoryPageUsers,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) || len(page.Users) != 0 {
+		t.Fatalf("timed out adapter downgraded to fallback: page=%+v err=%v", page, err)
+	}
+}
+
 func TestPasswordCommandPassesCommandOperationToAdapter(t *testing.T) {
 	t.Parallel()
 	operationID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"

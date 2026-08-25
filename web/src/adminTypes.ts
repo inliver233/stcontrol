@@ -245,6 +245,16 @@ export interface ScanResult {
   has_more: boolean
 }
 
+export interface ScanProgress {
+  operation_id: string
+  pending: true
+  completed_pages: number
+  completed_users: number
+  total_users?: number
+}
+
+export type ScanResponse = ScanResult | ScanProgress
+
 // ---------- 节点退役 / 兼容性复核 ----------
 
 /** store.NodeRetirementStatus */

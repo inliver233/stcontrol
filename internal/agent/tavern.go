@@ -395,6 +395,22 @@ func compatibilityFingerprint(values ...string) string {
 }
 
 func (a *Agent) callTavernAdapter(ctx context.Context, path string, body any, out any) error {
+	return a.callTavernAdapterWithClient(ctx, a.httpClient, path, body, out)
+}
+
+func (a *Agent) callTavernAdapterWithClient(
+	ctx context.Context,
+	client *http.Client,
+	path string,
+	body any,
+	out any,
+) error {
+	if client == nil {
+		client = a.httpClient
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
 	base, err := url.Parse(a.Cfg.TavernURL)
 	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.User != nil || base.RawQuery != "" {
 		return fmt.Errorf("invalid local SillyTavern URL")
@@ -408,7 +424,7 @@ func (a *Agent) callTavernAdapter(ctx context.Context, path string, body any, ou
 	if err != nil {
 		return err
 	}
-	status, responseBody, err := a.postTavernAdapter(ctx, base, path, payload, "", nil)
+	status, responseBody, err := a.postTavernAdapter(ctx, client, base, path, payload, "", nil)
 	if err != nil {
 		return err
 	}
@@ -417,11 +433,11 @@ func (a *Agent) callTavernAdapter(ctx context.Context, path string, body any, ou
 	// first request; standalone adapter tests and deployments with CSRF disabled
 	// incur no extra round trip.
 	if status == http.StatusForbidden && bytes.Contains(bytes.ToLower(responseBody), []byte("csrf")) {
-		token, cookies, csrfErr := a.fetchTavernCSRF(ctx, base)
+		token, cookies, csrfErr := a.fetchTavernCSRF(ctx, client, base)
 		if csrfErr != nil {
 			return csrfErr
 		}
-		status, responseBody, err = a.postTavernAdapter(ctx, base, path, payload, token, cookies)
+		status, responseBody, err = a.postTavernAdapter(ctx, client, base, path, payload, token, cookies)
 		if err != nil {
 			return err
 		}
@@ -445,6 +461,7 @@ func (a *Agent) callTavernAdapter(ctx context.Context, path string, body any, ou
 
 func (a *Agent) postTavernAdapter(
 	ctx context.Context,
+	client *http.Client,
 	base *url.URL,
 	path string,
 	payload []byte,
@@ -465,7 +482,7 @@ func (a *Agent) postTavernAdapter(
 		}
 	}
 	protocol.SignRequest(req, a.Cfg.NodeID, a.adapterPSK(), payload)
-	resp, err := a.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, nil, fmt.Errorf("call node adapter: %w", err)
 	}
@@ -480,14 +497,18 @@ func (a *Agent) postTavernAdapter(
 	return resp.StatusCode, responseBody, nil
 }
 
-func (a *Agent) fetchTavernCSRF(ctx context.Context, base *url.URL) (string, []*http.Cookie, error) {
+func (a *Agent) fetchTavernCSRF(
+	ctx context.Context,
+	client *http.Client,
+	base *url.URL,
+) (string, []*http.Cookie, error) {
 	target := *base
 	target.Path = strings.TrimRight(target.Path, "/") + "/csrf-token"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
 		return "", nil, err
 	}
-	resp, err := a.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", nil, fmt.Errorf("fetch node adapter csrf token: %w", err)
 	}

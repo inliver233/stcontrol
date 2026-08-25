@@ -26,6 +26,8 @@ import type {
   ProtectionAlert,
   RegisterToken,
   ScanCandidate,
+  ScanProgress,
+  ScanResponse,
   ScanResult,
   UserDataFaultStatus,
 } from '../adminTypes'
@@ -78,7 +80,7 @@ const adminApi = {
   retirement: (id: number) => adminReq<NodeRetirement>(`/api/admin/nodes/${id}/retirement`),
   compatibilityIncident: (id: number) => adminReq<CompatibilityIncident>(`/api/admin/nodes/${id}/compatibility-incident`),
   registerToken: (id: number, tavernDir?: string) => adminReq<RegisterToken>(`/api/admin/nodes/${id}/register-token${tavernDir ? `?tavern_dir=${encodeURIComponent(tavernDir)}` : ''}`, { method: 'POST' }),
-  scanExisting: (id: number, operationID: string) => adminReq<ScanResult>(`/api/admin/nodes/${id}/scan-existing`, {
+  scanExisting: (id: number, operationID: string) => adminReq<ScanResponse>(`/api/admin/nodes/${id}/scan-existing`, {
     method: 'POST', body: JSON.stringify({ operation_id: operationID }),
   }),
   latestImport: (id: number, offset = 0) => {
@@ -330,6 +332,7 @@ function NodesAdmin() {
   const [nodeLinks, setNodeLinks] = useState<AdminNodeLink[]>([])
   const [tokenInfo, setTokenInfo] = useState<RegisterToken | null>(null)
   const [scanResult, setScanResult] = useState<ScanResult | null>(null)
+  const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null)
   const [error, setError] = useState('')
   const [loadError, setLoadError] = useState('')
   const [message, setMessage] = useState('')
@@ -561,12 +564,23 @@ function NodesAdmin() {
   const scan = async (id: number) => {
     setError('')
     setScanningNode(id)
-    const operationID = scanOperations.current[id] || crypto.randomUUID()
+    const storageKey = `stcontrol-account-scan:${id}`
+    const operationID = scanOperations.current[id] || window.localStorage.getItem(storageKey) || crypto.randomUUID()
     scanOperations.current[id] = operationID
+    window.localStorage.setItem(storageKey, operationID)
     try {
-      const res = await adminApi.scanExisting(id, operationID)
-      delete scanOperations.current[id]
-      setScanResult(res)
+      for (;;) {
+        const res = await adminApi.scanExisting(id, operationID)
+        if ('batch' in res) {
+          delete scanOperations.current[id]
+          window.localStorage.removeItem(storageKey)
+          setScanProgress(null)
+          setScanResult(res)
+          break
+        }
+        setScanProgress(res)
+        await new Promise(resolve => window.setTimeout(resolve, 1500))
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '扫描既有账号失败')
     } finally {
@@ -666,6 +680,13 @@ function NodesAdmin() {
           <div className="mono">{tokenInfo.install_cmd}</div>
           {tokenInfo.install_hint && <div style={{ marginTop: 6 }}>{tokenInfo.install_hint}</div>}
           <button className="btn-sm" style={{ marginTop: 8 }} onClick={() => setTokenInfo(null)}>关闭</button>
+        </div>
+      )}
+      {scanProgress && (
+        <div className="success-msg">
+          正在扫描节点既有账号：已完成 {scanProgress.completed_users}
+          {scanProgress.total_users ? ` / ${scanProgress.total_users}` : ''} 个，
+          共完成 {scanProgress.completed_pages} 页。可以停留在此页面等待；失败后再次点击会从已完成页继续。
         </div>
       )}
       {scanResult && (
