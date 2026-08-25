@@ -379,6 +379,8 @@ func (s *Store) updateNodeHeartbeat(
 	        AND (($36::jsonb<>'{}'::jsonb AND registration_methods='{}'::jsonb)
 	          OR $31>registration_policy_version
 	          OR ($31=registration_policy_version AND $30=registration_policy_state
+	            AND $36::jsonb=registration_methods)
+	          OR ($31=registration_policy_version AND registration_policy_state='error'
 	            AND $36::jsonb=registration_methods)) THEN $30
 	      ELSE 'error' END,
 	    registration_policy_version=CASE
@@ -390,6 +392,8 @@ func (s *Store) updateNodeHeartbeat(
 	        AND (($36::jsonb<>'{}'::jsonb AND registration_methods='{}'::jsonb)
 	          OR $31>registration_policy_version
 	          OR ($31=registration_policy_version AND $30=registration_policy_state
+	            AND $36::jsonb=registration_methods)
+	          OR ($31=registration_policy_version AND registration_policy_state='error'
 	            AND $36::jsonb=registration_methods)) THEN $36::jsonb
 	      ELSE registration_methods END,
 	    registration_policy_expires_at=CASE
@@ -397,6 +401,8 @@ func (s *Store) updateNodeHeartbeat(
 	        AND (($36::jsonb<>'{}'::jsonb AND registration_methods='{}'::jsonb)
 	          OR $31>registration_policy_version
 	          OR ($31=registration_policy_version AND $30=registration_policy_state
+	            AND $36::jsonb=registration_methods)
+	          OR ($31=registration_policy_version AND registration_policy_state='error'
 	            AND $36::jsonb=registration_methods)) THEN $32::timestamptz
 	      ELSE $8::timestamptz END,
 	    registration_policy_observed_at=$8::timestamptz,
@@ -405,6 +411,8 @@ func (s *Store) updateNodeHeartbeat(
 	        AND (($36::jsonb<>'{}'::jsonb AND registration_methods='{}'::jsonb)
 	          OR $31>registration_policy_version
 	          OR ($31=registration_policy_version AND $30=registration_policy_state
+	            AND $36::jsonb=registration_methods)
+	          OR ($31=registration_policy_version AND registration_policy_state='error'
 	            AND $36::jsonb=registration_methods)) THEN NULL
 	      WHEN $31<registration_policy_version THEN 'version_rollback'
 	      WHEN $31=registration_policy_version
