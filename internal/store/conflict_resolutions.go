@@ -660,7 +660,10 @@ func (s *Store) DeferConflictResolution(
 	if len(errorSummary) > 512 {
 		errorSummary = errorSummary[:512]
 	}
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	// Deferral only conditionally updates one workflow and fences relay rows for
+	// that same workflow. READ COMMITTED avoids SSI aborts when many recovered
+	// conflicts defer together during node credential rotation.
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
