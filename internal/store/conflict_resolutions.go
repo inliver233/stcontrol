@@ -211,8 +211,7 @@ func (s *Store) CreateConflictResolution(
 		JOIN nodes node ON node.id=source.node_id
 		WHERE source.conflict_id=$1 AND source.node_id=$2 AND source.evidence_state='ready'
 		  AND source.node_role='compute' AND node.role='compute'
-		  AND node.connectivity_state='online' AND node.operational_state='active'
-		  AND node.compatibility_state='compatible'
+		  AND node.operational_state NOT IN ('decommissioned','retired')
 		FOR SHARE OF source,node`, p.ConflictID, p.BaseNodeID).Scan(&baseEvidenceID)
 	if err == sql.ErrNoRows {
 		return nil, ErrConflictResolutionState
