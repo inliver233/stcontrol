@@ -360,7 +360,8 @@ func TestScanExistingUsersUsesAdapterAndRedactsOAuthSubject(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantFingerprint := controlcrypto.AgentInventoryFingerprint(
-		"agent-secret", "oauth-subject", "discord", subject,
+		"agent-secret", "oauth-subject", "discord",
+		protocol.CanonicalOAuthSubject("discord", subject),
 	)
 	if users[0].Source != "adapter" || users[0].AccountKind != "mixed" || !users[0].IsAdmin ||
 		len(users[0].Identities) != 1 || users[0].Identities[0].Fingerprint != wantFingerprint ||

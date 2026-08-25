@@ -204,6 +204,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.userDataFaultReconciler(ctx)
 	go s.controllerBackupReconciler(ctx)
 	go s.importScanReconciler(ctx)
+	go s.oauthImportReconciler(ctx)
 	go s.agentAutoUpdateReconciler(ctx)
 	s.startAISupervisor(ctx)
 

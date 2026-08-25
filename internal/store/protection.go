@@ -276,8 +276,11 @@ func (s *Store) reconcileProtectionStatesOnce(
 		  FROM replica_conflicts conflict
 		  JOIN global_users global_user ON global_user.id=conflict.user_id
 		  JOIN users legacy ON legacy.id=global_user.legacy_user_id
-		  WHERE conflict.state NOT IN ('resolved','failed')
-		    AND conflict.sources_captured_at IS NULL
+		  WHERE conflict.state IN ('detected','inspecting','awaiting_decision')
+		    AND NOT EXISTS (
+		      SELECT 1 FROM conflict_resolution_operations operation
+		      WHERE operation.conflict_id=conflict.id
+		    )
 		), source_facts AS (
 		  SELECT conflict.id AS conflict_id,copy.node_id,node.name AS node_name,node.role AS node_role,
 		    account.local_handle,
@@ -320,8 +323,8 @@ func (s *Store) reconcileProtectionStatesOnce(
 		      PARTITION BY conflict_id,node_id ORDER BY source_priority
 		    ) AS source_rank
 		  FROM source_facts
-		)
-		INSERT INTO replica_conflict_sources (
+		), inserted_sources AS (
+		  INSERT INTO replica_conflict_sources (
 		  conflict_id,node_id,node_name,node_role,local_handle,snapshot_id,source_kind,replica_state,
 		  is_authoritative,manifest_sha256,file_count,total_bytes,published_at,
 		  legacy_data_version,legacy_checksum,captured_at,evidence_id
@@ -330,12 +333,23 @@ func (s *Store) reconcileProtectionStatesOnce(
 		  is_authoritative,manifest_sha256,file_count,total_bytes,published_at,
 		  legacy_data_version,legacy_checksum,captured_at,gen_random_uuid()
 		FROM ranked WHERE source_rank=1
-		ON CONFLICT (conflict_id,node_id) DO NOTHING`, now); err != nil {
+		ON CONFLICT (conflict_id,node_id) DO NOTHING
+		RETURNING conflict_id
+		)
+		UPDATE replica_conflicts conflict
+		SET state='inspecting',version=conflict.version+1,updated_at=$1
+		WHERE conflict.sources_captured_at IS NOT NULL
+		  AND conflict.id IN (SELECT DISTINCT conflict_id FROM inserted_sources)`, now); err != nil {
 		return ProtectionReconcileResult{}, fmt.Errorf("capture replica conflict sources: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE replica_conflicts SET sources_captured_at=$1,updated_at=$1
-		WHERE state NOT IN ('resolved','failed') AND sources_captured_at IS NULL`, now); err != nil {
+		WHERE state IN ('detected','inspecting','awaiting_decision')
+		  AND sources_captured_at IS NULL
+		  AND NOT EXISTS (
+		    SELECT 1 FROM conflict_resolution_operations operation
+		    WHERE operation.conflict_id=replica_conflicts.id
+		  )`, now); err != nil {
 		return ProtectionReconcileResult{}, fmt.Errorf("finish replica conflict source capture: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `

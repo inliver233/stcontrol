@@ -108,7 +108,8 @@ func TestControllerAccountImportScanAndPasswordClaim(t *testing.T) {
 			Source:               "adapter", AccountKind: "oauth", Identities: []protocol.ScanExistingIdentity{{
 				Provider: "discord",
 				Fingerprint: controlcrypto.AgentInventoryFingerprint(
-					psk, "oauth-subject", "discord", "discord-oauth-match",
+					psk, "oauth-subject", "discord",
+					protocol.CanonicalOAuthSubject("discord", "discord-oauth-match"),
 				),
 			}},
 		},
@@ -119,13 +120,15 @@ func TestControllerAccountImportScanAndPasswordClaim(t *testing.T) {
 				{
 					Provider: "discord",
 					Fingerprint: controlcrypto.AgentInventoryFingerprint(
-						psk, "oauth-subject", "discord", "discord-split-match",
+						psk, "oauth-subject", "discord",
+						protocol.CanonicalOAuthSubject("discord", "discord-split-match"),
 					),
 				},
 				{
 					Provider: "linuxdo",
 					Fingerprint: controlcrypto.AgentInventoryFingerprint(
-						psk, "oauth-subject", "linuxdo", "linuxdo-split-match",
+						psk, "oauth-subject", "linuxdo",
+						protocol.CanonicalOAuthSubject("linuxdo", "linuxdo-split-match"),
 					),
 				},
 			},

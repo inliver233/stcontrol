@@ -375,7 +375,8 @@ func (s *Server) buildAccountImportBatch(
 	identityMatches := make(map[string][]int64, len(identitySubjects))
 	for _, identity := range identitySubjects {
 		fingerprint := controlcrypto.AgentInventoryFingerprint(
-			psk, "oauth-subject", identity.Provider, identity.Subject,
+			psk, "oauth-subject", identity.Provider,
+			protocol.CanonicalOAuthSubject(identity.Provider, identity.Subject),
 		)
 		key := identity.Provider + "\n" + fingerprint
 		identityMatches[key] = append(identityMatches[key], identity.GlobalUserID)

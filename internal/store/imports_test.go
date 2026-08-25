@@ -249,7 +249,7 @@ func TestResolveOAuthUnmatchedCandidatesLinksOnlyMatchingNodes(t *testing.T) {
 
 	// Inactive user: no resolution attempted.
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT legacy_user_id FROM global_users WHERE id=\$1 AND status='active' FOR UPDATE`).
+	mock.ExpectQuery(`(?s)SELECT legacy_user_id FROM global_users.*status IN \('active','conflict'\) FOR UPDATE`).
 		WithArgs(int64(70)).WillReturnError(sql.ErrNoRows)
 	mock.ExpectCommit()
 	resolved, err := st.ResolveOAuthUnmatchedCandidates(context.Background(), "discord", fp, 70, now)
@@ -260,10 +260,10 @@ func TestResolveOAuthUnmatchedCandidatesLinksOnlyMatchingNodes(t *testing.T) {
 
 	// Active user with no matching unresolved candidates is an idempotent no-op.
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT legacy_user_id FROM global_users WHERE id=\$1 AND status='active' FOR UPDATE`).
+	mock.ExpectQuery(`(?s)SELECT legacy_user_id FROM global_users.*status IN \('active','conflict'\) FOR UPDATE`).
 		WithArgs(int64(70)).WillReturnRows(sqlmock.NewRows([]string{"legacy_user_id"}).AddRow(int64(7)))
 	mock.ExpectQuery(`(?s)SELECT candidate.id::text,candidate.batch_id::text,candidate.node_id.*FOR UPDATE`).
-		WithArgs("discord", fp).WillReturnRows(sqlmock.NewRows([]string{
+		WithArgs("", "discord", fp).WillReturnRows(sqlmock.NewRows([]string{
 		"id", "batch_id", "node_id", "local_user_id", "local_handle", "is_admin", "fingerprint",
 	}))
 	mock.ExpectCommit()

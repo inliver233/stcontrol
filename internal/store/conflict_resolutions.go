@@ -165,6 +165,22 @@ func (s *Store) CreateConflictResolution(
 		  AND conflict.version=$3
 		  AND NOT EXISTS (SELECT 1 FROM replica_conflict_sources source
 		    WHERE source.conflict_id=conflict.id AND source.evidence_state<>'ready')
+		  AND NOT EXISTS (
+		    SELECT 1 FROM user_replicas replica
+		    WHERE replica.user_id=global_user.legacy_user_id AND replica.state='conflict'
+		      AND NOT EXISTS (
+		        SELECT 1 FROM replica_conflict_sources source
+		        WHERE source.conflict_id=conflict.id AND source.node_id=replica.node_id
+		      )
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM replica_copies copy
+		    WHERE copy.user_id=global_user.id AND copy.state='conflict'
+		      AND NOT EXISTS (
+		        SELECT 1 FROM replica_conflict_sources source
+		        WHERE source.conflict_id=conflict.id AND source.node_id=copy.node_id
+		      )
+		  )
 		  AND (lease.user_id IS NULL OR (lease.state='conflict'
 		    AND lease.in_flight_reads=0 AND lease.in_flight_writes=0))
 		FOR UPDATE OF conflict,global_user,legacy`, p.ConflictID, p.GlobalUserID, p.ExpectedConflictVersion, p.BaseNodeID).

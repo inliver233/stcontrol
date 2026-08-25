@@ -25,6 +25,7 @@ func TestPostgresOAuthImportLoginProofFreezesIndependentNodeData(t *testing.T) {
 
 	firstNodeID := insertIntegrationNode(t, st, "oauth-import-first")
 	secondNodeID := insertIntegrationNode(t, st, "oauth-import-second")
+	thirdNodeID := insertIntegrationNode(t, st, "oauth-import-third")
 	user := &User{
 		Username: "oauth-import-home", DisplayName: "OAuth import home",
 		PasswordHash: sql.NullString{String: "oauth-import-password-hash", Valid: true},
@@ -88,5 +89,55 @@ func TestPostgresOAuthImportLoginProofFreezesIndependentNodeData(t *testing.T) {
 		WHERE conflict.user_id=$1 AND source.local_handle IN ($2,$3)`,
 		user.GlobalID, user.Username, "oauth-import-remote").Scan(&sources); err != nil || sources != 2 {
 		t.Fatalf("OAuth import conflict sources=%d err=%v", sources, err)
+	}
+
+	// A durable batch created before canonical OAuth matching was deployed can
+	// be repaired after the user is already frozen in conflict. The existing
+	// conflict must then reopen evidence inspection and include the late node.
+	lateCandidateID := "75400000-0000-4000-8000-000000000013"
+	lateFingerprint := hex.EncodeToString(bytes.Repeat([]byte{0xee}, 32))
+	lateBatch, err := st.IngestAccountImportBatch(ctx, CreateAccountImportBatchParams{
+		ID:          "75400000-0000-4000-8000-000000000011",
+		OperationID: "75400000-0000-4000-8000-000000000012",
+		NodeID:      thirdNodeID, InventoryDigest: bytes.Repeat([]byte{0xef}, 32),
+		Source: "adapter", Now: now.Add(3 * time.Second),
+		Candidates: []AccountImportCandidateInput{{
+			ID:          lateCandidateID,
+			LocalUserID: "oauth-import-local-3", LocalHandle: "oauth-import-late",
+			SizeBytes: 43, DirectoryFingerprint: lateFingerprint, Source: "adapter", AccountKind: "oauth",
+			Identities: []AccountImportIdentityFingerprint{{Provider: "discord", Fingerprint: lateFingerprint}},
+		}},
+	})
+	if err != nil || lateBatch == nil || lateBatch.Candidates[0].ResolutionState != "oauth_unmatched" {
+		t.Fatalf("ingest late unmatched OAuth import: batch=%+v err=%v", lateBatch, err)
+	}
+	resolved, err = st.ResolveOAuthUnmatchedCandidate(
+		ctx, lateCandidateID, user.GlobalID,
+		[]OAuthIdentityMatchProof{{Provider: "discord", Subject: "oauth-import-subject"}},
+		now.Add(4*time.Second),
+	)
+	if err != nil || resolved != 1 {
+		t.Fatalf("repair late OAuth candidate: resolved=%d err=%v", resolved, err)
+	}
+	var oldVersion int64
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT version FROM replica_conflicts
+		WHERE user_id=$1 AND state NOT IN ('resolved','failed')`, user.GlobalID).Scan(&oldVersion); err != nil {
+		t.Fatalf("read conflict version before source refresh: %v", err)
+	}
+	if _, err := st.ReconcileProtectionStates(ctx, now.Add(5*time.Second), time.Minute); err != nil {
+		t.Fatalf("refresh late OAuth conflict source: %v", err)
+	}
+	var refreshedState string
+	var refreshedVersion int64
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT conflict.state,conflict.version,count(source.node_id)
+		FROM replica_conflicts conflict
+		JOIN replica_conflict_sources source ON source.conflict_id=conflict.id
+		WHERE conflict.user_id=$1 AND conflict.state NOT IN ('resolved','failed')
+		GROUP BY conflict.id`, user.GlobalID).Scan(&refreshedState, &refreshedVersion, &sources); err != nil ||
+		refreshedState != "inspecting" || refreshedVersion <= oldVersion || sources != 3 {
+		t.Fatalf("refreshed conflict state=%q version=%d old=%d sources=%d err=%v",
+			refreshedState, refreshedVersion, oldVersion, sources, err)
 	}
 }

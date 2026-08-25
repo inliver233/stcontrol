@@ -28,6 +28,19 @@ type OAuthIdentitySubject struct {
 	Subject      string `json:"-"`
 }
 
+// OAuthUnmatchedCandidateFingerprints contains only node-scoped HMAC values;
+// raw provider subjects never leave the Controller's identity table.
+type OAuthUnmatchedCandidateFingerprints struct {
+	CandidateID string
+	NodeID      int64
+	Identities  map[string]string
+}
+
+type OAuthIdentityMatchProof struct {
+	Provider string
+	Subject  string
+}
+
 type AccountImportIdentityFingerprint struct {
 	Provider    string
 	Fingerprint string
@@ -167,8 +180,10 @@ func (s *Store) ListAccountImportClaimTargets(ctx context.Context, globalUserID 
 // ResolveOAuthUnmatchedCandidates links account-import candidates that were
 // classified oauth_unmatched (OAuth-only accounts needing OAuth login proof)
 // once the user authenticates with the matching provider.  Idempotent: each
-// candidate resolves at most once; conflicting node accounts or non-active
-// users are skipped so a bad scan can never merge the wrong account.
+// candidate resolves at most once; conflicting node accounts or unavailable
+// users are skipped so a bad scan can never merge the wrong account. Users
+// already frozen by another replica remain eligible so late nodes can be added
+// to the same evidence-complete conflict.
 func (s *Store) ResolveOAuthUnmatchedCandidates(
 	ctx context.Context,
 	provider, fingerprint string,
@@ -178,6 +193,49 @@ func (s *Store) ResolveOAuthUnmatchedCandidates(
 	if provider == "" || fingerprint == "" || globalUserID <= 0 || now.IsZero() {
 		return 0, ErrAccountClaimRejected
 	}
+	return s.resolveOAuthUnmatchedCandidates(
+		ctx, "", provider, fingerprint, globalUserID, nil, "oauth_login_proof", now,
+	)
+}
+
+// ResolveOAuthUnmatchedCandidate applies a complete, Controller-recomputed
+// identity match to exactly one legacy candidate. This is used to repair
+// durable batches produced by older Agents without weakening split-identity
+// detection for multi-provider accounts.
+func (s *Store) ResolveOAuthUnmatchedCandidate(
+	ctx context.Context,
+	candidateID string,
+	globalUserID int64,
+	identityProofs []OAuthIdentityMatchProof,
+	now time.Time,
+) (int64, error) {
+	if candidateID == "" || globalUserID <= 0 || len(identityProofs) == 0 ||
+		len(identityProofs) > 2 || now.IsZero() {
+		return 0, ErrAccountClaimRejected
+	}
+	providers := make(map[string]struct{}, len(identityProofs))
+	for _, proof := range identityProofs {
+		if (proof.Provider != "discord" && proof.Provider != "linuxdo") || proof.Subject == "" {
+			return 0, ErrAccountClaimRejected
+		}
+		if _, duplicate := providers[proof.Provider]; duplicate {
+			return 0, ErrAccountClaimRejected
+		}
+		providers[proof.Provider] = struct{}{}
+	}
+	return s.resolveOAuthUnmatchedCandidates(
+		ctx, candidateID, "", "", globalUserID, identityProofs, "oauth_subject_reconciled", now,
+	)
+}
+
+func (s *Store) resolveOAuthUnmatchedCandidates(
+	ctx context.Context,
+	candidateID, provider, fingerprint string,
+	globalUserID int64,
+	identityProofs []OAuthIdentityMatchProof,
+	reasonCode string,
+	now time.Time,
+) (int64, error) {
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return 0, err
@@ -185,11 +243,25 @@ func (s *Store) ResolveOAuthUnmatchedCandidates(
 	defer func() { _ = tx.Rollback() }()
 	var legacyUserID int64
 	if err := tx.QueryRowContext(ctx, `
-		SELECT legacy_user_id FROM global_users WHERE id=$1 AND status='active' FOR UPDATE`,
+		SELECT legacy_user_id FROM global_users
+		WHERE id=$1 AND status IN ('active','conflict') FOR UPDATE`,
 		globalUserID).Scan(&legacyUserID); err == sql.ErrNoRows {
 		return 0, tx.Commit()
 	} else if err != nil {
 		return 0, err
+	}
+	for _, proof := range identityProofs {
+		var identityID int64
+		err := tx.QueryRowContext(ctx, `
+			SELECT id FROM auth_identities
+			WHERE user_id=$1 AND provider=$2 AND provider_subject=$3 AND status='active'
+			FOR SHARE`, globalUserID, proof.Provider, proof.Subject).Scan(&identityID)
+		if err == sql.ErrNoRows {
+			return 0, tx.Commit()
+		}
+		if err != nil {
+			return 0, err
+		}
 	}
 	type oauthCandidate struct {
 		id, batchID, localUserID, localHandle, directoryFingerprint string
@@ -202,9 +274,11 @@ func (s *Store) ResolveOAuthUnmatchedCandidates(
 		  encode(candidate.directory_fingerprint,'hex')
 		FROM account_import_candidates candidate
 		WHERE candidate.resolution_state='oauth_unmatched'
-		  AND candidate.identity_fingerprints->>$1=$2
+		  AND (($1<>'' AND candidate.id=$1::uuid)
+		    OR ($1='' AND (SELECT count(*) FROM jsonb_object_keys(candidate.identity_fingerprints))=1
+		      AND candidate.identity_fingerprints->>$2=$3))
 		ORDER BY candidate.created_at,candidate.node_id,candidate.local_user_id
-		FOR UPDATE`, provider, fingerprint)
+		FOR UPDATE`, candidateID, provider, fingerprint)
 	if err != nil {
 		return 0, err
 	}
@@ -304,8 +378,8 @@ func (s *Store) ResolveOAuthUnmatchedCandidates(
 		result, err := tx.ExecContext(ctx, `
 			UPDATE account_import_candidates
 			SET resolution_state='auto_linked',matched_user_id=$2,
-			  reason_code='oauth_login_proof',updated_at=$3
-			WHERE id=$1 AND resolution_state='oauth_unmatched'`, candidate.id, globalUserID, now)
+			  reason_code=$3,updated_at=$4
+			WHERE id=$1 AND resolution_state='oauth_unmatched'`, candidate.id, globalUserID, reasonCode, now)
 		if err != nil {
 			return 0, err
 		}
@@ -495,6 +569,54 @@ func (s *Store) ListActiveOAuthIdentitySubjects(ctx context.Context) ([]OAuthIde
 		identities = append(identities, identity)
 	}
 	return identities, rows.Err()
+}
+
+func (s *Store) ListOAuthUnmatchedCandidateFingerprints(
+	ctx context.Context,
+	limit int,
+) ([]OAuthUnmatchedCandidateFingerprints, error) {
+	if limit <= 0 || limit > maxAccountImportCandidates {
+		limit = 1000
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT candidate.id::text,candidate.node_id,candidate.identity_fingerprints
+		FROM account_import_candidates candidate
+		WHERE candidate.resolution_state='oauth_unmatched'
+		  AND candidate.identity_fingerprints<> '{}'::jsonb
+		ORDER BY candidate.created_at,candidate.node_id,candidate.local_user_id
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	candidates := make([]OAuthUnmatchedCandidateFingerprints, 0)
+	for rows.Next() {
+		var candidate OAuthUnmatchedCandidateFingerprints
+		var encoded []byte
+		if err := rows.Scan(&candidate.CandidateID, &candidate.NodeID, &encoded); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(encoded, &candidate.Identities); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates, rows.Err()
+}
+
+func (s *Store) MarkOAuthUnmatchedCandidateIdentityConflict(
+	ctx context.Context,
+	candidateID, reasonCode string,
+	now time.Time,
+) error {
+	if candidateID == "" || reasonCode == "" || now.IsZero() {
+		return ErrAccountClaimRejected
+	}
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE account_import_candidates
+		SET resolution_state='identity_conflict',reason_code=$2,updated_at=$3
+		WHERE id=$1 AND resolution_state='oauth_unmatched'`, candidateID, reasonCode, now)
+	return err
 }
 
 func (s *Store) IngestAccountImportBatch(
@@ -774,6 +896,22 @@ func freezeImportedReplicaConflict(
 	globalUserID, legacyUserID int64,
 	now time.Time,
 ) error {
+	// Once a merge plan has been durably submitted its evidence set is frozen.
+	// A concurrently discovered node must not be silently added underneath that
+	// plan. Rolling the import transaction back lets the durable scanner retry
+	// after the existing conflict itself reaches a terminal state.
+	var resolutionInProgress bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM replica_conflicts conflict
+		  JOIN conflict_resolution_operations operation ON operation.conflict_id=conflict.id
+		  WHERE conflict.user_id=$1 AND conflict.state NOT IN ('resolved','failed')
+		)`, globalUserID).Scan(&resolutionInProgress); err != nil {
+		return err
+	}
+	if resolutionInProgress {
+		return ErrAccountImportConflict
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE global_users SET status='conflict',updated_at=$2 WHERE id=$1 AND status<>'deleted'`,
 		globalUserID, now); err != nil {

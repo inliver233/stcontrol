@@ -163,6 +163,27 @@ func TestControllerConflictEvidenceAndResolutionThroughDurableCommands(t *testin
 	if err != nil {
 		t.Fatalf("marshal conflict resolution request: %v", err)
 	}
+	lateNode := createControllerBackupNode(t, ctx, st, "conflict-late-source", "compute", false, generation)
+	if _, err := st.DB.ExecContext(ctx, `
+		INSERT INTO user_replicas (user_id,node_id,kind,data_version,state,last_sync_at,checksum,size_bytes)
+		VALUES ($1,$2,'hot_standby',9,'conflict',$3,'late-conflict',4096)`,
+		user.ID, lateNode.ID, time.Now().UTC()); err != nil {
+		t.Fatalf("seed late conflict source race: %v", err)
+	}
+	staleRequest := httptest.NewRequest(http.MethodPost, "/api/conflicts/resolve", bytes.NewReader(body))
+	staleRequest = staleRequest.WithContext(context.WithValue(
+		staleRequest.Context(), ctxKey("stcontrol-session"), conflictSession,
+	))
+	staleRecorder := httptest.NewRecorder()
+	server.handleStartConflictResolution(staleRecorder, staleRequest)
+	if staleRecorder.Code != http.StatusConflict {
+		t.Fatalf("missing late source was not fenced: status=%d body=%s",
+			staleRecorder.Code, staleRecorder.Body.String())
+	}
+	if _, err := st.DB.ExecContext(ctx, `DELETE FROM user_replicas WHERE user_id=$1 AND node_id=$2`,
+		user.ID, lateNode.ID); err != nil {
+		t.Fatalf("remove late source race fixture: %v", err)
+	}
 	for range cap(server.snapshotSlots) {
 		server.snapshotSlots <- struct{}{}
 	}

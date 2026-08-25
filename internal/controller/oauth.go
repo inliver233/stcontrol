@@ -267,7 +267,8 @@ func (s *Server) resolvedOAuthUnmatchedAfterLogin(ctx context.Context, provider,
 			continue
 		}
 		fingerprint := controlcrypto.AgentInventoryFingerprint(
-			psk, "oauth-subject", provider, subject,
+			psk, "oauth-subject", provider,
+			protocol.CanonicalOAuthSubject(provider, subject),
 		)
 		_, _ = s.Store.ResolveOAuthUnmatchedCandidates(
 			ctx, provider, fingerprint, globalUserID, time.Now().UTC(),
