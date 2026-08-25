@@ -384,6 +384,10 @@ func TestSnapshotRelayUploadStreamsAuthenticatedCiphertext(t *testing.T) {
 	}
 	archiveDigest := sha256.Sum256(archiveData)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/relay/v1/transfers/"+taskID+"/multipart/start" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if r.Method != http.MethodPut || r.URL.Path != "/relay/v1/transfers/"+taskID ||
 			r.Header.Get("Authorization") != "Bearer upload-token" {
 			t.Errorf("unexpected relay request: %s %s headers=%v", r.Method, r.URL.Path, r.Header)

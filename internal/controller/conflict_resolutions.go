@@ -41,7 +41,7 @@ type publicConflictResolutionStatus struct {
 	Error        string `json:"error,omitempty"`
 }
 
-const minimumConflictRelayAgentVersion = "0.4.5"
+const minimumConflictRelayAgentVersion = "0.4.6"
 
 func (s *Server) handleStartConflictResolution(w http.ResponseWriter, r *http.Request) {
 	var req startConflictResolutionRequest

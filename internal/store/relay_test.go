@@ -119,6 +119,31 @@ func TestRelayUploadLifecycleIsTokenAndLeaseFenced(t *testing.T) {
 	assertMockExpectations(t, mock)
 }
 
+func TestRelayMultipartUploadRefreshesExactInFlightLease(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 25, 16, 0, 0, 0, time.UTC)
+	p := relayParams(now)
+	archiveHash := bytesOf(2, 32)
+	leaseTTL := 5 * time.Minute
+	uploading := sqlmock.NewRows(relayColumns).AddRow(
+		p.ID, p.WorkflowID, p.WorkflowID, p.SnapshotID, p.SourceNodeID, p.TargetNodeID,
+		p.Attempt, "uploading", int64(8), p.MaxCiphertextBytes,
+		int64(900), nil, archiveHash, nil, nil, p.ExpiresAt,
+	)
+	mock.ExpectQuery(`UPDATE relay_transfers relay SET state='uploading'`).WithArgs(
+		p.ID, p.UploadTokenHash, int64(900), int64(1024), archiveHash, now, now.Add(leaseTTL),
+	).WillReturnRows(uploading)
+	transfer, err := st.ClaimRelayMultipartUpload(
+		context.Background(), p.ID, p.UploadTokenHash, 900, 1024, archiveHash, now, leaseTTL,
+	)
+	if err != nil || transfer == nil || transfer.State != "uploading" || transfer.PlaintextBytes.Int64 != 900 {
+		t.Fatalf("transfer=%+v err=%v", transfer, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
 func TestRelayDownloadLifecycleDoesNotConsumeUntilExplicitConfirmation(t *testing.T) {
 	t.Parallel()
 	st, mock, closeDB := newMockStore(t)
@@ -137,6 +162,17 @@ func TestRelayDownloadLifecycleDoesNotConsumeUntilExplicitConfirmation(t *testin
 	transfer, err := st.ClaimRelayDownload(context.Background(), p.ID, p.DownloadTokenHash, now, leaseTTL)
 	if err != nil || transfer == nil || transfer.State != "downloading" || !transfer.StoragePath.Valid {
 		t.Fatalf("transfer=%+v err=%v", transfer, err)
+	}
+	mock.ExpectQuery(`UPDATE relay_transfers relay SET download_lease_until`).WithArgs(
+		p.ID, p.DownloadTokenHash, now, now.Add(leaseTTL),
+	).WillReturnRows(sqlmock.NewRows(relayColumns).AddRow(
+		p.ID, p.WorkflowID, p.WorkflowID, p.SnapshotID, p.SourceNodeID, p.TargetNodeID,
+		p.Attempt, "downloading", int64(8), p.MaxCiphertextBytes,
+		int64(900), int64(1024), bytesOf(2, 32), bytesOf(3, 32), "relay/task.relay", p.ExpiresAt,
+	))
+	continued, err := st.ContinueRelayDownload(context.Background(), p.ID, p.DownloadTokenHash, now, leaseTTL)
+	if err != nil || continued == nil || continued.State != "downloading" || !continued.StoragePath.Valid {
+		t.Fatalf("continued=%+v err=%v", continued, err)
 	}
 	mock.ExpectExec(`UPDATE relay_transfers relay SET download_lease_until`).WithArgs(
 		p.ID, p.DownloadTokenHash, now, now.Add(2*time.Minute),

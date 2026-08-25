@@ -208,6 +208,10 @@ func TestConflictEvidenceTransferUsesEncryptedRelayWithoutNodeDataURL(t *testing
 	}
 	taskID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/relay/v1/transfers/"+taskID+"/multipart/start" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if r.Method != http.MethodPut || r.URL.Path != "/relay/v1/transfers/"+taskID ||
 			r.Header.Get("Authorization") != "Bearer relay-upload-token" ||
 			r.Header.Get("X-Workflow-Id") != testConflictID ||

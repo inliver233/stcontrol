@@ -271,6 +271,69 @@ func (s *Store) ClaimRelayUpload(
 	return &out, err
 }
 
+// ClaimRelayMultipartUpload authorizes one resumable application-level upload.
+// Unlike the legacy single-request claim, an exact owner may refresh the lease
+// while the transfer is already uploading because every part is independently
+// authenticated and atomically published by the relay data plane.
+func (s *Store) ClaimRelayMultipartUpload(
+	ctx context.Context,
+	id string,
+	uploadTokenHash []byte,
+	plaintextBytes, ciphertextBytes int64,
+	archiveSHA256 []byte,
+	now time.Time,
+	leaseTTL time.Duration,
+) (*RelayTransfer, error) {
+	if id == "" || len(uploadTokenHash) != 32 || plaintextBytes <= 0 || ciphertextBytes <= 0 ||
+		len(archiveSHA256) != 32 || leaseTTL <= 0 {
+		return nil, ErrInvalidRelayTransfer
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var out RelayTransfer
+	err := scanRelayTransfer(s.DB.QueryRowContext(ctx, `
+		UPDATE relay_transfers relay SET state='uploading',plaintext_bytes=$3,
+		  archive_sha256=$5,upload_lease_until=$7,updated_at=$6
+		FROM controller_epochs epoch
+		WHERE relay.id=$1::uuid AND relay.upload_token_hash=$2
+		  AND relay.controller_generation=epoch.generation AND epoch.state='active'
+		  AND relay.expires_at>$6 AND $4<=relay.max_ciphertext_bytes
+		  AND relay.state IN ('prepared','uploading')
+		  AND (relay.plaintext_bytes IS NULL OR relay.plaintext_bytes=$3)
+		  AND (relay.archive_sha256 IS NULL OR relay.archive_sha256=$5)
+		RETURNING relay.id::text,relay.workflow_id::text,relay.transport_scope_id::text,relay.snapshot_id::text,
+		  relay.source_node_id,relay.target_node_id,relay.attempt,relay.state,
+		  relay.controller_generation,relay.max_ciphertext_bytes,relay.plaintext_bytes,
+		  relay.ciphertext_bytes,relay.archive_sha256,relay.ciphertext_sha256,
+		  relay.storage_path,relay.expires_at`,
+		id, uploadTokenHash, plaintextBytes, ciphertextBytes, archiveSHA256, now, now.Add(leaseTTL)), &out)
+	if err == nil {
+		return &out, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, err
+	}
+	// Completion responses can be lost. Return the immutable stored fact for an
+	// exact retry so the Agent can finish without re-uploading any part.
+	err = scanRelayTransfer(s.DB.QueryRowContext(ctx, `
+		SELECT relay.id::text,relay.workflow_id::text,relay.transport_scope_id::text,relay.snapshot_id::text,
+		  relay.source_node_id,relay.target_node_id,relay.attempt,relay.state,
+		  relay.controller_generation,relay.max_ciphertext_bytes,relay.plaintext_bytes,
+		  relay.ciphertext_bytes,relay.archive_sha256,relay.ciphertext_sha256,
+		  relay.storage_path,relay.expires_at
+		FROM relay_transfers relay JOIN controller_epochs epoch
+		  ON epoch.generation=relay.controller_generation AND epoch.state='active'
+		WHERE relay.id=$1::uuid AND relay.upload_token_hash=$2
+		  AND relay.state IN ('stored','downloading','consumed') AND relay.expires_at>$6
+		  AND relay.plaintext_bytes=$3 AND relay.ciphertext_bytes=$4 AND relay.archive_sha256=$5`,
+		id, uploadTokenHash, plaintextBytes, ciphertextBytes, archiveSHA256, now), &out)
+	if err == sql.ErrNoRows {
+		return nil, ErrRelayTransferState
+	}
+	return &out, err
+}
+
 func (s *Store) CompleteRelayUpload(
 	ctx context.Context,
 	id string,
@@ -362,6 +425,41 @@ func (s *Store) ClaimRelayDownload(
 		if terminal {
 			return nil, ErrRelayTransferTerminal
 		}
+		return nil, ErrRelayTransferState
+	}
+	return &out, err
+}
+
+// ContinueRelayDownload returns the immutable relay metadata while refreshing
+// an already-claimed multipart download lease. It never opens a new download;
+// callers must first pass through ClaimRelayDownload.
+func (s *Store) ContinueRelayDownload(
+	ctx context.Context,
+	id string,
+	downloadTokenHash []byte,
+	now time.Time,
+	leaseTTL time.Duration,
+) (*RelayTransfer, error) {
+	if id == "" || len(downloadTokenHash) != 32 || leaseTTL <= 0 {
+		return nil, ErrInvalidRelayTransfer
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var out RelayTransfer
+	err := scanRelayTransfer(s.DB.QueryRowContext(ctx, `
+		UPDATE relay_transfers relay SET download_lease_until=$4,updated_at=$3
+		FROM controller_epochs epoch
+		WHERE relay.id=$1::uuid AND relay.download_token_hash=$2
+		  AND relay.controller_generation=epoch.generation AND epoch.state='active'
+		  AND relay.state='downloading' AND relay.expires_at>$3
+		  AND relay.download_lease_until>$3
+		RETURNING relay.id::text,relay.workflow_id::text,relay.transport_scope_id::text,relay.snapshot_id::text,
+		  relay.source_node_id,relay.target_node_id,relay.attempt,relay.state,
+		  relay.controller_generation,relay.max_ciphertext_bytes,relay.plaintext_bytes,
+		  relay.ciphertext_bytes,relay.archive_sha256,relay.ciphertext_sha256,
+		  relay.storage_path,relay.expires_at`, id, downloadTokenHash, now, now.Add(leaseTTL)), &out)
+	if err == sql.ErrNoRows {
 		return nil, ErrRelayTransferState
 	}
 	return &out, err

@@ -302,7 +302,7 @@ type AgentCommand struct {
 	ExpiresAt            time.Time       `json:"expires_at"`
 }
 
-const CurrentAgentVersion = "0.4.5"
+const CurrentAgentVersion = "0.4.6"
 
 // AgentUpgradeRequest is deliberately tiny: the Agent only downloads the
 // architecture-specific artifact from its already trusted Controller origin.

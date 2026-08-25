@@ -57,6 +57,13 @@ func (fake *fakeRelayStore) ClaimRelayUpload(
 	return &out, nil
 }
 
+func (fake *fakeRelayStore) ClaimRelayMultipartUpload(
+	ctx context.Context, id string, token []byte, plaintextBytes, ciphertextBytes int64,
+	archiveSHA256 []byte, now time.Time, ttl time.Duration,
+) (*store.RelayTransfer, error) {
+	return fake.ClaimRelayUpload(ctx, id, token, plaintextBytes, ciphertextBytes, archiveSHA256, now, ttl)
+}
+
 func (fake *fakeRelayStore) CompleteRelayUpload(
 	_ context.Context, _ string, _ []byte, ciphertextSHA256 []byte,
 	ciphertextBytes int64, storagePath string, _ time.Time,
@@ -95,6 +102,12 @@ func (fake *fakeRelayStore) ClaimRelayDownload(
 	out.ArchiveSHA256 = append([]byte(nil), fake.transfer.ArchiveSHA256...)
 	out.CiphertextSHA256 = append([]byte(nil), fake.completedHash...)
 	return &out, nil
+}
+
+func (fake *fakeRelayStore) ContinueRelayDownload(
+	ctx context.Context, id string, token []byte, now time.Time, ttl time.Duration,
+) (*store.RelayTransfer, error) {
+	return fake.ClaimRelayDownload(ctx, id, token, now, ttl)
 }
 
 func (fake *fakeRelayStore) ReleaseRelayDownload(context.Context, string, []byte, time.Time) error {
@@ -197,6 +210,116 @@ func TestEncryptedRelaySpoolsOpaqueCiphertextOnSeparateHandler(t *testing.T) {
 	}
 	if _, err := os.Stat(fake.completedPath); !os.IsNotExist(err) {
 		t.Fatalf("consumed relay ciphertext still exists: %v", err)
+	}
+}
+
+func TestEncryptedRelayMultipartUploadsAndDownloadsIndependentBoundedParts(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	const (
+		taskID     = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+		workflowID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+		snapshotID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	)
+	plaintextBytes := int64(33 << 20)
+	ciphertextBytes, err := controlcrypto.RelayCiphertextSize(plaintextBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext := bytes.Repeat([]byte("opaque-relay-part"), int((ciphertextBytes+16)/17))[:ciphertextBytes]
+	archiveHash := sha256.Sum256([]byte("archive-manifest"))
+	fake := &fakeRelayStore{transfer: &store.RelayTransfer{
+		ID: taskID, WorkflowID: workflowID, SnapshotID: snapshotID,
+		SourceNodeID: 7, TargetNodeID: 9, MaxCiphertextBytes: ciphertextBytes + 1024,
+		PlaintextBytes: sqlNullInt64(plaintextBytes), ArchiveSHA256: archiveHash[:],
+	}}
+	relay, err := newRelayDataPlane(configRelayView{
+		DataDir: root, MaxBytes: 1 << 30, RetentionMin: 60, MaxConcurrent: 2,
+	}, fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadToken := "multipart-upload-token-with-at-least-thirty-two-characters"
+	uploadSession := "00112233445566778899aabbccddeeff"
+	setUploadHeaders := func(request *http.Request) {
+		request.Header.Set("Authorization", "Bearer "+uploadToken)
+		request.Header.Set("Content-Type", relayContentType)
+		request.Header.Set("X-Workflow-Id", workflowID)
+		request.Header.Set("X-Snapshot-Id", snapshotID)
+		request.Header.Set("X-Plaintext-Length", strconv.FormatInt(plaintextBytes, 10))
+		request.Header.Set("X-Ciphertext-Length", strconv.FormatInt(ciphertextBytes, 10))
+		request.Header.Set("X-Archive-Sha256", hex.EncodeToString(archiveHash[:]))
+		request.Header.Set("X-Relay-Upload-Session", uploadSession)
+	}
+	start := httptest.NewRequest(http.MethodPost, "/relay/v1/transfers/"+taskID+"/multipart/start", nil)
+	setUploadHeaders(start)
+	startRecorder := httptest.NewRecorder()
+	relay.Handler().ServeHTTP(startRecorder, start)
+	if startRecorder.Code != http.StatusOK {
+		t.Fatalf("start status=%d body=%s", startRecorder.Code, startRecorder.Body.String())
+	}
+	partCount := relayPartCount(ciphertextBytes)
+	if partCount < 3 {
+		t.Fatalf("multipart test did not cross enough boundaries: %d", partCount)
+	}
+	for part := 0; part < partCount; part++ {
+		partBytes, _ := relayPartSize(ciphertextBytes, part)
+		offset := int64(part) * relayPartBytes
+		data := ciphertext[offset : offset+partBytes]
+		digest := sha256.Sum256(data)
+		for replay := 0; replay < 2; replay++ {
+			request := httptest.NewRequest(http.MethodPut,
+				"/relay/v1/transfers/"+taskID+"/multipart/parts/"+strconv.Itoa(part), bytes.NewReader(data))
+			request.ContentLength = partBytes
+			setUploadHeaders(request)
+			request.Header.Set("X-Part-Sha256", hex.EncodeToString(digest[:]))
+			recorder := httptest.NewRecorder()
+			relay.Handler().ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusCreated && recorder.Code != http.StatusOK {
+				t.Fatalf("part=%d replay=%d status=%d body=%s", part, replay, recorder.Code, recorder.Body.String())
+			}
+		}
+	}
+	ciphertextHash := sha256.Sum256(ciphertext)
+	complete := httptest.NewRequest(http.MethodPost,
+		"/relay/v1/transfers/"+taskID+"/multipart/complete", nil)
+	setUploadHeaders(complete)
+	complete.Header.Set("X-Ciphertext-Sha256", hex.EncodeToString(ciphertextHash[:]))
+	completeRecorder := httptest.NewRecorder()
+	relay.Handler().ServeHTTP(completeRecorder, complete)
+	if completeRecorder.Code != http.StatusCreated || fake.completedBytes != ciphertextBytes ||
+		!bytes.Equal(fake.completedHash, ciphertextHash[:]) {
+		t.Fatalf("complete status=%d body=%s bytes=%d", completeRecorder.Code,
+			completeRecorder.Body.String(), fake.completedBytes)
+	}
+	spooled, err := os.ReadFile(fake.completedPath)
+	if err != nil || !bytes.Equal(spooled, ciphertext) {
+		t.Fatalf("combined ciphertext mismatch bytes=%d err=%v", len(spooled), err)
+	}
+
+	downloadToken := "multipart-download-token-with-at-least-thirty-two-characters"
+	manifest := httptest.NewRequest(http.MethodGet,
+		"/relay/v1/transfers/"+taskID+"/multipart/manifest", nil)
+	manifest.Header.Set("Authorization", "Bearer "+downloadToken)
+	manifestRecorder := httptest.NewRecorder()
+	relay.Handler().ServeHTTP(manifestRecorder, manifest)
+	if manifestRecorder.Code != http.StatusOK {
+		t.Fatalf("manifest status=%d body=%s", manifestRecorder.Code, manifestRecorder.Body.String())
+	}
+	var downloaded bytes.Buffer
+	for part := 0; part < partCount; part++ {
+		request := httptest.NewRequest(http.MethodGet,
+			"/relay/v1/transfers/"+taskID+"/multipart/parts/"+strconv.Itoa(part), nil)
+		request.Header.Set("Authorization", "Bearer "+downloadToken)
+		recorder := httptest.NewRecorder()
+		relay.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK || recorder.Header().Get("X-Part-Index") != strconv.Itoa(part) {
+			t.Fatalf("download part=%d status=%d body=%s", part, recorder.Code, recorder.Body.String())
+		}
+		_, _ = downloaded.Write(recorder.Body.Bytes())
+	}
+	if !bytes.Equal(downloaded.Bytes(), ciphertext) {
+		t.Fatal("multipart download did not reconstruct the ciphertext")
 	}
 }
 

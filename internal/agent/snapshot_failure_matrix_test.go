@@ -358,6 +358,10 @@ func TestRelayPullConfirmAndReceiveFailureMatrix(t *testing.T) {
 	}
 
 	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/multipart/manifest" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if r.Method == http.MethodGet {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, "ciphertext")

@@ -884,7 +884,7 @@ func (a *Agent) streamSnapshot(ctx context.Context, req protocol.StartSnapshotRe
 	return receipt, nil
 }
 
-func (a *Agent) streamSnapshotRelay(
+func (a *Agent) streamSnapshotRelayLegacy(
 	ctx context.Context,
 	req protocol.StartSnapshotRequest,
 	archivePath string,
@@ -1100,7 +1100,7 @@ type relayDecryptResult struct {
 	err            error
 }
 
-func pullRelayCiphertext(
+func pullRelayCiphertextLegacy(
 	ctx context.Context,
 	endpoint, token string,
 	expiresAt time.Time,
