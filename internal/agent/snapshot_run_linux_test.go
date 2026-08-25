@@ -230,12 +230,13 @@ func TestRunSnapshotRelayEncryptsThenTargetPublishesAndConfirms(t *testing.T) {
 	if !completed || downloads != 1 {
 		t.Fatalf("relay completed=%t downloads=%d", completed, downloads)
 	}
-	if _, err := target.RunRelayReceive(context.Background(), protocol.StartRelayReceiveRequest{
+	replayed, err := target.RunRelayReceive(context.Background(), protocol.StartRelayReceiveRequest{
 		WorkflowID: request.WorkflowID, SnapshotID: request.SnapshotID, RelayTaskID: relayTaskID,
 		RelayDownloadURL: relayURL, RelayDownloadToken: relay.downloadToken,
 		TransferCapability: request.TransferCapability, CapabilityExpires: expiresAt,
-	}); err == nil {
-		t.Fatal("completed relay transfer was replayed")
+	})
+	if err != nil || replayed.ManifestSHA256 != receipt.ManifestSHA256 {
+		t.Fatalf("durable relay receipt was not replayed: receipt=%+v err=%v", replayed, err)
 	}
 	relay.mu.Lock()
 	defer relay.mu.Unlock()
@@ -724,13 +725,19 @@ func (relay *snapshotRunRelay) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		relay.mu.Lock()
-		if relay.completed || relay.downloads != 1 {
+		if relay.downloads != 1 {
 			relay.mu.Unlock()
 			http.Error(w, "invalid completion", http.StatusConflict)
 			return
 		}
 		relay.completed = true
 		relay.mu.Unlock()
+		protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	case r.Method == http.MethodPost && r.URL.Path == path+"/renew":
+		if r.Header.Get("Authorization") != "Bearer "+relay.downloadToken {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	default:
 		http.NotFound(w, r)

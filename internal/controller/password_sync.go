@@ -92,6 +92,15 @@ func (s *Server) deliverOAuthIdentitySyncs(
 			}, operationID, 45*time.Second,
 		)
 		if err != nil {
+			switch agentCommandErrorCode(err) {
+			case "oauth_identity_subject_conflict", "oauth_identity_version_conflict", "oauth_identity_version_rollback":
+				if freezeErr := s.Store.FreezeOAuthIdentitySyncConflict(
+					ctx, sync, time.Now().UTC(),
+				); freezeErr == nil {
+					pending++
+					continue
+				}
+			}
 			_ = s.Store.MarkOAuthIdentitySyncError(ctx, sync, time.Now().UTC())
 			pending++
 			continue

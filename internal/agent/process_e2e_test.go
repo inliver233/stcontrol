@@ -1654,35 +1654,49 @@ func (client *processE2EAdminClient) login(ctx context.Context, username, passwo
 func (client *processE2EAdminClient) scan(ctx context.Context, nodeID int64, operationID string) ([]byte, error) {
 	body, _ := json.Marshal(map[string]string{"operation_id": operationID})
 	endpoint := fmt.Sprintf("%s/api/admin/nodes/%d/scan-existing", client.baseURL, nodeID)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	for {
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Origin", client.baseURL)
+		request.Header.Set("X-CSRF-Token", client.csrf)
+		response, err := client.client.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		data, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		_ = response.Body.Close()
+		if readErr != nil {
+			return data, readErr
+		}
+		if response.StatusCode == http.StatusAccepted {
+			// Match the production UI cadence and stay below the admin limiter
+			// during deliberately slow restart/rebuild phases.
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return data, ctx.Err()
+			case <-timer.C:
+			}
+			continue
+		}
+		if response.StatusCode != http.StatusOK {
+			return data, fmt.Errorf("status %d", response.StatusCode)
+		}
+		var result struct {
+			Batch struct {
+				NodeID         int64  `json:"node_id"`
+				State          string `json:"state"`
+				CandidateCount int    `json:"candidate_count"`
+			} `json:"batch"`
+		}
+		if err := json.Unmarshal(data, &result); err != nil || result.Batch.NodeID != nodeID ||
+			result.Batch.State != "resolved" || result.Batch.CandidateCount != 0 {
+			return data, fmt.Errorf("invalid scan result")
+		}
+		return data, nil
 	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Origin", client.baseURL)
-	request.Header.Set("X-CSRF-Token", client.csrf)
-	response, err := client.client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if err != nil {
-		return data, err
-	}
-	if response.StatusCode != http.StatusOK {
-		return data, fmt.Errorf("status %d", response.StatusCode)
-	}
-	var result struct {
-		Batch struct {
-			NodeID         int64  `json:"node_id"`
-			State          string `json:"state"`
-			CandidateCount int    `json:"candidate_count"`
-		} `json:"batch"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil || result.Batch.NodeID != nodeID ||
-		result.Batch.State != "resolved" || result.Batch.CandidateCount != 0 {
-		return data, fmt.Errorf("invalid scan result")
-	}
-	return data, nil
 }

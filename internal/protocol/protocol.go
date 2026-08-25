@@ -302,6 +302,21 @@ type AgentCommand struct {
 	ExpiresAt            time.Time       `json:"expires_at"`
 }
 
+const CurrentAgentVersion = "0.4.0"
+
+// AgentUpgradeRequest is deliberately tiny: the Agent only downloads the
+// architecture-specific artifact from its already trusted Controller origin.
+// No remote path, URL, shell, or service name is accepted from the command.
+type AgentUpgradeRequest struct {
+	TargetVersion string `json:"target_version"`
+}
+
+type AgentUpgradeReceipt struct {
+	TargetVersion string `json:"target_version"`
+	SHA256        string `json:"sha256"`
+	Scheduled     bool   `json:"scheduled"`
+}
+
 type AckCommandRequest struct {
 	WorkerID             string `json:"worker_id"`
 	ControllerGeneration int64  `json:"controller_generation"`

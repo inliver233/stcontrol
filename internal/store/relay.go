@@ -293,6 +293,56 @@ func (s *Store) ReleaseRelayDownload(ctx context.Context, id string, downloadTok
 	return err
 }
 
+func (s *Store) ClampRelayDownloadLease(
+	ctx context.Context,
+	id string,
+	downloadTokenHash []byte,
+	now time.Time,
+	maxTTL time.Duration,
+) error {
+	if id == "" || len(downloadTokenHash) != 32 || maxTTL <= 0 {
+		return ErrInvalidRelayTransfer
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE relay_transfers relay SET download_lease_until=$4,updated_at=$3
+		FROM controller_epochs epoch
+		WHERE relay.id=$1::uuid AND relay.download_token_hash=$2 AND relay.state='downloading'
+		  AND relay.controller_generation=epoch.generation AND epoch.state='active'
+		  AND relay.download_lease_until>$4`,
+		id, downloadTokenHash, now, now.Add(maxTTL))
+	return err
+}
+
+func (s *Store) RenewRelayDownload(
+	ctx context.Context,
+	id string,
+	downloadTokenHash []byte,
+	now time.Time,
+	leaseTTL time.Duration,
+) (bool, error) {
+	if id == "" || len(downloadTokenHash) != 32 || leaseTTL <= 0 {
+		return false, ErrInvalidRelayTransfer
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	result, err := s.DB.ExecContext(ctx, `
+		UPDATE relay_transfers relay SET download_lease_until=$4,updated_at=$3
+		FROM controller_epochs epoch
+		WHERE relay.id=$1::uuid AND relay.download_token_hash=$2 AND relay.state='downloading'
+		  AND relay.controller_generation=epoch.generation AND epoch.state='active'
+		  AND relay.expires_at>$3 AND relay.download_lease_until>$3`,
+		id, downloadTokenHash, now, now.Add(leaseTTL))
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows == 1, err
+}
+
 func (s *Store) CompleteRelayDownload(
 	ctx context.Context,
 	id string,
@@ -307,13 +357,20 @@ func (s *Store) CompleteRelayDownload(
 	}
 	var path string
 	err := s.DB.QueryRowContext(ctx, `
-		UPDATE relay_transfers relay SET state='consumed',download_lease_until=NULL,
-		  updated_at=$3,consumed_at=$3
-		FROM controller_epochs epoch
-		WHERE relay.id=$1::uuid AND relay.download_token_hash=$2 AND relay.state='downloading'
-		  AND relay.controller_generation=epoch.generation AND epoch.state='active'
-		  AND relay.expires_at>$3 AND relay.download_lease_until>$3
-		RETURNING relay.storage_path`, id, downloadTokenHash, now).Scan(&path)
+		WITH completed AS (
+			UPDATE relay_transfers relay SET state='consumed',download_lease_until=NULL,
+			  updated_at=$3,consumed_at=COALESCE(relay.consumed_at,$3)
+			FROM controller_epochs epoch
+			WHERE relay.id=$1::uuid AND relay.download_token_hash=$2 AND relay.state='downloading'
+			  AND relay.controller_generation=epoch.generation AND epoch.state='active'
+			RETURNING relay.storage_path
+		)
+		SELECT storage_path FROM completed
+		UNION ALL
+		SELECT relay.storage_path FROM relay_transfers relay
+		JOIN controller_epochs epoch ON epoch.generation=relay.controller_generation AND epoch.state='active'
+		WHERE relay.id=$1::uuid AND relay.download_token_hash=$2 AND relay.state='consumed'
+		LIMIT 1`, id, downloadTokenHash, now).Scan(&path)
 	if err == sql.ErrNoRows {
 		return "", ErrRelayTransferState
 	}

@@ -164,7 +164,6 @@ func (s *Store) ListAccountImportClaimTargets(ctx context.Context, globalUserID 
 	return targets, rows.Err()
 }
 
-
 // ResolveOAuthUnmatchedCandidates links account-import candidates that were
 // classified oauth_unmatched (OAuth-only accounts needing OAuth login proof)
 // once the user authenticates with the matching provider.  Idempotent: each
@@ -184,50 +183,147 @@ func (s *Store) ResolveOAuthUnmatchedCandidates(
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var active bool
+	var legacyUserID int64
 	if err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS (SELECT 1 FROM global_users WHERE id=$1 AND status='active')`,
-		globalUserID).Scan(&active); err != nil {
+		SELECT legacy_user_id FROM global_users WHERE id=$1 AND status='active' FOR UPDATE`,
+		globalUserID).Scan(&legacyUserID); err == sql.ErrNoRows {
+		return 0, tx.Commit()
+	} else if err != nil {
 		return 0, err
 	}
-	if !active {
-		if err := tx.Commit(); err != nil {
-			return 0, err
-		}
-		return 0, nil
+	type oauthCandidate struct {
+		id, batchID, localUserID, localHandle, directoryFingerprint string
+		nodeID                                                      int64
+		isAdmin                                                     bool
 	}
-	result, err := tx.ExecContext(ctx, `
-		UPDATE account_import_candidates candidate
-		SET resolution_state='auto_linked',matched_user_id=$3,reason_code='oauth_login_proof',updated_at=$4
-		FROM account_import_batches batch
-		WHERE candidate.batch_id=batch.id
-		  AND candidate.resolution_state='oauth_unmatched'
+	rows, err := tx.QueryContext(ctx, `
+		SELECT candidate.id::text,candidate.batch_id::text,candidate.node_id,
+		  candidate.local_user_id,candidate.local_handle,candidate.is_admin,
+		  encode(candidate.directory_fingerprint,'hex')
+		FROM account_import_candidates candidate
+		WHERE candidate.resolution_state='oauth_unmatched'
 		  AND candidate.identity_fingerprints->>$1=$2
-		  AND NOT EXISTS (
-		    SELECT 1 FROM node_accounts account
-		    WHERE account.node_id=candidate.node_id
-		      AND (account.user_id=$3 OR account.local_user_id=candidate.local_user_id)
-		  )
-		RETURNING candidate.id`,
-		provider, fingerprint, globalUserID, now)
+		ORDER BY candidate.created_at,candidate.node_id,candidate.local_user_id
+		FOR UPDATE`, provider, fingerprint)
 	if err != nil {
 		return 0, err
 	}
-	resolved, err := result.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-	if resolved > 0 {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE account_import_batches SET auto_linked_count=auto_linked_count+$1,
-			  unresolved_count=GREATEST(0,unresolved_count-$1),
-			  state=CASE WHEN unresolved_count<=$1 THEN 'resolved' ELSE state END,updated_at=$2
-			WHERE id IN (
-			  SELECT batch_id FROM account_import_candidates
-			  WHERE resolution_state='auto_linked' AND reason_code='oauth_login_proof' AND updated_at=$2
-			)`, resolved, now); err != nil {
+	var candidates []oauthCandidate
+	for rows.Next() {
+		var candidate oauthCandidate
+		if err := rows.Scan(
+			&candidate.id, &candidate.batchID, &candidate.nodeID, &candidate.localUserID,
+			&candidate.localHandle, &candidate.isAdmin, &candidate.directoryFingerprint,
+		); err != nil {
+			_ = rows.Close()
 			return 0, err
 		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	var resolved int64
+	for _, candidate := range candidates {
+		var existingUserID int64
+		var existingLocalID sql.NullString
+		err := tx.QueryRowContext(ctx, `
+			SELECT user_id,local_user_id FROM node_accounts
+			WHERE node_id=$1 AND (user_id=$2 OR local_user_id=$3)
+			LIMIT 1 FOR UPDATE`, candidate.nodeID, globalUserID, candidate.localUserID).
+			Scan(&existingUserID, &existingLocalID)
+		if err == nil {
+			if existingUserID != globalUserID || !existingLocalID.Valid || existingLocalID.String != candidate.localUserID {
+				if _, err := tx.ExecContext(ctx, `
+					UPDATE account_import_candidates SET resolution_state='identity_conflict',
+					  reason_code='node_account_collision',updated_at=$2 WHERE id=$1`, candidate.id, now); err != nil {
+					return 0, err
+				}
+				continue
+			}
+		} else if err == sql.ErrNoRows {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO node_accounts (
+				  user_id,node_id,local_handle,local_user_id,status,account_version,is_admin,verified_at,updated_at
+				) VALUES ($1,$2,$3,$4,'active',1,$5,$6,$6)`, globalUserID, candidate.nodeID,
+				candidate.localHandle, candidate.localUserID, candidate.isAdmin, now); err != nil {
+				return 0, err
+			}
+		} else {
+			return 0, err
+		}
+
+		var homeNodeID sql.NullInt64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT home_node_id FROM users WHERE id=$1 FOR UPDATE`, legacyUserID).Scan(&homeNodeID); err != nil {
+			return 0, err
+		}
+		var otherData bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS (
+			  SELECT 1 FROM node_accounts WHERE user_id=$1 AND node_id<>$2
+			  UNION ALL
+			  SELECT 1 FROM user_replicas WHERE user_id=$3 AND node_id<>$2 AND state<>'empty'
+			)`, globalUserID, candidate.nodeID, legacyUserID).Scan(&otherData); err != nil {
+			return 0, err
+		}
+		if !homeNodeID.Valid {
+			chosenHome := candidate.nodeID
+			if otherData {
+				_ = tx.QueryRowContext(ctx,
+					`SELECT min(node_id) FROM node_accounts WHERE user_id=$1 AND node_id<>$2`,
+					globalUserID, candidate.nodeID).Scan(&homeNodeID)
+				if homeNodeID.Valid {
+					chosenHome = homeNodeID.Int64
+				}
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE users SET home_node_id=$2 WHERE id=$1`, legacyUserID, chosenHome); err != nil {
+				return 0, err
+			}
+			homeNodeID = sql.NullInt64{Int64: chosenHome, Valid: true}
+		}
+		kind, replicaState := "hot_standby", "stale"
+		if homeNodeID.Int64 == candidate.nodeID {
+			kind, replicaState = "home", "ready"
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO user_replicas (user_id,node_id,kind,data_version,state,last_sync_at,checksum)
+			VALUES ($1,$2,$3,0,$4,$5,$6)
+			ON CONFLICT (user_id,node_id) DO UPDATE
+			SET kind=EXCLUDED.kind,state=EXCLUDED.state,last_sync_at=EXCLUDED.last_sync_at,
+			  checksum=EXCLUDED.checksum`, legacyUserID, candidate.nodeID, kind, replicaState, now,
+			"inventory-sha256:"+candidate.directoryFingerprint); err != nil {
+			return 0, err
+		}
+		if otherData {
+			if err := freezeImportedReplicaConflict(ctx, tx, globalUserID, legacyUserID, now); err != nil {
+				return 0, err
+			}
+		}
+		result, err := tx.ExecContext(ctx, `
+			UPDATE account_import_candidates
+			SET resolution_state='auto_linked',matched_user_id=$2,
+			  reason_code='oauth_login_proof',updated_at=$3
+			WHERE id=$1 AND resolution_state='oauth_unmatched'`, candidate.id, globalUserID, now)
+		if err != nil {
+			return 0, err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		if changed != 1 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE account_import_batches SET auto_linked_count=auto_linked_count+1,
+			  unresolved_count=GREATEST(0,unresolved_count-1),
+			  state=CASE WHEN unresolved_count<=1 THEN 'resolved' ELSE state END,updated_at=$2
+			WHERE id=$1`, candidate.batchID, now); err != nil {
+			return 0, err
+		}
+		resolved++
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
@@ -450,7 +546,7 @@ func (s *Store) IngestAccountImportBatch(
 		SELECT $1,$2,$3,generation,$4,$5,'review',$6,$7,$7,$7
 		FROM controller_epochs WHERE state='active'
 		RETURNING controller_generation`, p.ID, p.OperationID, p.NodeID, p.InventoryDigest,
-		p.Source, p.CreatedByAdminID, p.Now).Scan(&generation)
+		p.Source, nullInt64(p.CreatedByAdminID), p.Now).Scan(&generation)
 	if err == sql.ErrNoRows {
 		return nil, ErrNoActiveController
 	}
@@ -515,6 +611,10 @@ func classifyAndLinkImportCandidate(
 	candidate AccountImportCandidateInput,
 	now time.Time,
 ) (string, int64, string, error) {
+	matchedIDs := uniquePositiveIDs(candidate.MatchedGlobalUserIDs)
+	if len(matchedIDs) > 1 {
+		return "identity_conflict", 0, "oauth_subjects_split", nil
+	}
 	var existingUserID int64
 	var existingLocalUserID sql.NullString
 	err := tx.QueryRowContext(ctx, `
@@ -527,16 +627,15 @@ func classifyAndLinkImportCandidate(
 		if existingLocalUserID.Valid && existingLocalUserID.String != candidate.LocalUserID {
 			return "identity_conflict", 0, "local_handle_collision", nil
 		}
+		if len(matchedIDs) == 1 && existingUserID != matchedIDs[0] {
+			return "identity_conflict", 0, "managed_account_oauth_mismatch", nil
+		}
 		return "already_managed", existingUserID, "node_account_exists", nil
 	}
 	if err != sql.ErrNoRows {
 		return "", 0, "", err
 	}
 
-	matchedIDs := uniquePositiveIDs(candidate.MatchedGlobalUserIDs)
-	if len(matchedIDs) > 1 {
-		return "identity_conflict", 0, "oauth_subjects_split", nil
-	}
 	if len(matchedIDs) == 1 {
 		globalUserID := matchedIDs[0]
 		var legacyUserID sql.NullInt64
@@ -549,7 +648,7 @@ func classifyAndLinkImportCandidate(
 			}
 			return "", 0, "", err
 		}
-		if !legacyUserID.Valid || (status != "active" && status != "recovering") {
+		if !legacyUserID.Valid || (status != "active" && status != "recovering" && status != "conflict") {
 			return "identity_conflict", 0, "matched_user_unavailable", nil
 		}
 		var otherHandle string
@@ -587,23 +686,57 @@ func classifyAndLinkImportCandidate(
 		if inserted != 1 {
 			return "identity_conflict", 0, "node_account_race", nil
 		}
-		var homeNodeID int64
+		var homeNodeID sql.NullInt64
 		if err := tx.QueryRowContext(ctx, `
-			UPDATE users SET home_node_id=COALESCE(home_node_id,$2)
-			WHERE id=$1 RETURNING home_node_id`, legacyUserID.Int64, nodeID).Scan(&homeNodeID); err != nil {
+			SELECT home_node_id FROM users WHERE id=$1 FOR UPDATE`, legacyUserID.Int64).Scan(&homeNodeID); err != nil {
 			return "", 0, "", err
 		}
+		var otherData bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS (
+			  SELECT 1 FROM node_accounts WHERE user_id=$1 AND node_id<>$2
+			  UNION ALL
+			  SELECT 1 FROM user_replicas WHERE user_id=$3 AND node_id<>$2 AND state<>'empty'
+			)`, globalUserID, nodeID, legacyUserID.Int64).Scan(&otherData); err != nil {
+			return "", 0, "", err
+		}
+		if !homeNodeID.Valid {
+			chosenHome := nodeID
+			if otherData {
+				_ = tx.QueryRowContext(ctx, `
+					SELECT min(node_id) FROM node_accounts WHERE user_id=$1 AND node_id<>$2`,
+					globalUserID, nodeID).Scan(&homeNodeID)
+				if homeNodeID.Valid {
+					chosenHome = homeNodeID.Int64
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE users SET home_node_id=$2 WHERE id=$1`,
+				legacyUserID.Int64, chosenHome); err != nil {
+				return "", 0, "", err
+			}
+			homeNodeID = sql.NullInt64{Int64: chosenHome, Valid: true}
+		}
 		replicaKind, replicaState := "hot_standby", "stale"
-		if homeNodeID == nodeID {
+		if homeNodeID.Int64 == nodeID {
 			replicaKind, replicaState = "home", "ready"
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO user_replicas (user_id,node_id,kind,data_version,state,last_sync_at)
-			VALUES ($1,$2,$3,0,$4,$5)
+			INSERT INTO user_replicas (user_id,node_id,kind,data_version,state,last_sync_at,checksum)
+			VALUES ($1,$2,$3,0,$4,$5,$6)
 			ON CONFLICT (user_id,node_id) DO UPDATE
-			SET kind=EXCLUDED.kind,state=EXCLUDED.state,last_sync_at=EXCLUDED.last_sync_at`,
-			legacyUserID.Int64, nodeID, replicaKind, replicaState, now); err != nil {
+			SET kind=EXCLUDED.kind,state=EXCLUDED.state,last_sync_at=EXCLUDED.last_sync_at,
+			  checksum=EXCLUDED.checksum`,
+			legacyUserID.Int64, nodeID, replicaKind, replicaState, now,
+			"inventory-sha256:"+candidate.DirectoryFingerprint); err != nil {
 			return "", 0, "", err
+		}
+		if otherData {
+			if err := freezeImportedReplicaConflict(
+				ctx, tx, globalUserID, legacyUserID.Int64, now,
+			); err != nil {
+				return "", 0, "", err
+			}
+			return "auto_linked", globalUserID, "oauth_subject_match_existing_data_conflict", nil
 		}
 		return "auto_linked", globalUserID, "oauth_subject_match", nil
 	}
@@ -633,6 +766,62 @@ func classifyAndLinkImportCandidate(
 		return "oauth_unmatched", 0, "oauth_login_proof_required", nil
 	}
 	return "recovery_required", 0, "no_recoverable_identity", nil
+}
+
+func freezeImportedReplicaConflict(
+	ctx context.Context,
+	tx *sql.Tx,
+	globalUserID, legacyUserID int64,
+	now time.Time,
+) error {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE global_users SET status='conflict',updated_at=$2 WHERE id=$1 AND status<>'deleted'`,
+		globalUserID, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE users SET status='conflict' WHERE id=$1 AND status<>'deleted'`, legacyUserID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE node_accounts SET status='conflict',updated_at=$2
+		WHERE user_id=$1 AND status IN ('pending','active','stale')`, globalUserID, now); err != nil {
+		return err
+	}
+	// Older Controller-created users can have a node_account without a legacy
+	// user_replicas row. Materialize those pre-existing directories before
+	// freezing so conflict evidence includes every independently operated node.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO user_replicas (user_id,node_id,kind,data_version,state,last_sync_at)
+		SELECT $2,account.node_id,
+		  CASE WHEN account.node_id=legacy.home_node_id THEN 'home' ELSE 'hot_standby' END,
+		  0,'conflict',$3
+		FROM node_accounts account JOIN users legacy ON legacy.id=$2
+		WHERE account.user_id=$1
+		ON CONFLICT (user_id,node_id) DO UPDATE SET state='conflict'`,
+		globalUserID, legacyUserID, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE user_replicas SET state='conflict' WHERE user_id=$1`, legacyUserID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE replica_copies SET state='conflict',is_authoritative=false,updated_at=$2
+		WHERE user_id=$1 AND state NOT IN ('deleting','corrupt')`, globalUserID, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE control_tickets SET revoked_at=COALESCE(revoked_at,$2)
+		WHERE user_id=$1 AND consumed_at IS NULL AND revoked_at IS NULL`, globalUserID, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE user_activity_leases SET state='conflict',lease_expires_at=$2,updated_at=$2
+		WHERE user_id=$1 AND state<>'conflict'`, globalUserID, now); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) GetAccountImportBatch(ctx context.Context, batchID string) (*AccountImportResult, error) {
@@ -705,7 +894,6 @@ func (s *Store) GetAccountImportBatchPage(
 	return &result, nil
 }
 
-
 // ListUnscannedComputeNodes returns compute nodes that have never been
 // scanned or whose latest successful scan is older than the given window,
 // ordered by staleness.  Used by the optional unattended import scanner
@@ -722,7 +910,12 @@ func (s *Store) ListUnscannedComputeNodes(ctx context.Context, olderThan time.Ti
 		  AND node.desired_control_mode='managed'
 		  AND NOT EXISTS (
 		    SELECT 1 FROM account_import_batches batch
-		    WHERE batch.node_id=node.id AND batch.state='review' AND batch.scanned_at>$2
+		    WHERE batch.node_id=node.id AND batch.state IN ('review','resolved') AND batch.scanned_at>$2
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM account_import_scan_workflows scan
+		    WHERE scan.node_id=node.id
+		      AND scan.state IN ('queued','running','retry_wait','inventory_complete')
 		  )
 		ORDER BY node.id LIMIT $1`, limit, olderThan)
 	if err != nil {
@@ -788,7 +981,7 @@ func (s *Store) GetAccountImportBatchByOperation(
 func validateAccountImportBatch(p CreateAccountImportBatchParams) error {
 	if p.ID == "" || p.OperationID == "" || p.NodeID <= 0 || len(p.InventoryDigest) != 32 ||
 		(p.Source != "adapter" && p.Source != "directory_fallback" && p.Source != "mixed") ||
-		p.CreatedByAdminID <= 0 || len(p.Candidates) > maxAccountImportCandidates {
+		p.CreatedByAdminID < 0 || len(p.Candidates) > maxAccountImportCandidates {
 		return ErrInvalidAccountImport
 	}
 	seen := make(map[string]struct{}, len(p.Candidates))

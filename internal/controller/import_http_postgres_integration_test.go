@@ -148,6 +148,7 @@ func TestControllerAccountImportScanAndPasswordClaim(t *testing.T) {
 	cfg.StaticDir = t.TempDir()
 	cfg.Relay.Listen = ""
 	server := New(cfg, st, secretKey)
+	go server.importScanReconciler(ctx)
 	httpServer := httptest.NewServer(server.Handler())
 	t.Cleanup(httpServer.Close)
 	cfg.PublicURL = httpServer.URL
@@ -174,11 +175,20 @@ func TestControllerAccountImportScanAndPasswordClaim(t *testing.T) {
 	scanURL := fmt.Sprintf("%s/api/admin/nodes/%d/scan-existing", httpServer.URL, importNode.ID)
 	status, headers, body := controllerHTTPRequest(t, adminClient, http.MethodPost, scanURL,
 		map[string]string{"operation_id": scanOperation}, true)
-	if status != http.StatusOK || !stringsContainNoStore(headers.Get("Cache-Control")) {
+	if status != http.StatusAccepted || !stringsContainNoStore(headers.Get("Cache-Control")) {
 		t.Fatalf("scan existing accounts: status=%d cache=%q body=%s", status, headers.Get("Cache-Control"), body)
 	}
 	if err := <-scanResult; err != nil {
 		t.Fatal(err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for status != http.StatusOK && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		status, headers, body = controllerHTTPRequest(t, adminClient, http.MethodPost, scanURL,
+			map[string]string{"operation_id": scanOperation}, true)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("durable scan did not finish: status=%d body=%s", status, body)
 	}
 	if bytes.Contains(body, []byte(psk)) || bytes.Contains(body, []byte("discord-oauth-match")) ||
 		bytes.Contains(body, []byte("linuxdo-split-match")) {
@@ -205,6 +215,29 @@ func TestControllerAccountImportScanAndPasswordClaim(t *testing.T) {
 		if want := wantStates[candidate.LocalHandle]; want == "" || candidate.ResolutionState != want {
 			t.Fatalf("candidate %q state=%q, want %q", candidate.LocalHandle, candidate.ResolutionState, want)
 		}
+	}
+	// The same Discord identity already had independent data on sourceNode.
+	// It is one global account, but both pre-existing directories are frozen as
+	// conflict sources instead of mislabelling the second as an overwriteable
+	// hot standby.
+	if _, err := st.ReconcileProtectionStates(ctx, time.Now().UTC(), time.Minute); err != nil {
+		t.Fatalf("reconcile imported multi-node Discord identity: %v", err)
+	}
+	var globalStatus, legacyStatus string
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT global_user.status,legacy.status
+		FROM global_users global_user JOIN users legacy ON legacy.id=global_user.legacy_user_id
+		WHERE global_user.id=$1`, oauthUser.GlobalID).Scan(&globalStatus, &legacyStatus); err != nil ||
+		globalStatus != "conflict" || legacyStatus != "conflict" {
+		t.Fatalf("multi-node Discord identity status global=%q legacy=%q err=%v", globalStatus, legacyStatus, err)
+	}
+	var conflictSources int
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT count(*) FROM replica_conflict_sources source
+		JOIN replica_conflicts conflict ON conflict.id=source.conflict_id
+		WHERE conflict.user_id=$1 AND source.local_handle IN ($2,$3)`,
+		oauthUser.GlobalID, oauthUser.Username, "node-oauth-match").Scan(&conflictSources); err != nil || conflictSources != 2 {
+		t.Fatalf("multi-node Discord conflict sources=%d err=%v", conflictSources, err)
 	}
 
 	// The durable operation result is returned without dispatching another

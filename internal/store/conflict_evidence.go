@@ -61,7 +61,8 @@ func (s *Store) ListConflictEvidenceTasks(ctx context.Context, limit int, now ti
 		now = time.Now().UTC()
 	}
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT conflict.id::text,source.evidence_id::text,conflict.user_id,legacy.username,
+		SELECT conflict.id::text,source.evidence_id::text,conflict.user_id,
+		  COALESCE(source.local_handle,legacy.username),
 		  source.node_id,source.node_role,source.source_kind,source.snapshot_id::text,
 		  source.manifest_sha256,source.evidence_attempt
 		FROM replica_conflict_sources source

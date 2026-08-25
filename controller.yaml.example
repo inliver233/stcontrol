@@ -73,6 +73,17 @@ admin:
   username: admin
   password_env: CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD
 
+# 未完成扫描无论此开关都会续跑；此开关只控制是否定期创建新扫描。
+import_scan:
+  enabled: false
+  interval_sec: 21600
+  max_nodes_per_run: 1
+
+# 仅逐台更新空闲且已支持自更新的 Agent；首次升级到 0.4.0 仍需安装器引导。
+agent_auto_update:
+  enabled: false
+  interval_sec: 60
+
 # AI 监管层默认只在后台生成脱敏建议，不参与登录、备份等关键请求路径。
 ai_supervisor:
   enabled: false

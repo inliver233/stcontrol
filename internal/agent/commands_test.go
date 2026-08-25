@@ -345,7 +345,8 @@ func TestScanExistingUsersUsesAdapterAndRedactsOAuthSubject(t *testing.T) {
 	}))
 	defer server.Close()
 	a, err := New(&config.AgentConfig{
-		TavernURL: server.URL, AgentPSK: "agent-secret", NodeID: 12, DataDir: t.TempDir(),
+		TavernURL: server.URL, AgentPSK: "agent-secret", TavernAdapterPSK: "adapter-secret",
+		NodeID: 12, DataDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -647,6 +648,35 @@ func TestOAuthIdentityCommandRejectsMalformedOrStoragePayload(t *testing.T) {
 				t.Fatalf("succeeded=%v code=%q result=%s", succeeded, summary.Code, result)
 			}
 		})
+	}
+}
+
+func TestOAuthIdentityCommandPreservesDeterministicAdapterConflict(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "oauth_identity_subject_conflict", "code": "oauth_identity_subject_conflict",
+		})
+	}))
+	defer server.Close()
+	a, err := New(&config.AgentConfig{
+		Role: "compute", TavernURL: server.URL, AgentPSK: "agent-secret", NodeID: 12, DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := encryptedTestCommand(t, a.Cfg.AgentPSK, "set_oauth_identity", []byte(`{
+		"handle":"alice","provider":"discord","subject":"stable-subject","version":9
+	}`))
+	command.OperationID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	succeeded, raw := a.executeCommand(context.Background(), command)
+	var result safeCommandResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if succeeded || result.Code != "oauth_identity_subject_conflict" {
+		t.Fatalf("succeeded=%t result=%s", succeeded, raw)
 	}
 }
 

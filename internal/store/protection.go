@@ -280,6 +280,7 @@ func (s *Store) reconcileProtectionStatesOnce(
 		    AND conflict.sources_captured_at IS NULL
 		), source_facts AS (
 		  SELECT conflict.id AS conflict_id,copy.node_id,node.name AS node_name,node.role AS node_role,
+		    account.local_handle,
 		    snapshot.id AS snapshot_id,copy.replica_kind AS source_kind,copy.state AS replica_state,
 		    copy.is_authoritative,snapshot.manifest_sha256,snapshot.file_count,snapshot.total_bytes,
 		    copy.published_at,legacy.data_version AS legacy_data_version,
@@ -292,6 +293,8 @@ func (s *Store) reconcileProtectionStatesOnce(
 		      AND snapshot.state='immutable'
 		  LEFT JOIN user_replicas legacy
 		    ON legacy.user_id=conflict.legacy_user_id AND legacy.node_id=copy.node_id
+		  LEFT JOIN node_accounts account
+		    ON account.user_id=conflict.user_id AND account.node_id=copy.node_id
 		  WHERE copy.state='conflict' OR copy.is_authoritative
 		    OR EXISTS (
 		      SELECT 1 FROM user_replicas marked
@@ -299,7 +302,7 @@ func (s *Store) reconcileProtectionStatesOnce(
 		        AND marked.state='conflict'
 		    )
 		  UNION ALL
-		  SELECT conflict.id,legacy.node_id,node.name,node.role,NULL::uuid,
+		  SELECT conflict.id,legacy.node_id,node.name,node.role,account.local_handle,NULL::uuid,
 		    CASE legacy.kind WHEN 'home' THEN 'active'
 		      WHEN 'archive' THEN 'archive' WHEN 'hot_standby' THEN 'hot_standby'
 		      ELSE 'unknown' END,
@@ -308,6 +311,8 @@ func (s *Store) reconcileProtectionStatesOnce(
 		  FROM open_conflicts conflict
 		  JOIN user_replicas legacy ON legacy.user_id=conflict.legacy_user_id
 		  JOIN nodes node ON node.id=legacy.node_id
+		  LEFT JOIN node_accounts account
+		    ON account.user_id=conflict.user_id AND account.node_id=legacy.node_id
 		  WHERE legacy.state='conflict' OR legacy.node_id=conflict.home_node_id
 		), ranked AS (
 		  SELECT source_facts.*,
@@ -317,11 +322,11 @@ func (s *Store) reconcileProtectionStatesOnce(
 		  FROM source_facts
 		)
 		INSERT INTO replica_conflict_sources (
-		  conflict_id,node_id,node_name,node_role,snapshot_id,source_kind,replica_state,
+		  conflict_id,node_id,node_name,node_role,local_handle,snapshot_id,source_kind,replica_state,
 		  is_authoritative,manifest_sha256,file_count,total_bytes,published_at,
 		  legacy_data_version,legacy_checksum,captured_at,evidence_id
 		)
-		SELECT conflict_id,node_id,node_name,node_role,snapshot_id,source_kind,replica_state,
+		SELECT conflict_id,node_id,node_name,node_role,local_handle,snapshot_id,source_kind,replica_state,
 		  is_authoritative,manifest_sha256,file_count,total_bytes,published_at,
 		  legacy_data_version,legacy_checksum,captured_at,gen_random_uuid()
 		FROM ranked WHERE source_rank=1

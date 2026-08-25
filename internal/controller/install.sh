@@ -109,6 +109,11 @@ if [[ "${ACTUAL_SHA256,,}" != "${BIN_SHA256,,}" ]]; then
   exit 1
 fi
 echo "==> SHA-256 校验通过: $ACTUAL_SHA256"
+chmod 0755 "$TMP_BIN"
+if ! "$TMP_BIN" --version >/dev/null 2>&1; then
+  echo "Agent 二进制自检失败"
+  exit 1
+fi
 
 if sudo test -f "$BIN_PATH"; then
   HAD_PREVIOUS=true
@@ -182,6 +187,13 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable stcontrol-agent
 sudo systemctl restart stcontrol-agent
+for _ in {1..10}; do
+  sudo systemctl is-active --quiet stcontrol-agent || {
+    echo "Agent 服务启动后未保持 active，触发回滚"
+    exit 1
+  }
+  sleep 1
+done
 ROLLBACK_ARMED=false
 sudo rm -f "$BACKUP_PATH"
 

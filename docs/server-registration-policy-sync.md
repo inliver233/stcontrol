@@ -14,7 +14,7 @@ Controller 管理台的“注册总控”是最高优先级开关：
 
 ## 版本要求
 
-- stcontrol Controller/Agent：`server` 分支，Agent `0.3.0` 或更新版本。
+- stcontrol Controller/Agent：`server` 分支，Agent `0.4.0` 或更新版本。
 - SillyTavern Online：`server` 分支，适配器状态版本 9，健康能力包含 `registration_policy_methods`。
 - 数据库迁移 `0053_registration_method_policies.sql` 由新 Controller 启动时自动执行。
 
@@ -68,7 +68,7 @@ registration:
 
 更新后等待两个心跳周期，然后在管理台节点行确认：
 
-- Agent 版本为 `0.3.0`；
+- Agent 版本为 `0.4.0`；
 - 兼容状态为 `compatible`；
 - 节点策略显示 `Discord`，不显示密码/LinuxDo；
 - 点击“一键关闭注册”后注册页立即不可选该节点；

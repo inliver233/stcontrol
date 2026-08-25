@@ -259,7 +259,7 @@ func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string)
 	if execution.ErrorCode == snapshotGenerationRecovery {
 		return s.recoverSnapshotAfterControllerGeneration(ctx, execution, target)
 	}
-	if !snapshotNodeReady(source) {
+	if !snapshotSourceReady(source, execution.Trigger) {
 		return s.deferSnapshotForNodeReadiness(ctx, execution, "source_not_ready", "源节点尚未就绪")
 	}
 	if execution.ErrorCode == "source_not_ready" || execution.ErrorCode == "target_not_ready" {
@@ -368,6 +368,24 @@ func snapshotNodeReady(node *store.Node) bool {
 	return node != nil && node.ConnectivityState == "online" && node.OperationalState == "active" &&
 		node.CompatibilityState == "compatible" && node.ControlMode == "managed" &&
 		node.DesiredControlMode == "managed"
+}
+
+func snapshotSourceReady(node *store.Node, trigger string) bool {
+	if node == nil || node.ConnectivityState != "online" || node.CompatibilityState != "compatible" {
+		return false
+	}
+	switch trigger {
+	case "node_retirement", "node_retirement_storage":
+		return node.Role == "compute" &&
+			(node.OperationalState == "draining" || node.OperationalState == "retiring") &&
+			node.ControlMode == "managed" && node.DesiredControlMode == "managed"
+	case "independent_reconciliation":
+		return node.Role == "compute" && node.OperationalState == "active" &&
+			node.ControlMode == protocol.NodeModeIndependentDraining &&
+			node.DesiredControlMode == protocol.NodeModeIndependentDraining
+	default:
+		return snapshotNodeReady(node)
+	}
 }
 
 func (s *Server) deferSnapshotForNodeReadiness(

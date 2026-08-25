@@ -25,6 +25,8 @@ type encryptedCommandEnvelope struct {
 
 var errCommandResultSuperseded = errors.New("command result superseded by controller generation")
 
+const commandLeaseRenewInterval = 30 * time.Second
+
 type safeCommandResult struct {
 	OK                 bool                                `json:"ok"`
 	Code               string                              `json:"code,omitempty"`
@@ -43,6 +45,7 @@ type safeCommandResult struct {
 	ControllerBackup   *protocol.ControllerBackupReceipt   `json:"controller_backup,omitempty"`
 	UserDataFreeze     *protocol.FreezeUserDataResponse    `json:"user_data_freeze,omitempty"`
 	UserDataRelease    *protocol.ReleaseUserDataResponse   `json:"user_data_release,omitempty"`
+	AgentUpgrade       *protocol.AgentUpgradeReceipt       `json:"agent_upgrade,omitempty"`
 }
 
 // StartCommandLoop maintains the Agent-initiated control channel. It never
@@ -111,10 +114,25 @@ func (a *Agent) pollAndRunCommand(ctx context.Context) error {
 	if !a.commandAllowed(command.CommandType) {
 		return fmt.Errorf("command %q is not allowed while node is draining", command.CommandType)
 	}
+	if !a.beginCommand(command.ID) {
+		if a.waitCommandCompletion(ctx, command.ID, time.Second) && a.beginCommand(command.ID) {
+			// The prior local mutation is complete and only its result delivery
+			// overlapped this replay. Continue below and reuse the durable result.
+		} else {
+			// The Controller may re-lease a command after a temporary outage before
+			// the original local execution notices that its renewal succeeded. Keep
+			// the single local execution and merely restore its database lease.
+			return a.ackCommand(ctx, workerID, command)
+		}
+	}
+	keepRunning := false
+	defer func() {
+		if !keepRunning {
+			a.endCommand(command.ID)
+		}
+	}()
 
-	if err := a.callController(ctx, http.MethodPost, "/api/agent/commands/"+command.ID+"/ack", protocol.AckCommandRequest{
-		WorkerID: workerID, ControllerGeneration: command.ControllerGeneration,
-	}, nil); err != nil {
+	if err := a.ackCommand(ctx, workerID, command); err != nil {
 		return err
 	}
 
@@ -123,8 +141,18 @@ func (a *Agent) pollAndRunCommand(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	keepRunning = true
 	go func() {
-		defer func() { <-a.commandSlots }()
+		defer func() {
+			<-a.commandSlots
+			a.endCommand(command.ID)
+		}()
+		stopRenewal := make(chan struct{})
+		renewalDone := make(chan struct{})
+		go func() {
+			defer close(renewalDone)
+			a.renewCommandLease(ctx, stopRenewal, workerID, command, commandLeaseRenewInterval)
+		}()
 		if err := a.executeAndReportCommand(ctx, workerID, command); err != nil && ctx.Err() == nil {
 			if errors.Is(err, errCommandResultSuperseded) {
 				log.Printf("旧世代命令结果已封存，等待总控对账: command_id=%s generation=%d", command.ID, command.ControllerGeneration)
@@ -132,8 +160,89 @@ func (a *Agent) pollAndRunCommand(ctx context.Context) error {
 				log.Printf("命令结果暂未确认: %v", err)
 			}
 		}
+		close(stopRenewal)
+		<-renewalDone
 	}()
 	return nil
+}
+
+func (a *Agent) ackCommand(ctx context.Context, workerID string, command protocol.AgentCommand) error {
+	return a.callController(ctx, http.MethodPost, "/api/agent/commands/"+command.ID+"/ack", protocol.AckCommandRequest{
+		WorkerID: workerID, ControllerGeneration: command.ControllerGeneration,
+	}, nil)
+}
+
+func (a *Agent) renewCommandLease(
+	ctx context.Context,
+	stop <-chan struct{},
+	workerID string,
+	command protocol.AgentCommand,
+	interval time.Duration,
+) {
+	if interval <= 0 {
+		interval = commandLeaseRenewInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-stop:
+			return
+		case <-ticker.C:
+			renewCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := a.ackCommand(renewCtx, workerID, command)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				log.Printf("命令租约续期暂不可用: command_id=%s: %v", command.ID, err)
+			}
+		}
+	}
+}
+
+func (a *Agent) beginCommand(id string) bool {
+	a.commandMu.Lock()
+	defer a.commandMu.Unlock()
+	if a.runningCommands == nil {
+		a.runningCommands = make(map[string]struct{})
+	}
+	if _, exists := a.runningCommands[id]; exists {
+		return false
+	}
+	a.runningCommands[id] = struct{}{}
+	return true
+}
+
+func (a *Agent) endCommand(id string) {
+	a.commandMu.Lock()
+	delete(a.runningCommands, id)
+	a.commandMu.Unlock()
+}
+
+func (a *Agent) waitCommandCompletion(ctx context.Context, id string, timeout time.Duration) bool {
+	if timeout <= 0 {
+		return false
+	}
+	deadline := time.NewTimer(timeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer deadline.Stop()
+	defer ticker.Stop()
+	for {
+		a.commandMu.Lock()
+		_, running := a.runningCommands[id]
+		a.commandMu.Unlock()
+		if !running {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false
+		case <-ticker.C:
+		}
+	}
 }
 
 func (a *Agent) executeAndReportCommand(ctx context.Context, workerID string, command protocol.AgentCommand) error {
@@ -198,6 +307,16 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
 	}
 	switch command.CommandType {
+	case "stage_agent_upgrade":
+		var payload protocol.AgentUpgradeRequest
+		if err := json.Unmarshal(plaintext, &payload); err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
+		}
+		receipt, err := a.prepareAndScheduleAgentUpgrade(ctx, command.ID, payload)
+		if err != nil {
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "agent_upgrade_failed"})
+		}
+		return true, marshalSafeResult(safeCommandResult{OK: true, AgentUpgrade: &receipt})
 	case "scan_existing_page":
 		var payload protocol.ScanExistingPageRequest
 		if err := json.Unmarshal(plaintext, &payload); err != nil || !validInventoryPageRequest(payload) {
@@ -285,8 +404,13 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "invalid_command_payload"})
 		}
 		payload.OperationID = command.OperationID
-		if err := a.setOAuthIdentity(ctx, &payload); err != nil {
-			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "oauth_identity_update_failed"})
+		if adapterCode, err := a.setOAuthIdentity(ctx, &payload); err != nil {
+			switch adapterCode {
+			case "oauth_identity_subject_conflict", "oauth_identity_version_conflict", "oauth_identity_version_rollback":
+				return false, marshalSafeResult(safeCommandResult{OK: false, Code: adapterCode})
+			default:
+				return false, marshalSafeResult(safeCommandResult{OK: false, Code: "oauth_identity_update_failed"})
+			}
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true})
 	case "verify_node_admin":

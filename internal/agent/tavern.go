@@ -200,17 +200,23 @@ func (a *Agent) setPassword(ctx context.Context, req *protocol.SetPasswordReques
 	return nil
 }
 
-func (a *Agent) setOAuthIdentity(ctx context.Context, req *protocol.SetOAuthIdentityRequest) error {
+func (a *Agent) setOAuthIdentity(ctx context.Context, req *protocol.SetOAuthIdentityRequest) (string, error) {
 	var out struct {
-		OK bool `json:"ok"`
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+		Code  string `json:"code"`
 	}
 	if err := a.callTavernAdapter(ctx, "/api/stcontrol/internal/users/oauth", req, &out); err != nil {
-		return err
+		code := out.Code
+		if code == "" {
+			code = out.Error
+		}
+		return code, err
 	}
 	if !out.OK {
-		return fmt.Errorf("node adapter rejected oauth identity update")
+		return "", fmt.Errorf("node adapter rejected oauth identity update")
 	}
-	return nil
+	return "", nil
 }
 
 func (a *Agent) freezeUserData(

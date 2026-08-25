@@ -19,8 +19,12 @@ import (
 
 const (
 	agentCommandLeaseTTL = 45 * time.Second
-	agentCommandRunTTL   = 9 * time.Hour
-	agentCommandTTL      = 10 * time.Minute
+	// Running Agents renew this short lease. A crashed/restarted Agent is
+	// therefore reclaimed promptly instead of leaving backup work wedged for
+	// the former nine-hour run window.
+	agentCommandRunTTL       = 2 * time.Minute
+	agentCommandLegacyRunTTL = 9 * time.Hour
+	agentCommandTTL          = 10 * time.Minute
 )
 
 type encryptedCommandEnvelope struct {
@@ -46,6 +50,7 @@ type agentCommandSummary struct {
 	ControllerBackup   *protocol.ControllerBackupReceipt   `json:"controller_backup,omitempty"`
 	UserDataFreeze     *protocol.FreezeUserDataResponse    `json:"user_data_freeze,omitempty"`
 	UserDataRelease    *protocol.ReleaseUserDataResponse   `json:"user_data_release,omitempty"`
+	AgentUpgrade       *protocol.AgentUpgradeReceipt       `json:"agent_upgrade,omitempty"`
 }
 
 type agentCommandError struct {
@@ -89,6 +94,16 @@ func (s *Server) handleAgentLeaseCommand(w http.ResponseWriter, r *http.Request)
 	if req.HighestGeneration > generation {
 		protocol.WriteError(w, http.StatusConflict, "总控世代低于节点已确认世代")
 		return
+	}
+	if node.AgentVersion.Valid && compareControllerAgentVersions(
+		node.AgentVersion.String, minimumSelfUpdatingAgentVersion,
+	) >= 0 {
+		if err := s.Store.ClampAgentCommandRunLeases(
+			r.Context(), node.ID, time.Now().UTC(), agentCommandRunTTL,
+		); err != nil {
+			protocol.WriteError(w, http.StatusServiceUnavailable, "命令租约恢复暂不可用")
+			return
+		}
 	}
 
 	deadline := time.NewTimer(20 * time.Second)
@@ -137,9 +152,15 @@ func (s *Server) handleAgentAckCommand(w http.ResponseWriter, r *http.Request) {
 		protocol.WriteError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
+	runTTL := agentCommandLegacyRunTTL
+	if node.AgentVersion.Valid && compareControllerAgentVersions(
+		node.AgentVersion.String, minimumSelfUpdatingAgentVersion,
+	) >= 0 {
+		runTTL = agentCommandRunTTL
+	}
 	ok, err := s.Store.AckAgentCommand(
 		r.Context(), chi.URLParam(r, "id"), node.ID, req.WorkerID,
-		req.ControllerGeneration, time.Now().UTC(), agentCommandRunTTL,
+		req.ControllerGeneration, time.Now().UTC(), runTTL,
 	)
 	if err != nil {
 		protocol.WriteError(w, http.StatusServiceUnavailable, "命令确认失败")

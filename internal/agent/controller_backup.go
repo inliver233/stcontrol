@@ -175,4 +175,3 @@ func (a *Agent) ReceiveControllerBackup(
 	}
 	return receipt, nil
 }
-

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -29,7 +30,32 @@ func main() {
 	auditOperation := flag.String("audit-operation", "", "按 operation_id 精确筛选")
 	auditSince := flag.String("audit-since", "", "只返回此 RFC3339 时间之后的事件")
 	auditLimit := flag.Int("audit-limit", 100, "最多返回最近 1..1000 条审计事件")
+	showVersion := flag.Bool("version", false, "输出 Agent 版本后退出")
+	applyUpgrade := flag.Bool("apply-agent-update", false, "内部升级应用模式")
+	upgradeTarget := flag.String("upgrade-target", "", "内部升级目标")
+	upgradeStaged := flag.String("upgrade-staged", "", "内部升级暂存文件")
+	upgradeUpdater := flag.String("upgrade-updater", "", "内部升级执行器")
+	upgradeMetadata := flag.String("upgrade-metadata", "", "内部升级元数据")
+	upgradeSHA256 := flag.String("upgrade-sha256", "", "内部升级校验和")
+	upgradeVersion := flag.String("upgrade-version", "", "内部升级版本")
+	upgradeService := flag.String("upgrade-service", "", "内部升级服务")
+	upgradeDelay := flag.Duration("upgrade-delay", 0, "内部升级延迟")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(agent.Version)
+		return
+	}
+	if *applyUpgrade {
+		if err := agent.ApplyPreparedAgentUpgrade(agent.ApplyAgentUpgradeParams{
+			TargetPath: *upgradeTarget, StagedPath: *upgradeStaged,
+			UpdaterPath: *upgradeUpdater, MetadataPath: *upgradeMetadata,
+			ExpectedSHA: *upgradeSHA256, TargetVersion: *upgradeVersion,
+			Service: *upgradeService, Delay: *upgradeDelay,
+		}); err != nil {
+			log.Fatalf("应用 Agent 更新失败: %v", err)
+		}
+		return
+	}
 
 	cfg := config.DefaultAgent()
 	if err := config.Load(*cfgPath, cfg); err != nil {

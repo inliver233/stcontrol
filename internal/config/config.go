@@ -29,6 +29,7 @@ type ControllerConfig struct {
 	Relay            RelayConfig                    `yaml:"relay"`
 	ControllerBackup ControllerDisasterBackupPolicy `yaml:"controller_backup"`
 	ImportScan       ImportScanPolicy               `yaml:"import_scan"`
+	AgentAutoUpdate  AgentAutoUpdatePolicy          `yaml:"agent_auto_update"`
 	AISupervisor     AISupervisorPolicy             `yaml:"ai_supervisor"`
 }
 
@@ -78,6 +79,14 @@ type ImportScanPolicy struct {
 	Enabled        bool `yaml:"enabled"`
 	IntervalSec    int  `yaml:"interval_sec"`      // default 6h
 	MaxNodesPerRun int  `yaml:"max_nodes_per_run"` // default 2
+}
+
+// AgentAutoUpdatePolicy enables one-at-a-time, idle-only Agent upgrades. An
+// Agent never accepts a URL or shell from the Controller; it downloads the
+// exact architecture artifact from controller_url and verifies its sidecar.
+type AgentAutoUpdatePolicy struct {
+	Enabled     bool `yaml:"enabled"`
+	IntervalSec int  `yaml:"interval_sec"` // default 60; one eligible node per pass
 }
 
 // NodePolicy 节点策略。
@@ -229,6 +238,7 @@ func DefaultController() *ControllerConfig {
 		ImportScan: ImportScanPolicy{
 			Enabled: false, IntervalSec: 6 * 3600, MaxNodesPerRun: 2,
 		},
+		AgentAutoUpdate: AgentAutoUpdatePolicy{Enabled: false, IntervalSec: 60},
 		AISupervisor: AISupervisorPolicy{
 			Enabled: false, Mode: "shadow", Provider: "openai_compatible",
 			APIKeyEnv: "STCONTROL_AI_API_KEY", TimeoutMS: 5000, InspectEverySec: 1800,

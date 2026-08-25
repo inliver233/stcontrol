@@ -96,6 +96,27 @@ func TestSnapshotReplicaOriginSeparatesAutomaticStorageRepair(t *testing.T) {
 	}
 }
 
+func TestSnapshotSourceReadinessAllowsOnlyPurposeScopedDrainingModes(t *testing.T) {
+	t.Parallel()
+	node := &store.Node{
+		Role: "compute", ConnectivityState: "online", OperationalState: "active",
+		CompatibilityState: "compatible", ControlMode: "managed", DesiredControlMode: "managed",
+	}
+	if !snapshotSourceReady(node, "offline") {
+		t.Fatal("ordinary managed snapshot source was rejected")
+	}
+	node.OperationalState = "draining"
+	if !snapshotSourceReady(node, "node_retirement") || snapshotSourceReady(node, "offline") {
+		t.Fatal("retirement draining source was not purpose fenced")
+	}
+	node.OperationalState = "active"
+	node.ControlMode = protocol.NodeModeIndependentDraining
+	node.DesiredControlMode = protocol.NodeModeIndependentDraining
+	if !snapshotSourceReady(node, "independent_reconciliation") || snapshotSourceReady(node, "offline") {
+		t.Fatal("independent-draining source was not purpose fenced")
+	}
+}
+
 func TestChooseStorageRepairTargetUsesHealthyPureStorage(t *testing.T) {
 	t.Parallel()
 	nodes := []*store.Node{

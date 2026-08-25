@@ -493,7 +493,7 @@ func (s *Server) transferConflictResolutionSource(
 	result, err := s.runAgentCommandWithOperation(ctx, sourceNode, "start_conflict_evidence_transfer",
 		protocol.StartConflictEvidenceTransferRequest{
 			ConflictID: execution.ConflictID, EvidenceID: source.EvidenceID,
-			GlobalUserID: execution.GlobalUserID, Handle: execution.Handle,
+			GlobalUserID: execution.GlobalUserID, Handle: source.LocalHandle,
 			TargetNodeID: execution.BaseNodeID, TargetTransferURL: base.TransferURL,
 			TransferCapability: capability, CapabilityExpires: source.CapabilityExpiry,
 		}, deriveWorkflowOperationID(execution.WorkflowID, "transfer-evidence:"+source.CapabilityID), 55*time.Minute)

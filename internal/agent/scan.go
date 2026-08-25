@@ -151,7 +151,7 @@ func (a *Agent) scanExistingUsersFromAdapterPage(
 			identities = append(identities, protocol.ScanExistingIdentity{
 				Provider: identity.Provider,
 				Fingerprint: controlcrypto.AgentInventoryFingerprint(
-					a.adapterPSK(), "oauth-subject", identity.Provider, identity.Subject,
+					a.Cfg.AgentPSK, "oauth-subject", identity.Provider, identity.Subject,
 				),
 			})
 		}

@@ -24,13 +24,18 @@ import (
 	"stcontrol/internal/store"
 )
 
-const relayContentType = "application/vnd.stcontrol.relay.v1"
+const (
+	relayContentType      = "application/vnd.stcontrol.relay.v1"
+	relayDownloadLeaseTTL = 2 * time.Minute
+)
 
 type relayTransferStore interface {
 	ClaimRelayUpload(context.Context, string, []byte, int64, int64, []byte, time.Time, time.Duration) (*store.RelayTransfer, error)
 	CompleteRelayUpload(context.Context, string, []byte, []byte, int64, string, time.Time) error
 	ReleaseRelayUpload(context.Context, string, []byte, time.Time) error
 	ClaimRelayDownload(context.Context, string, []byte, time.Time, time.Duration) (*store.RelayTransfer, error)
+	ClampRelayDownloadLease(context.Context, string, []byte, time.Time, time.Duration) error
+	RenewRelayDownload(context.Context, string, []byte, time.Time, time.Duration) (bool, error)
 	ReleaseRelayDownload(context.Context, string, []byte, time.Time) error
 	CompleteRelayDownload(context.Context, string, []byte, time.Time) (string, error)
 	ExpireRelayTransfers(context.Context, time.Time, int) ([]store.ExpiredRelayTransfer, error)
@@ -85,6 +90,7 @@ func (relay *relayDataPlane) Handler() http.Handler {
 	router := chi.NewRouter()
 	router.Put("/relay/v1/transfers/{id}", relay.handleUpload)
 	router.Get("/relay/v1/transfers/{id}", relay.handleDownload)
+	router.Post("/relay/v1/transfers/{id}/renew", relay.handleRenewDownload)
 	router.Post("/relay/v1/transfers/{id}/complete", relay.handleComplete)
 	return router
 }
@@ -194,7 +200,18 @@ func (relay *relayDataPlane) handleDownload(w http.ResponseWriter, r *http.Reque
 		protocol.WriteError(w, http.StatusForbidden, "中转下载授权无效")
 		return
 	}
-	transfer, err := relay.store.ClaimRelayDownload(r.Context(), id, tokenHash, time.Now().UTC(), relay.retention)
+	now := time.Now().UTC()
+	leaseTTL := relay.retention
+	if compareControllerAgentVersions(
+		r.Header.Get("X-STControl-Agent-Version"), minimumSelfUpdatingAgentVersion,
+	) >= 0 {
+		leaseTTL = relayDownloadLeaseTTL
+		if err := relay.store.ClampRelayDownloadLease(r.Context(), id, tokenHash, now, leaseTTL); err != nil {
+			protocol.WriteError(w, http.StatusServiceUnavailable, "中转下载恢复暂不可用")
+			return
+		}
+	}
+	transfer, err := relay.store.ClaimRelayDownload(r.Context(), id, tokenHash, now, leaseTTL)
 	if err != nil || transfer == nil || !transfer.StoragePath.Valid || !transfer.CiphertextBytes.Valid ||
 		!transfer.PlaintextBytes.Valid || len(transfer.ArchiveSHA256) != sha256.Size ||
 		len(transfer.CiphertextSHA256) != sha256.Size {
@@ -233,6 +250,28 @@ func (relay *relayDataPlane) handleDownload(w http.ResponseWriter, r *http.Reque
 	if _, err := io.Copy(w, file); err != nil {
 		_ = relay.store.ReleaseRelayDownload(context.Background(), id, tokenHash, time.Now().UTC())
 	}
+}
+
+func (relay *relayDataPlane) handleRenewDownload(w http.ResponseWriter, r *http.Request) {
+	relayHeaders(w)
+	id := chi.URLParam(r, "id")
+	tokenHash, ok := relayBearerHash(r)
+	if !ok || !isUUID(id) {
+		protocol.WriteError(w, http.StatusForbidden, "中转续期授权无效")
+		return
+	}
+	renewed, err := relay.store.RenewRelayDownload(
+		r.Context(), id, tokenHash, time.Now().UTC(), relayDownloadLeaseTTL,
+	)
+	if err != nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "中转续期暂不可用")
+		return
+	}
+	if !renewed {
+		protocol.WriteError(w, http.StatusConflict, "中转下载租约已失效")
+		return
+	}
+	protocol.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (relay *relayDataPlane) handleComplete(w http.ResponseWriter, r *http.Request) {

@@ -110,6 +110,19 @@ func TestRelayDownloadLifecycleDoesNotConsumeUntilExplicitConfirmation(t *testin
 	if err != nil || transfer == nil || transfer.State != "downloading" || !transfer.StoragePath.Valid {
 		t.Fatalf("transfer=%+v err=%v", transfer, err)
 	}
+	mock.ExpectExec(`UPDATE relay_transfers relay SET download_lease_until`).WithArgs(
+		p.ID, p.DownloadTokenHash, now, now.Add(2*time.Minute),
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := st.ClampRelayDownloadLease(context.Background(), p.ID, p.DownloadTokenHash, now, 2*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectExec(`UPDATE relay_transfers relay SET download_lease_until`).WithArgs(
+		p.ID, p.DownloadTokenHash, now, now.Add(leaseTTL),
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	renewed, err := st.RenewRelayDownload(context.Background(), p.ID, p.DownloadTokenHash, now, leaseTTL)
+	if err != nil || !renewed {
+		t.Fatalf("renewed=%t err=%v", renewed, err)
+	}
 	mock.ExpectExec(`UPDATE relay_transfers relay SET state='stored'`).WithArgs(p.ID, p.DownloadTokenHash, now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := st.ReleaseRelayDownload(context.Background(), p.ID, p.DownloadTokenHash, now); err != nil {

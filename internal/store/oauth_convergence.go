@@ -188,6 +188,54 @@ func (s *Store) MarkOAuthIdentitySyncError(
 	return err
 }
 
+// FreezeOAuthIdentitySyncConflict turns a deterministic adapter identity
+// conflict into a user-visible replica conflict instead of retrying the same
+// impossible overwrite forever. The exact pending intent is consumed in the
+// same transaction as the account/data freeze.
+func (s *Store) FreezeOAuthIdentitySyncConflict(
+	ctx context.Context,
+	sync PendingOAuthIdentitySync,
+	now time.Time,
+) error {
+	if err := validatePendingOAuthIdentitySync(sync); err != nil {
+		return err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var legacyUserID int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT legacy_user_id FROM global_users
+		WHERE id=$1 AND status<>'deleted' FOR UPDATE`, sync.GlobalUserID).Scan(&legacyUserID)
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE node_account_oauth_syncs SET state='completed',attempt=attempt+1,updated_at=$8
+		WHERE global_user_id=$1 AND node_id=$2 AND provider=$3 AND provider_subject=$4
+		  AND local_handle=$5 AND account_version=$6 AND desired_present=$7 AND state='pending'`,
+		sync.GlobalUserID, sync.NodeID, sync.Provider, sync.Subject, sync.LocalHandle,
+		sync.Version, sync.DesiredPresent, now)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("oauth identity sync intent changed")
+	}
+	if err := freezeImportedReplicaConflict(ctx, tx, sync.GlobalUserID, legacyUserID, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func validatePendingOAuthIdentitySync(sync PendingOAuthIdentitySync) error {
 	if sync.GlobalUserID <= 0 || sync.NodeID <= 0 || sync.LocalHandle == "" ||
 		!validOAuthProvider(sync.Provider) || sync.Subject == "" || sync.Version <= 0 {

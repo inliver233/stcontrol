@@ -21,6 +21,7 @@ func storageRepairExecutionParams(now time.Time) CreateStorageRepairExecutionPar
 		CapabilityHash:    make([]byte, 32),
 		CapabilityExpires: now.Add(8 * time.Hour),
 		LeaseTTL:          8 * time.Hour,
+		OfflineGrace:      12 * time.Minute,
 		MaxAttempts:       3,
 		Now:               now,
 	}
@@ -51,10 +52,10 @@ func TestScheduleStorageRepairTasksPersistsOneFencedIntent(t *testing.T) {
 	mock.ExpectExec(`(?s)UPDATE storage_repair_tasks task SET state='cancelled'.*task.state IN \('pending','retry_wait'\).*JOIN user_replicas legacy_copy.*copy.replica_kind='archive'.*copy.verified_at IS NOT NULL`).
 		WithArgs(now).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`(?s)INSERT INTO storage_repair_tasks.*home_replica.size_bytes.*controller_rebuild_operations rebuild.*rebuild.state NOT IN \('succeeded','ready_with_deferred'\).*JOIN user_replicas archive_legacy.*copy.verified_at IS NOT NULL.*workflow.workflow_type IN \('snapshot','restore','conflict_resolution'\).*FROM replica_conflicts conflict.*FROM user_data_faults fault.*ON CONFLICT DO NOTHING`).
-		WithArgs(now, int64(1<<30), int64(64<<20)).
+		WithArgs(now, int64(1<<30), int64(64<<20), now.Add(-12*time.Minute)).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectCommit()
-	created, err := st.ScheduleStorageRepairTasks(context.Background(), now)
+	created, err := st.ScheduleStorageRepairTasks(context.Background(), now, 12*time.Minute)
 	if err != nil || created != 2 {
 		t.Fatalf("created=%d err=%v", created, err)
 	}
@@ -94,7 +95,7 @@ func TestClaimAndCreateStorageRepairAtomicallyReservesAndCreatesWorkflow(t *test
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(4)))
 	mock.ExpectQuery(`(?s)FROM user_activity_leases WHERE user_id=\$1 FOR UPDATE`).
 		WithArgs(int64(70)).
-		WillReturnRows(sqlmock.NewRows([]string{"activity_epoch", "writer_node_id", "lease_expires_at", "in_flight_reads", "in_flight_writes", "state"}))
+		WillReturnRows(sqlmock.NewRows([]string{"activity_epoch", "writer_node_id", "lease_expires_at", "in_flight_reads", "in_flight_writes", "state", "last_page_heartbeat_at", "last_request_at"}))
 	mock.ExpectQuery(`(?s)FROM nodes node.*node.role='storage'.*disk_available_bytes-COALESCE.*disk_quota_bytes-node.allocated_disk_bytes-COALESCE.*FOR UPDATE OF node SKIP LOCKED`).
 		WithArgs(int64(8), estimated, p.Now.Add(-2*time.Minute), int64(70), nil).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(9)))
@@ -149,7 +150,7 @@ func TestClaimAndCreateStorageRepairDoesNotCreateJobWithoutReservedCapacity(t *t
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(4)))
 	mock.ExpectQuery(`FROM user_activity_leases`).WithArgs(int64(70)).
-		WillReturnRows(sqlmock.NewRows([]string{"activity_epoch", "writer_node_id", "lease_expires_at", "in_flight_reads", "in_flight_writes", "state"}))
+		WillReturnRows(sqlmock.NewRows([]string{"activity_epoch", "writer_node_id", "lease_expires_at", "in_flight_reads", "in_flight_writes", "state", "last_page_heartbeat_at", "last_request_at"}))
 	mock.ExpectQuery(`FROM nodes node`).WithArgs(int64(8), int64(1<<30), p.Now.Add(-2*time.Minute), int64(70), nil).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectRollback()
@@ -172,8 +173,8 @@ func TestClaimAndCreateStorageRepairRejectsAWriterThatCameBack(t *testing.T) {
 	mock.ExpectQuery(`SELECT generation FROM controller_epochs`).
 		WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(4)))
 	mock.ExpectQuery(`FROM user_activity_leases`).WithArgs(int64(70)).
-		WillReturnRows(sqlmock.NewRows([]string{"activity_epoch", "writer_node_id", "lease_expires_at", "in_flight_reads", "in_flight_writes", "state"}).
-			AddRow(int64(9), int64(8), p.Now.Add(time.Minute), int64(0), int64(0), "active"))
+		WillReturnRows(sqlmock.NewRows([]string{"activity_epoch", "writer_node_id", "lease_expires_at", "in_flight_reads", "in_flight_writes", "state", "last_page_heartbeat_at", "last_request_at"}).
+			AddRow(int64(9), int64(8), p.Now.Add(time.Minute), int64(0), int64(0), "active", p.Now, p.Now))
 	mock.ExpectRollback()
 	execution, err := st.ClaimAndCreateStorageRepair(context.Background(), p)
 	if err != nil || execution != nil {

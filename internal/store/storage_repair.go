@@ -29,6 +29,7 @@ type CreateStorageRepairExecutionParams struct {
 	CapabilityHash    []byte
 	CapabilityExpires time.Time
 	LeaseTTL          time.Duration
+	OfflineGrace      time.Duration
 	MaxAttempts       int
 	RelayAvailable    bool
 	Now               time.Time
@@ -116,10 +117,18 @@ func (s *Store) SetStorageRepairPreferredTarget(
 // durable active intent per user. It deliberately does not pick a target: the
 // target and its byte reservation are chosen together in the serializable
 // claim/create transaction.
-func (s *Store) ScheduleStorageRepairTasks(ctx context.Context, now time.Time) (int64, error) {
+func (s *Store) ScheduleStorageRepairTasks(
+	ctx context.Context,
+	now time.Time,
+	offlineGrace time.Duration,
+) (int64, error) {
+	if offlineGrace <= 0 {
+		return 0, ErrInvalidStorageRepairExecution
+	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	offlineCutoff := now.Add(-offlineGrace)
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return 0, err
@@ -223,7 +232,8 @@ func (s *Store) ScheduleStorageRepairTasks(ctx context.Context, now time.Time) (
 		  AND NOT EXISTS (
 		    SELECT 1 FROM user_activity_leases lease WHERE lease.user_id=global_user.id
 		      AND (lease.lease_expires_at>$1 OR lease.in_flight_reads<>0 OR lease.in_flight_writes<>0
-		        OR lease.state IN ('independent','quiescing','conflict'))
+		        OR lease.state IN ('independent','quiescing','conflict')
+		        OR GREATEST(lease.last_page_heartbeat_at,lease.last_request_at)>$4)
 		  )
 		  AND NOT EXISTS (
 		    SELECT 1 FROM workflows workflow WHERE workflow.user_id=global_user.id
@@ -243,7 +253,7 @@ func (s *Store) ScheduleStorageRepairTasks(ctx context.Context, now time.Time) (
 		      AND cleanup.node_id=legacy.home_node_id
 		      AND cleanup.state IN ('pending','running','retry_wait')
 		  )
-		ON CONFLICT DO NOTHING`, now, storageRepairDefaultEstimate, storageRepairMinimumEstimate)
+		ON CONFLICT DO NOTHING`, now, storageRepairDefaultEstimate, storageRepairMinimumEstimate, offlineCutoff)
 	if err != nil {
 		return 0, fmt.Errorf("schedule storage repair tasks: %w", err)
 	}
@@ -265,7 +275,7 @@ func (s *Store) ClaimAndCreateStorageRepair(
 	if !validUUIDText(p.ExecutionID) || !validUUIDText(p.LeaseOwner) ||
 		!validUUIDText(p.WorkflowID) || !validUUIDText(p.OperationID) ||
 		!validUUIDText(p.SnapshotID) || !validUUIDText(p.CapabilityID) ||
-		len(p.CapabilityHash) != 32 || p.LeaseTTL <= 0 || p.MaxAttempts <= 0 {
+		len(p.CapabilityHash) != 32 || p.LeaseTTL <= 0 || p.OfflineGrace <= 0 || p.MaxAttempts <= 0 {
 		return nil, ErrInvalidStorageRepairExecution
 	}
 	if p.Now.IsZero() {
@@ -384,16 +394,21 @@ func (s *Store) ClaimAndCreateStorageRepair(
 	var writerNodeID, inFlightReads, inFlightWrites int64
 	var leaseExpires time.Time
 	var leaseState string
+	var lastPageHeartbeat, lastRequest sql.NullTime
 	err = tx.QueryRowContext(ctx, `
-		SELECT activity_epoch,writer_node_id,lease_expires_at,in_flight_reads,in_flight_writes,state
+		SELECT activity_epoch,writer_node_id,lease_expires_at,in_flight_reads,in_flight_writes,state,
+		  last_page_heartbeat_at,last_request_at
 		FROM user_activity_leases WHERE user_id=$1 FOR UPDATE`, out.GlobalUserID).
-		Scan(&out.ActivityEpoch, &writerNodeID, &leaseExpires, &inFlightReads, &inFlightWrites, &leaseState)
+		Scan(&out.ActivityEpoch, &writerNodeID, &leaseExpires, &inFlightReads, &inFlightWrites, &leaseState,
+			&lastPageHeartbeat, &lastRequest)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
 	if err == nil && (writerNodeID != out.SourceNodeID || leaseExpires.After(p.Now) ||
 		inFlightReads != 0 || inFlightWrites != 0 ||
-		leaseState == "independent" || leaseState == "quiescing" || leaseState == "conflict") {
+		leaseState == "independent" || leaseState == "quiescing" || leaseState == "conflict" ||
+		(lastPageHeartbeat.Valid && lastPageHeartbeat.Time.After(p.Now.Add(-p.OfflineGrace))) ||
+		(lastRequest.Valid && lastRequest.Time.After(p.Now.Add(-p.OfflineGrace)))) {
 		return nil, nil
 	}
 

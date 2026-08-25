@@ -102,6 +102,14 @@ func (fake *fakeRelayStore) ReleaseRelayDownload(context.Context, string, []byte
 	return nil
 }
 
+func (fake *fakeRelayStore) ClampRelayDownloadLease(context.Context, string, []byte, time.Time, time.Duration) error {
+	return nil
+}
+
+func (fake *fakeRelayStore) RenewRelayDownload(context.Context, string, []byte, time.Time, time.Duration) (bool, error) {
+	return true, nil
+}
+
 func (fake *fakeRelayStore) CompleteRelayDownload(context.Context, string, []byte, time.Time) (string, error) {
 	if fake.completeDownloadErr != nil {
 		return "", fake.completeDownloadErr

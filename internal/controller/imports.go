@@ -193,70 +193,30 @@ func (s *Server) handleAdminScanExisting(w http.ResponseWriter, r *http.Request)
 		protocol.WriteJSON(w, http.StatusOK, existing)
 		return
 	}
-	scanGeneration, err := s.Store.GetActiveControllerGeneration(r.Context())
-	if err != nil || scanGeneration <= 0 {
-		protocol.WriteError(w, http.StatusServiceUnavailable, "总控扫描世代暂不可用")
-		return
-	}
-	// Bind every durable page command to the administrator's stable operation
-	// ID. A large node can therefore finish one page at a time across HTTP
-	// polls, browser refreshes and Controller restarts without rescanning pages
-	// that have already been acknowledged.
-	// A Controller generation change invalidates every old Agent command. Bind
-	// the read-only scan attempt to that generation so the same browser
-	// operation can restart safely after a Controller upgrade instead of
-	// colliding with an expired page command from the previous generation.
-	scanAttemptID := deriveWorkflowOperationID(
-		req.OperationID,
-		fmt.Sprintf("account-inventory-scan-v2:g%d", scanGeneration),
-	)
-	users, progress, err := s.scanAccountInventory(r.Context(), node, scanAttemptID)
-	if err != nil {
-		if errors.Is(err, errAccountInventoryPending) {
-			progress.OperationID = req.OperationID
-			progress.Pending = true
-			protocol.WriteJSON(w, http.StatusAccepted, progress)
-			return
-		}
-		protocol.WriteError(w, http.StatusBadGateway, "扫描结果尚未确认，请使用同一操作重试")
-		return
-	}
-	batchID, err := newUUID()
-	if err != nil {
-		protocol.WriteError(w, http.StatusInternalServerError, "创建导入批次失败")
-		return
-	}
-	params, err := s.buildAccountImportBatch(
-		r.Context(), node, batchID, req.OperationID, sess.AdminID, users, time.Now().UTC(),
-	)
-	if err != nil {
-		if errors.Is(err, store.ErrInvalidAccountImport) {
-			protocol.WriteError(w, http.StatusConflict, "节点返回的账号库存无效")
-			return
-		}
-		protocol.WriteError(w, http.StatusServiceUnavailable, "账号身份匹配暂不可用")
-		return
-	}
-	imported, err := s.Store.IngestAccountImportBatch(r.Context(), params)
+	workflow, err := s.Store.CreateAccountImportScan(r.Context(), store.CreateAccountImportScanParams{
+		OperationID: req.OperationID, NodeID: node.ID, CreatedByAdminID: sess.AdminID,
+		Now: time.Now().UTC(),
+	})
 	if err != nil {
 		if errors.Is(err, store.ErrAccountImportConflict) {
-			protocol.WriteError(w, http.StatusConflict, "重复操作的扫描内容不一致")
+			protocol.WriteError(w, http.StatusConflict, "重复操作已绑定其他扫描请求")
 			return
 		}
-		protocol.WriteError(w, http.StatusServiceUnavailable, "保存导入库存失败")
+		protocol.WriteError(w, http.StatusServiceUnavailable, "创建后台扫描任务失败")
 		return
 	}
-	if imported == nil {
-		protocol.WriteError(w, http.StatusServiceUnavailable, "导入库存暂不可用")
+	if workflow == nil {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "后台扫描任务暂不可用")
 		return
 	}
-	detail, _ := json.Marshal(map[string]int{
-		"candidates":  imported.Batch.CandidateCount,
-		"auto_linked": imported.Batch.AutoLinkedCount,
-		"unresolved":  imported.Batch.UnresolvedCount,
-	})
-	_ = s.Store.Audit(r.Context(), sess.Username, "account-import-scan", node.Name, detail)
-	protocol.WriteJSON(w, http.StatusOK, imported)
+	progress := accountInventoryProgress{
+		OperationID: req.OperationID, Pending: true,
+		CompletedPages: workflow.CompletedPages, CompletedUsers: workflow.Cursor,
+	}
+	if workflow.TotalUsers.Valid {
+		progress.TotalUsers = int(workflow.TotalUsers.Int64)
+	}
+	protocol.WriteJSON(w, http.StatusAccepted, progress)
 }
 
 func (s *Server) handleAdminLatestAccountImport(w http.ResponseWriter, r *http.Request) {
@@ -397,7 +357,7 @@ func (s *Server) buildAccountImportBatch(
 	users []protocol.ScanExistingUser,
 	now time.Time,
 ) (store.CreateAccountImportBatchParams, error) {
-	if node == nil || !isUUID(batchID) || !isUUID(operationID) || adminID <= 0 ||
+	if node == nil || !isUUID(batchID) || !isUUID(operationID) || adminID < 0 ||
 		len(users) > protocol.MaxAccountInventoryUsers {
 		return store.CreateAccountImportBatchParams{}, store.ErrInvalidAccountImport
 	}

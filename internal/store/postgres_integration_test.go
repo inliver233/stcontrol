@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+
+	"stcontrol/internal/protocol"
 )
 
 const postgresIntegrationDSNEnv = "STCONTROL_TEST_POSTGRES_DSN"
@@ -122,6 +124,95 @@ func TestPostgresCriticalConcurrency(t *testing.T) {
 	t.Run("ten-thousand account inventory is durable and page bounded", func(t *testing.T) {
 		assertPostgresAccountInventoryScale(t, stores[0], nodeA)
 	})
+
+	t.Run("account inventory resumes after controller generation change", func(t *testing.T) {
+		assertPostgresAccountImportScanResume(t, stores[0], nodeA)
+	})
+}
+
+func assertPostgresAccountImportScanResume(t *testing.T, st *Store, nodeID int64) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	const (
+		operationID  = "75300000-0000-4000-8000-000000000001"
+		firstWorker  = "75300000-0000-4000-8000-000000000002"
+		secondWorker = "75300000-0000-4000-8000-000000000003"
+		revision     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+	workflow, err := st.CreateAccountImportScan(ctx, CreateAccountImportScanParams{
+		OperationID: operationID, NodeID: nodeID, Now: now,
+	})
+	if err != nil || workflow == nil {
+		t.Fatalf("create durable account scan: workflow=%+v err=%v", workflow, err)
+	}
+	claimed, err := st.ClaimAccountImportScan(ctx, operationID, firstWorker, now, time.Minute)
+	if err != nil || !claimed {
+		t.Fatalf("claim first account scan page: claimed=%v err=%v", claimed, err)
+	}
+	if err := st.AppendAccountImportScanPage(ctx, operationID, firstWorker, protocol.ScanExistingPageResult{
+		Users:  []protocol.ScanExistingUser{{LocalUserID: "resume-local-1", Handle: "resume-user-1"}},
+		Cursor: 0, NextCursor: 1, TotalUsers: 2, InventoryRevision: revision, HasMore: true,
+	}, now.Add(time.Second)); err != nil {
+		t.Fatalf("append first durable account scan page: %v", err)
+	}
+
+	var oldGeneration int64
+	if err := st.DB.QueryRowContext(ctx,
+		`SELECT generation FROM controller_epochs WHERE state='active'`).Scan(&oldGeneration); err != nil {
+		t.Fatalf("read durable scan generation: %v", err)
+	}
+	promotedAt := now.Add(2 * time.Second)
+	tx, err := st.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin controller promotion during durable account scan: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE controller_epochs SET state='revoked',revoked_at=$1 WHERE state='active'`,
+		promotedAt); err != nil {
+		t.Fatalf("revoke controller during durable account scan: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO controller_epochs (
+		  generation,operation_id,controller_id,source,state,signing_key_version,activated_at
+		) VALUES ($2,'75300000-0000-4000-8000-000000000004',
+		  '75300000-0000-4000-8000-000000000005','import-scan-resume-test','active',2,$1)`,
+		promotedAt, oldGeneration+1); err != nil {
+		t.Fatalf("promote controller during durable account scan: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit controller promotion during durable account scan: %v", err)
+	}
+	if err := st.AdoptAccountImportScans(ctx, promotedAt.Add(time.Second)); err != nil {
+		t.Fatalf("adopt durable account scan: %v", err)
+	}
+	workflow, err = st.GetAccountImportScan(ctx, operationID)
+	if err != nil || workflow == nil || workflow.ControllerGeneration != oldGeneration+1 ||
+		workflow.Cursor != 1 || workflow.CompletedPages != 1 || workflow.State != AccountImportScanQueued {
+		t.Fatalf("adopted durable scan lost progress: workflow=%+v err=%v", workflow, err)
+	}
+	claimed, err = st.ClaimAccountImportScan(
+		ctx, operationID, secondWorker, promotedAt.Add(time.Second), time.Minute,
+	)
+	if err != nil || !claimed {
+		t.Fatalf("claim resumed account scan page: claimed=%v err=%v", claimed, err)
+	}
+	if err := st.AppendAccountImportScanPage(ctx, operationID, secondWorker, protocol.ScanExistingPageResult{
+		Users:  []protocol.ScanExistingUser{{LocalUserID: "resume-local-2", Handle: "resume-user-2"}},
+		Cursor: 1, TotalUsers: 2, InventoryRevision: revision, HasMore: false,
+	}, promotedAt.Add(2*time.Second)); err != nil {
+		t.Fatalf("append resumed durable account scan page: %v", err)
+	}
+	workflow, err = st.GetAccountImportScan(ctx, operationID)
+	var users []protocol.ScanExistingUser
+	if workflow != nil {
+		err = errors.Join(err, json.Unmarshal(workflow.InventoryUsers, &users))
+	}
+	if err != nil || workflow == nil || workflow.State != AccountImportScanInventoryComplete ||
+		workflow.Cursor != 2 || workflow.CompletedPages != 2 || len(users) != 2 {
+		t.Fatalf("resumed durable scan result: workflow=%+v users=%+v err=%v", workflow, users, err)
+	}
 }
 
 func assertPostgresAgentCommandTerminalRequeue(

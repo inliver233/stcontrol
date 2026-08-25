@@ -33,6 +33,10 @@ make_agent() {
   local path="$2"
   cat >"$path" <<EOF
 #!/bin/sh
+if [ "\${1:-}" = "--version" ]; then
+  printf '%s\\n' "$version"
+  exit 0
+fi
 printf '%s\\n' "$version \$*" >>"\$MOCK_AGENT_LOG"
 EOF
   chmod +x "$path"

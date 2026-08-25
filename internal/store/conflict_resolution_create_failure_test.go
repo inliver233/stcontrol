@@ -98,8 +98,8 @@ func expectConflictResolutionCreateFailureAt(
 	}
 	generation.WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(int64(3)))
 
-	conflict := mock.ExpectQuery(`(?s)SELECT global_user.legacy_user_id,legacy.username,conflict.version.*FROM replica_conflicts conflict`).
-		WithArgs(p.ConflictID, p.GlobalUserID, p.ExpectedConflictVersion)
+	conflict := mock.ExpectQuery(`(?s)SELECT global_user.legacy_user_id,COALESCE\(base_account.local_handle,legacy.username\),conflict.version.*FROM replica_conflicts conflict`).
+		WithArgs(p.ConflictID, p.GlobalUserID, p.ExpectedConflictVersion, p.BaseNodeID)
 	if stage == "conflict state" {
 		conflict.WillReturnError(sql.ErrNoRows)
 		return ErrConflictResolutionState

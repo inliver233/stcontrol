@@ -38,8 +38,8 @@ type agentRuntimeState struct {
 	ActivityLeases          agentActivityLeaseState               `json:"activity_leases"`
 	CancelledBackups        map[int64]time.Time                   `json:"cancelled_backups,omitempty"`
 	ControllerBackups       map[string]pendingControllerBackup    `json:"controller_backups,omitempty"`
-	AppliedQuotaVersion     int64                                  `json:"applied_quota_version,omitempty"`
-	RuntimeDiskQuotaBytes   int64                                  `json:"runtime_disk_quota_bytes,omitempty"` // 0 = 继承 agent.yaml
+	AppliedQuotaVersion     int64                                 `json:"applied_quota_version,omitempty"`
+	RuntimeDiskQuotaBytes   int64                                 `json:"runtime_disk_quota_bytes,omitempty"` // 0 = 继承 agent.yaml
 }
 
 type agentActivityLeaseState struct {
@@ -434,7 +434,22 @@ func (a *Agent) relayTransfer(snapshotID, workflowID, taskID string) (pendingTra
 	defer a.stateMu.Unlock()
 	transfer, ok := a.state.Transfers[snapshotID]
 	if !ok || transfer.WorkflowID != workflowID || transfer.RelayTaskID != taskID ||
-		transfer.RelayPrivateKey == "" || transfer.State != "prepared" {
+		transfer.RelayPrivateKey == "" {
+		return pendingTransfer{}, fmt.Errorf("relay transfer state unavailable")
+	}
+	if transfer.State == "consumed" {
+		// The previous Agent process stopped after consuming its one-shot local
+		// capability but before persisting a publication receipt. Fail this
+		// attempt durably so the Controller can rotate the capability and retry.
+		transfer.State = "failed"
+		transfer.UpdatedAt = time.Now().UTC()
+		a.state.Transfers[snapshotID] = transfer
+		if err := a.saveRuntimeStateLocked(); err != nil {
+			return pendingTransfer{}, err
+		}
+		return pendingTransfer{}, fmt.Errorf("interrupted relay transfer requires retry")
+	}
+	if transfer.State != "prepared" {
 		return pendingTransfer{}, fmt.Errorf("relay transfer state unavailable")
 	}
 	return transfer, nil
@@ -475,6 +490,19 @@ func (a *Agent) finishTransfer(snapshotID, state string) error {
 	transfer.UpdatedAt = time.Now().UTC()
 	a.state.Transfers[snapshotID] = transfer
 	return a.saveRuntimeStateLocked()
+}
+
+func (a *Agent) failTransferIfIncomplete(snapshotID string) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	transfer, ok := a.state.Transfers[snapshotID]
+	if !ok || (transfer.State != "prepared" && transfer.State != "consumed") {
+		return
+	}
+	transfer.State = "failed"
+	transfer.UpdatedAt = time.Now().UTC()
+	a.state.Transfers[snapshotID] = transfer
+	_ = a.saveRuntimeStateLocked()
 }
 
 func (a *Agent) publishTransfer(snapshotID string, receipt protocol.SnapshotTransferReceipt) error {

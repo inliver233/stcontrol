@@ -378,6 +378,58 @@ func TestControllerOAuthIdentitySyncRetriesPartialAgentFailure(t *testing.T) {
 	}
 }
 
+func TestControllerOAuthIdentitySubjectConflictFreezesInsteadOfRetryingForever(t *testing.T) {
+	ctx, st, generation, _ := newControllerRetirementStore(t)
+	secretKey := []byte("0123456789abcdef0123456789abcdef")
+	node := createControllerBackupNode(t, ctx, st, "oauth-conflict-node", "compute", false, generation)
+	psk := "oauth-conflict-node-psk"
+	seedControllerBackupCredential(t, ctx, st, secretKey, node.ID, generation, psk)
+	user := createControllerBackupUser(t, ctx, st, node.ID, "oauth-conflict-user")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := st.BindOAuthIdentity(ctx, user.GlobalID, "discord", "controller-subject", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `
+		UPDATE node_account_oauth_syncs SET updated_at=$2 WHERE global_user_id=$1`,
+		user.GlobalID, now.Add(-3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	harness := newControllerDurableCommandHarness(
+		ctx, st, map[int64]string{node.ID: psk},
+		func(_ int64, lease *store.AgentCommandLease, _ []byte) (agentCommandSummary, bool, error) {
+			if lease.CommandType != "set_oauth_identity" {
+				return agentCommandSummary{}, false, fmt.Errorf("unexpected command %q", lease.CommandType)
+			}
+			return agentCommandSummary{OK: false, Code: "oauth_identity_subject_conflict"}, false, nil
+		},
+	)
+	t.Cleanup(harness.stop)
+	server := New(config.DefaultController(), st, secretKey)
+	syncs, err := st.ListPendingOAuthIdentitySyncs(ctx, 20, time.Now().UTC())
+	if err != nil || len(syncs) != 1 {
+		t.Fatalf("syncs=%+v err=%v", syncs, err)
+	}
+	if synced, pending := server.deliverOAuthIdentitySyncs(ctx, syncs); synced != 0 || pending != 1 {
+		t.Fatalf("synced=%d pending=%d errors=%v", synced, pending, harness.errors())
+	}
+	var globalStatus, accountStatus, syncState string
+	if err := st.DB.QueryRowContext(ctx, `
+		SELECT global_user.status,account.status,sync.state
+		FROM global_users global_user
+		JOIN node_accounts account ON account.user_id=global_user.id AND account.node_id=$2
+		JOIN node_account_oauth_syncs sync ON sync.global_user_id=global_user.id AND sync.node_id=$2
+		WHERE global_user.id=$1`, user.GlobalID, node.ID).
+		Scan(&globalStatus, &accountStatus, &syncState); err != nil {
+		t.Fatal(err)
+	}
+	if globalStatus != "conflict" || accountStatus != "conflict" || syncState != "completed" {
+		t.Fatalf("global=%s account=%s sync=%s", globalStatus, accountStatus, syncState)
+	}
+	if pendingSyncs, err := st.ListPendingOAuthIdentitySyncs(ctx, 20, time.Now().UTC().Add(time.Hour)); err != nil || len(pendingSyncs) != 0 {
+		t.Fatalf("pending=%+v err=%v", pendingSyncs, err)
+	}
+}
+
 func waitControllerNodeAccountState(
 	t *testing.T,
 	ctx context.Context,

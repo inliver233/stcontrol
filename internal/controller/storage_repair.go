@@ -43,7 +43,9 @@ func (s *Server) newStorageRepairExecutionParams(
 		ExecutionID: ids[0], LeaseOwner: ids[1],
 		WorkflowID: ids[2], OperationID: ids[3], SnapshotID: ids[4], CapabilityID: ids[5],
 		CapabilityHash: capabilityHash[:], CapabilityExpires: now.Add(snapshotCapabilityTTL),
-		LeaseTTL: storageRepairTaskLeaseTTL, MaxAttempts: storageRepairMaxAttempts(s.Cfg), Now: now,
+		LeaseTTL:     storageRepairTaskLeaseTTL,
+		OfflineGrace: time.Duration(s.Cfg.Backup.OfflineGraceMin) * time.Minute,
+		MaxAttempts:  storageRepairMaxAttempts(s.Cfg), Now: now,
 		RelayAvailable: s.relayAvailable(),
 	}, nil
 }
@@ -68,7 +70,8 @@ func (s *Server) scheduleStorageRepairs(ctx context.Context) bool {
 	if s.checkNewOperations() != nil {
 		return false
 	}
-	if _, err := s.Store.ScheduleStorageRepairTasks(ctx, now); err != nil {
+	grace := time.Duration(s.Cfg.Backup.OfflineGraceMin) * time.Minute
+	if _, err := s.Store.ScheduleStorageRepairTasks(ctx, now, grace); err != nil {
 		return false
 	}
 

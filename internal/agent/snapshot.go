@@ -938,15 +938,40 @@ func (a *Agent) RunRelayReceive(
 	if err != nil {
 		return protocol.SnapshotTransferReceipt{}, err
 	}
+	// Publication is durable local state. If the Agent or Controller restarted
+	// after publication but before the command result was acknowledged, replay
+	// the receipt and idempotently finish relay cleanup instead of downloading
+	// and publishing the same snapshot again.
+	if receipt, ok := a.snapshotReceipt(req.WorkflowID, req.SnapshotID); ok {
+		if err := completeRelayDownload(ctx, endpoint, req.RelayDownloadToken); err != nil {
+			return protocol.SnapshotTransferReceipt{}, err
+		}
+		return *receipt, nil
+	}
 	transfer, err := a.relayTransfer(req.SnapshotID, req.WorkflowID, req.RelayTaskID)
 	if err != nil || !transfer.ExpiresAt.Equal(req.CapabilityExpires) {
 		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("relay transfer state mismatch")
 	}
+	defer a.failTransferIfIncomplete(req.SnapshotID)
 	resp, err := pullRelayCiphertext(ctx, endpoint, req.RelayDownloadToken, req.CapabilityExpires)
 	if err != nil {
 		return protocol.SnapshotTransferReceipt{}, err
 	}
 	defer resp.Body.Close()
+	receiveCtx, cancelReceive := context.WithCancel(ctx)
+	stopRenewal := make(chan struct{})
+	renewalDone := make(chan error, 1)
+	go func() {
+		renewalDone <- maintainRelayDownloadLease(
+			ctx, cancelReceive, stopRenewal, endpoint, req.RelayDownloadToken, 30*time.Second,
+		)
+	}()
+	stopLeaseRenewal := func() error {
+		close(stopRenewal)
+		err := <-renewalDone
+		cancelReceive()
+		return err
+	}
 	plaintextBytes, parseErr := strconv.ParseInt(resp.Header.Get("X-Plaintext-Length"), 10, 64)
 	archiveHash := resp.Header.Get("X-Archive-Sha256")
 	ciphertextDigest, cipherHashErr := hex.DecodeString(resp.Header.Get("X-Ciphertext-Sha256"))
@@ -955,6 +980,7 @@ func (a *Agent) RunRelayReceive(
 		resp.ContentLength != expectedCiphertextBytes || resp.Header.Get("Content-Type") != "application/vnd.stcontrol.relay.v1" ||
 		resp.Header.Get("X-Workflow-Id") != req.WorkflowID || resp.Header.Get("X-Snapshot-Id") != req.SnapshotID ||
 		!validCapabilityHash(archiveHash) || cipherHashErr != nil || len(ciphertextDigest) != sha256.Size {
+		_ = stopLeaseRenewal()
 		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("invalid relay ciphertext metadata")
 	}
 	ciphertextHash := sha256.New()
@@ -962,7 +988,7 @@ func (a *Agent) RunRelayReceive(
 	decryptDone := make(chan relayDecryptResult, 1)
 	go func() {
 		count, decryptErr := controlcrypto.DecryptRelayStream(
-			ctx, writer, io.TeeReader(resp.Body, ciphertextHash), transfer.RelayPrivateKey,
+			receiveCtx, writer, io.TeeReader(resp.Body, ciphertextHash), transfer.RelayPrivateKey,
 			controlcrypto.RelayCipherContext{
 				TaskID: req.RelayTaskID, WorkflowID: req.WorkflowID, SnapshotID: req.SnapshotID,
 			},
@@ -971,14 +997,18 @@ func (a *Agent) RunRelayReceive(
 		decryptDone <- relayDecryptResult{plaintextBytes: count, err: decryptErr}
 	}()
 	receipt, receiveErr := a.ReceiveSnapshot(
-		ctx, req.WorkflowID, req.SnapshotID, req.TransferCapability, archiveHash, reader,
+		receiveCtx, req.WorkflowID, req.SnapshotID, req.TransferCapability, archiveHash, reader,
 	)
 	if receiveErr != nil {
 		_ = reader.CloseWithError(receiveErr)
 	}
 	decryptResult := <-decryptDone
+	renewErr := stopLeaseRenewal()
 	if receiveErr != nil {
 		return protocol.SnapshotTransferReceipt{}, receiveErr
+	}
+	if renewErr != nil {
+		return protocol.SnapshotTransferReceipt{}, renewErr
 	}
 	if decryptResult.err != nil || decryptResult.plaintextBytes != plaintextBytes ||
 		!hmac.Equal(ciphertextHash.Sum(nil), ciphertextDigest) {
@@ -988,6 +1018,42 @@ func (a *Agent) RunRelayReceive(
 		return protocol.SnapshotTransferReceipt{}, err
 	}
 	return receipt, nil
+}
+
+func maintainRelayDownloadLease(
+	ctx context.Context,
+	cancelTransfer context.CancelFunc,
+	stop <-chan struct{},
+	endpoint, token string,
+	interval time.Duration,
+) error {
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	lastRenewed := time.Now()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-stop:
+			return nil
+		case <-ticker.C:
+			renewCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := renewRelayDownload(renewCtx, endpoint, token)
+			cancel()
+			if err == nil {
+				lastRenewed = time.Now()
+				continue
+			}
+			if time.Since(lastRenewed) < 90*time.Second {
+				continue
+			}
+			cancelTransfer()
+			return fmt.Errorf("relay download lease renewal failed: %w", err)
+		}
+	}
 }
 
 type relayDecryptResult struct {
@@ -1010,6 +1076,7 @@ func pullRelayCiphertext(
 			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-STControl-Agent-Version", Version)
 		resp, err := snapshotHTTPClient().Do(req)
 		if err == nil && resp.StatusCode == http.StatusOK {
 			return resp, nil
@@ -1048,6 +1115,24 @@ func completeRelayDownload(ctx context.Context, endpoint, token string) error {
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("confirm relay download returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func renewRelayDownload(ctx context.Context, endpoint, token string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/renew", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := snapshotHTTPClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("renew relay download: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("renew relay download returned status %d", resp.StatusCode)
 	}
 	return nil
 }

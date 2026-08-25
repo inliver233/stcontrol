@@ -197,7 +197,7 @@ func (s *Store) AckAgentCommand(
 		UPDATE agent_commands
 		SET state='running', lease_until=$6, updated_at=$5
 		WHERE id=$1 AND node_id=$2 AND lease_owner=$3
-		  AND controller_generation=$4 AND state='leased' AND lease_until>$5`,
+		  AND controller_generation=$4 AND state IN ('leased','running') AND lease_until>$5`,
 		id, nodeID, workerID, generation, now, now.Add(runTTL))
 	if err != nil {
 		return false, err
@@ -215,6 +215,29 @@ type FinishAgentCommandParams struct {
 	ResultSummary        json.RawMessage
 	ResultDigest         []byte
 	Now                  time.Time
+}
+
+// ClampAgentCommandRunLeases shortens leases created by an older Controller
+// release after a node has upgraded to the renewable command protocol. It is
+// deliberately one-way: leases already within maxTTL are left untouched, so
+// ordinary long polling cannot accidentally keep an orphaned command alive.
+func (s *Store) ClampAgentCommandRunLeases(
+	ctx context.Context,
+	nodeID int64,
+	now time.Time,
+	maxTTL time.Duration,
+) error {
+	if nodeID <= 0 || maxTTL <= 0 {
+		return ErrInvalidAgentCommand
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE agent_commands SET lease_until=$3,updated_at=$2
+		WHERE node_id=$1 AND state IN ('acked','running') AND lease_until>$3`,
+		nodeID, now, now.Add(maxTTL))
+	return err
 }
 
 func (s *Store) FinishAgentCommand(ctx context.Context, p FinishAgentCommandParams) (bool, error) {

@@ -157,6 +157,20 @@ func TestLeaseAckAndFinishAgentCommandAreFenced(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("ack ok=%v err=%v", ok, err)
 	}
+	renewAt := now.Add(time.Minute)
+	mock.ExpectExec(`SET state='running'`).
+		WithArgs("command-id", int64(22), "worker-identity-1", int64(8), renewAt, renewAt.Add(5*time.Minute)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	ok, err = st.AckAgentCommand(context.Background(), "command-id", 22, "worker-identity-1", 8, renewAt, 5*time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("renew ok=%v err=%v", ok, err)
+	}
+	mock.ExpectExec(`UPDATE agent_commands SET lease_until`).
+		WithArgs(int64(22), now, now.Add(2*time.Minute)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := st.ClampAgentCommandRunLeases(context.Background(), 22, now, 2*time.Minute); err != nil {
+		t.Fatal(err)
+	}
 
 	result := []byte(`{"ok":true}`)
 	digest := make([]byte, 32)

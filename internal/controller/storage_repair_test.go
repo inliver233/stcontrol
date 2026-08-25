@@ -124,7 +124,7 @@ func TestScheduleStorageRepairsReportsHealthyWhenNothingIsDue(t *testing.T) {
 	mock.ExpectExec(`UPDATE storage_repair_tasks task SET state='cancelled'`).WithArgs(sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`INSERT INTO storage_repair_tasks`).
-		WithArgs(sqlmock.AnyArg(), int64(1<<30), int64(64<<20)).
+		WithArgs(sqlmock.AnyArg(), int64(1<<30), int64(64<<20), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 	mock.ExpectBegin()

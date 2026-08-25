@@ -228,6 +228,12 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	// by this successful OAuth login. Fingerprints are node-scoped HMACs, so
 	// recompute them for every active node and resolve matches idempotently.
 	s.resolvedOAuthUnmatchedAfterLogin(r.Context(), provider, oauthID, user.GlobalID)
+	// Resolving the same historical OAuth account on multiple nodes can safely
+	// freeze it as a data conflict. Reload so this very login is directed to the
+	// conflict workflow instead of briefly entering a normal home session.
+	if refreshed, refreshErr := s.Store.GetUserByID(r.Context(), user.ID); refreshErr == nil && refreshed != nil {
+		user = refreshed
+	}
 
 	if err := s.createUserSession(w, r, user); err != nil {
 		protocol.WriteError(w, http.StatusServiceUnavailable, "创建会话失败")

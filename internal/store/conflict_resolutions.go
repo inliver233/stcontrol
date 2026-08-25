@@ -48,6 +48,7 @@ type CreateConflictResolutionParams struct {
 type ConflictResolutionSource struct {
 	NodeID           int64
 	NodeRole         string
+	LocalHandle      string
 	EvidenceID       string
 	EntriesSHA256    []byte
 	TransferState    string
@@ -152,11 +153,13 @@ func (s *Store) CreateConflictResolution(
 	var legacyUserID, conflictVersion, activityEpoch int64
 	var handle string
 	err = tx.QueryRowContext(ctx, `
-		SELECT global_user.legacy_user_id,legacy.username,conflict.version,
+		SELECT global_user.legacy_user_id,COALESCE(base_account.local_handle,legacy.username),conflict.version,
 		  COALESCE(lease.activity_epoch,1)
 		FROM replica_conflicts conflict
 		JOIN global_users global_user ON global_user.id=conflict.user_id AND global_user.status='conflict'
 		JOIN users legacy ON legacy.id=global_user.legacy_user_id AND legacy.status='conflict'
+		LEFT JOIN node_accounts base_account
+		  ON base_account.user_id=global_user.id AND base_account.node_id=$4
 		LEFT JOIN user_activity_leases lease ON lease.user_id=global_user.id
 		WHERE conflict.id=$1 AND conflict.user_id=$2 AND conflict.state='awaiting_decision'
 		  AND conflict.version=$3
@@ -164,7 +167,7 @@ func (s *Store) CreateConflictResolution(
 		    WHERE source.conflict_id=conflict.id AND source.evidence_state<>'ready')
 		  AND (lease.user_id IS NULL OR (lease.state='conflict'
 		    AND lease.in_flight_reads=0 AND lease.in_flight_writes=0))
-		FOR UPDATE OF conflict,global_user,legacy`, p.ConflictID, p.GlobalUserID, p.ExpectedConflictVersion).
+		FOR UPDATE OF conflict,global_user,legacy`, p.ConflictID, p.GlobalUserID, p.ExpectedConflictVersion, p.BaseNodeID).
 		Scan(&legacyUserID, &handle, &conflictVersion, &activityEpoch)
 	if err == sql.ErrNoRows {
 		return nil, ErrConflictResolutionState
@@ -325,7 +328,7 @@ func getConflictResolutionReplay(
 	err := tx.QueryRowContext(ctx, `
 		SELECT operation.request_digest,operation.user_id,operation.base_node_id,
 		  operation.workflow_id::text,workflow.state,workflow.attempt,operation.conflict_id::text,
-		  conflict.version,global_user.legacy_user_id,legacy.username,
+		  conflict.version,global_user.legacy_user_id,COALESCE(base_account.local_handle,legacy.username),
 		  operation.result_snapshot_id::text,workflow.activity_epoch,workflow.controller_generation,
 		  operation.default_action
 		FROM conflict_resolution_operations operation
@@ -333,6 +336,8 @@ func getConflictResolutionReplay(
 		JOIN replica_conflicts conflict ON conflict.id=operation.conflict_id
 		JOIN global_users global_user ON global_user.id=operation.user_id
 		JOIN users legacy ON legacy.id=global_user.legacy_user_id
+		LEFT JOIN node_accounts base_account
+		  ON base_account.user_id=global_user.id AND base_account.node_id=operation.base_node_id
 		WHERE operation.operation_id=$1`, p.OperationID).Scan(
 		&execution.RequestDigest, &userID, &baseNodeID, &execution.WorkflowID,
 		&execution.State, &execution.Attempt, &execution.ConflictID, &execution.ConflictVersion,
@@ -363,7 +368,7 @@ func (s *Store) GetConflictResolutionExecution(ctx context.Context, workflowID s
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT operation.operation_id::text,operation.request_digest,workflow.id::text,
 		  workflow.state,workflow.attempt,operation.conflict_id::text,conflict.version,
-		  workflow.user_id,global_user.legacy_user_id,legacy.username,operation.base_node_id,
+		  workflow.user_id,global_user.legacy_user_id,COALESCE(base_account.local_handle,legacy.username),operation.base_node_id,
 		  operation.result_snapshot_id::text,workflow.activity_epoch,workflow.controller_generation,
 		  operation.default_action
 		FROM conflict_resolution_operations operation
@@ -371,6 +376,8 @@ func (s *Store) GetConflictResolutionExecution(ctx context.Context, workflowID s
 		JOIN replica_conflicts conflict ON conflict.id=operation.conflict_id
 		JOIN global_users global_user ON global_user.id=workflow.user_id
 		JOIN users legacy ON legacy.id=global_user.legacy_user_id
+		LEFT JOIN node_accounts base_account
+		  ON base_account.user_id=global_user.id AND base_account.node_id=operation.base_node_id
 		WHERE workflow.id=$1`, workflowID).Scan(
 		&out.OperationID, &out.RequestDigest, &out.WorkflowID, &out.State, &out.Attempt,
 		&out.ConflictID, &out.ConflictVersion, &out.GlobalUserID, &out.LegacyUserID,
@@ -384,10 +391,14 @@ func (s *Store) GetConflictResolutionExecution(ctx context.Context, workflowID s
 		return nil, err
 	}
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT source.node_id,source.node_role,source.evidence_id::text,source.evidence_entries_sha256,
+		SELECT source.node_id,source.node_role,COALESCE(source.local_handle,legacy.username),
+		  source.evidence_id::text,source.evidence_entries_sha256,
 		  COALESCE(transfer.state,''),COALESCE(transfer.capability_id::text,''),
 		  transfer.capability_hash,transfer.expires_at
 		FROM replica_conflict_sources source
+		JOIN replica_conflicts source_conflict ON source_conflict.id=source.conflict_id
+		JOIN global_users source_user ON source_user.id=source_conflict.user_id
+		JOIN users legacy ON legacy.id=source_user.legacy_user_id
 		LEFT JOIN conflict_resolution_transfers transfer
 		  ON transfer.operation_id=$2 AND transfer.evidence_id=source.evidence_id
 		WHERE source.conflict_id=$1 ORDER BY source.node_id`, out.ConflictID, out.OperationID)
@@ -398,7 +409,8 @@ func (s *Store) GetConflictResolutionExecution(ctx context.Context, workflowID s
 		var source ConflictResolutionSource
 		var capabilityHash []byte
 		var expiry sql.NullTime
-		if err := rows.Scan(&source.NodeID, &source.NodeRole, &source.EvidenceID, &source.EntriesSHA256,
+		if err := rows.Scan(&source.NodeID, &source.NodeRole, &source.LocalHandle,
+			&source.EvidenceID, &source.EntriesSHA256,
 			&source.TransferState, &source.CapabilityID, &capabilityHash, &expiry); err != nil {
 			_ = rows.Close()
 			return nil, err
@@ -710,6 +722,11 @@ func (s *Store) CompleteConflictResolution(ctx context.Context, p CompleteConfli
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE global_users SET status='active',updated_at=$2 WHERE id=$1`, userID, p.Now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE node_accounts
+		SET status=CASE WHEN node_id=$2 THEN 'active' ELSE 'stale' END,updated_at=$3
+		WHERE user_id=$1 AND status='conflict'`, userID, baseNodeID, p.Now); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE user_activity_leases SET writer_node_id=$2,state='ended',

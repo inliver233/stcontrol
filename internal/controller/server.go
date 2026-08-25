@@ -27,6 +27,7 @@ type Server struct {
 	secretKey                []byte // 用户凭据 AES 密钥
 	workflowWorkerID         string
 	snapshotSlots            chan struct{}
+	importScanSlots          chan struct{}
 	replicaIntegritySlots    chan struct{}
 	replicaCleanupSlots      chan struct{}
 	nodeRetirementSlots      chan struct{}
@@ -85,6 +86,7 @@ func New(cfg *config.ControllerConfig, st *store.Store, secretKey []byte) *Serve
 		secretKey:                secretKey,
 		workflowWorkerID:         workerID,
 		snapshotSlots:            make(chan struct{}, 4),
+		importScanSlots:          make(chan struct{}, 2),
 		replicaIntegritySlots:    make(chan struct{}, 2),
 		replicaCleanupSlots:      make(chan struct{}, 2),
 		nodeRetirementSlots:      make(chan struct{}, 2),
@@ -202,6 +204,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.userDataFaultReconciler(ctx)
 	go s.controllerBackupReconciler(ctx)
 	go s.importScanReconciler(ctx)
+	go s.agentAutoUpdateReconciler(ctx)
 	s.startAISupervisor(ctx)
 
 	controlServer := newControlHTTPServer(s.Cfg, s.Handler())

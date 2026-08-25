@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"stcontrol/internal/config"
+	"stcontrol/internal/protocol"
 )
 
 // Agent 子控。
@@ -23,6 +24,8 @@ type Agent struct {
 	httpClient          *http.Client
 	inventoryHTTPClient *http.Client
 	commandSlots        chan struct{}
+	commandMu           sync.Mutex
+	runningCommands     map[string]struct{}
 	transferSlots       chan struct{}
 	witnessSlots        chan struct{}
 	stateMu             sync.Mutex
@@ -72,11 +75,12 @@ func New(cfg *config.AgentConfig) (*Agent, error) {
 				return http.ErrUseLastResponse
 			},
 		},
-		commandSlots:  make(chan struct{}, 8),
-		transferSlots: make(chan struct{}, 4),
-		witnessSlots:  make(chan struct{}, 8),
-		adapterNonces: make(map[string]time.Time),
-		witnessNonces: make(map[string]time.Time),
+		commandSlots:    make(chan struct{}, 8),
+		runningCommands: make(map[string]struct{}),
+		transferSlots:   make(chan struct{}, 4),
+		witnessSlots:    make(chan struct{}, 8),
+		adapterNonces:   make(map[string]time.Time),
+		witnessNonces:   make(map[string]time.Time),
 	}
 	if err := agent.loadPeerWitnessSecret(); err != nil {
 		return nil, err
@@ -98,4 +102,4 @@ func (a *Agent) adapterPSK() string {
 }
 
 // Version 子控版本。
-const Version = "0.3.0"
+const Version = protocol.CurrentAgentVersion

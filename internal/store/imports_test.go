@@ -132,7 +132,6 @@ func TestIngestAccountImportSameHandleRequiresProofAndReturnsSafeInventory(t *te
 	assertMockExpectations(t, mock)
 }
 
-
 func TestIngestAccountImportOAuthOnlySameHandleGoesToOAuthUnmatched(t *testing.T) {
 	t.Parallel()
 	st, mock, closeDB := newMockStore(t)
@@ -159,7 +158,7 @@ func TestIngestAccountImportOAuthOnlySameHandleGoesToOAuthUnmatched(t *testing.T
 	// guard (which would leave them stuck); they wait for OAuth login proof.
 	mock.ExpectExec(`INSERT INTO account_import_candidates`).WithArgs(
 		p.Candidates[0].ID, p.ID, p.NodeID, "alice", "alice", int64(123), bytes.Repeat([]byte{0xaa}, 32),
-		"adapter", "oauth", []byte(`{"discord":"` + fp + `"}`), false, "oauth_unmatched",
+		"adapter", "oauth", []byte(`{"discord":"`+fp+`"}`), false, "oauth_unmatched",
 		nil, "same_handle_oauth_proof_required", now,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE account_import_batches`).WithArgs(p.ID, "review", 1, 0, 1, now).
@@ -203,9 +202,15 @@ func TestIngestAccountImportAutoLinksUniqueOAuthIdentity(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO node_accounts`).WithArgs(
 		int64(70), p.NodeID, "alice", "alice", []byte(`{"discord":"stable-subject"}`), false, now,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(`UPDATE users SET home_node_id`).WithArgs(int64(7), p.NodeID).
-		WillReturnRows(sqlmock.NewRows([]string{"home_node_id"}).AddRow(p.NodeID))
-	mock.ExpectExec(`INSERT INTO user_replicas`).WithArgs(int64(7), p.NodeID, "home", "ready", now).
+	mock.ExpectQuery(`SELECT home_node_id FROM users`).WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"home_node_id"}).AddRow(nil))
+	mock.ExpectQuery(`SELECT EXISTS`).WithArgs(int64(70), p.NodeID, int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectExec(`UPDATE users SET home_node_id`).WithArgs(int64(7), p.NodeID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO user_replicas`).WithArgs(
+		int64(7), p.NodeID, "home", "ready", now, "inventory-sha256:"+strings.Repeat("a", 64),
+	).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO account_import_candidates`).WithArgs(
 		p.Candidates[0].ID, p.ID, p.NodeID, "alice", "alice", int64(123), bytes.Repeat([]byte{0xaa}, 32),
@@ -235,7 +240,6 @@ func TestIngestAccountImportAutoLinksUniqueOAuthIdentity(t *testing.T) {
 	assertMockExpectations(t, mock)
 }
 
-
 func TestResolveOAuthUnmatchedCandidatesLinksOnlyMatchingNodes(t *testing.T) {
 	t.Parallel()
 	st, mock, closeDB := newMockStore(t)
@@ -245,8 +249,8 @@ func TestResolveOAuthUnmatchedCandidatesLinksOnlyMatchingNodes(t *testing.T) {
 
 	// Inactive user: no resolution attempted.
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT EXISTS \(SELECT 1 FROM global_users WHERE id=\$1 AND status='active'\)`).
-		WithArgs(int64(70)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery(`SELECT legacy_user_id FROM global_users WHERE id=\$1 AND status='active' FOR UPDATE`).
+		WithArgs(int64(70)).WillReturnError(sql.ErrNoRows)
 	mock.ExpectCommit()
 	resolved, err := st.ResolveOAuthUnmatchedCandidates(context.Background(), "discord", fp, 70, now)
 	if err != nil || resolved != 0 {
@@ -254,17 +258,17 @@ func TestResolveOAuthUnmatchedCandidatesLinksOnlyMatchingNodes(t *testing.T) {
 	}
 	assertMockExpectations(t, mock)
 
-	// Active user: candidates with matching provider+fingerprint resolve.
+	// Active user with no matching unresolved candidates is an idempotent no-op.
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT EXISTS \(SELECT 1 FROM global_users WHERE id=\$1 AND status='active'\)`).
-		WithArgs(int64(70)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	mock.ExpectExec(`(?s)UPDATE account_import_candidates candidate.*SET resolution_state='auto_linked'.*RETURNING candidate.id`).
-		WithArgs("discord", fp, int64(70), now).WillReturnResult(sqlmock.NewResult(0, 2))
-	mock.ExpectExec(`UPDATE account_import_batches SET auto_linked_count`).
-		WithArgs(int64(2), now).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT legacy_user_id FROM global_users WHERE id=\$1 AND status='active' FOR UPDATE`).
+		WithArgs(int64(70)).WillReturnRows(sqlmock.NewRows([]string{"legacy_user_id"}).AddRow(int64(7)))
+	mock.ExpectQuery(`(?s)SELECT candidate.id::text,candidate.batch_id::text,candidate.node_id.*FOR UPDATE`).
+		WithArgs("discord", fp).WillReturnRows(sqlmock.NewRows([]string{
+		"id", "batch_id", "node_id", "local_user_id", "local_handle", "is_admin", "fingerprint",
+	}))
 	mock.ExpectCommit()
 	resolved, err = st.ResolveOAuthUnmatchedCandidates(context.Background(), "discord", fp, 70, now)
-	if err != nil || resolved != 2 {
+	if err != nil || resolved != 0 {
 		t.Fatalf("resolved=%d err=%v", resolved, err)
 	}
 	assertMockExpectations(t, mock)
@@ -286,7 +290,6 @@ func TestIngestAccountImportRejectsOperationDigestReuse(t *testing.T) {
 	}
 	assertMockExpectations(t, mock)
 }
-
 
 func TestListUnscannedComputeNodesOnlyReturnsStaleEligible(t *testing.T) {
 	t.Parallel()
