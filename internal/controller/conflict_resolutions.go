@@ -41,7 +41,10 @@ type publicConflictResolutionStatus struct {
 	Error        string `json:"error,omitempty"`
 }
 
-const minimumConflictRelayAgentVersion = "0.4.6"
+const (
+	minimumConflictRelayAgentVersion = "0.4.6"
+	conflictTransferCapabilityTTL    = 2 * time.Hour
+)
 
 func (s *Server) handleStartConflictResolution(w http.ResponseWriter, r *http.Request) {
 	var req startConflictResolutionRequest
@@ -108,7 +111,7 @@ func (s *Server) handleStartConflictResolution(w http.ResponseWriter, r *http.Re
 		digest := sha256.Sum256([]byte(capability))
 		transfers = append(transfers, store.ConflictResolutionTransferInput{
 			EvidenceID: source.EvidenceID, SourceNodeID: source.NodeID,
-			CapabilityID: capabilityID, CapabilityHash: digest[:], ExpiresAt: now.Add(2 * time.Hour),
+			CapabilityID: capabilityID, CapabilityHash: digest[:], ExpiresAt: now.Add(conflictTransferCapabilityTTL),
 		})
 	}
 	execution, err := s.Store.CreateConflictResolution(r.Context(), store.CreateConflictResolutionParams{
@@ -696,7 +699,7 @@ func (s *Server) rotateConflictResolutionTransfer(
 	digest := sha256.Sum256([]byte(capability))
 	now := time.Now().UTC()
 	return s.Store.RotateConflictResolutionTransfer(ctx, execution.OperationID, source.EvidenceID,
-		capabilityID, digest[:], now.Add(15*time.Minute), now)
+		capabilityID, digest[:], now.Add(conflictTransferCapabilityTTL), now)
 }
 
 func (s *Server) retryConflictResolution(
