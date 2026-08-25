@@ -53,6 +53,7 @@ type Server struct {
 
 	// AI 监管层 (Phase 0+): nil when disabled.
 	aiSupervisor aiSupervisor
+	relay        *relayDataPlane
 }
 
 // aiSupervisor is the minimal enqueue surface the phase workers need.
@@ -139,7 +140,17 @@ func currentSession(r *http.Request) *session {
 func (s *Server) Handler() http.Handler {
 	r := newRouter()
 	s.routes(r)
-	return r
+	if s.relay == nil {
+		return r
+	}
+	// The relay carries large opaque ciphertext streams. Keep it outside the
+	// SPA/control middleware stack so response compression and request logging
+	// can never transform or expose the data plane. It still shares the same
+	// TLS listener and public Controller origin.
+	root := http.NewServeMux()
+	root.Handle("/relay/", s.relay.Handler())
+	root.Handle("/", r)
+	return root
 }
 
 // Run 启动后台任务（节点离线检测、备份调度）+ HTTP 服务。
@@ -155,22 +166,23 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	var relay *relayDataPlane
 	var relayServer *http.Server
-	if s.Cfg.Relay.Listen != "" {
-		if err := validateRelayListenerConfig(s.Cfg.Relay); err != nil {
-			return err
-		}
+	if s.relayAvailable() {
 		var err error
 		relay, err = s.relayDataPlane()
 		if err != nil {
 			return err
 		}
-		relayServer = &http.Server{
-			Addr: s.Cfg.Relay.Listen, Handler: relay.Handler(),
-			ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
-			MaxHeaderBytes: 32 << 10,
-		}
-		if s.Cfg.Relay.TLSCertFile != "" {
-			relayServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS13}
+		if s.Cfg.Relay.Listen == "" {
+			s.relay = relay
+		} else {
+			relayServer = &http.Server{
+				Addr: s.Cfg.Relay.Listen, Handler: relay.Handler(),
+				ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
+				MaxHeaderBytes: 32 << 10,
+			}
+			if s.Cfg.Relay.TLSCertFile != "" {
+				relayServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS13}
+			}
 		}
 	}
 
@@ -206,8 +218,10 @@ func (s *Server) Run(ctx context.Context) error {
 		errCh <- controlServer.ListenAndServe()
 	}()
 
-	if relayServer != nil {
+	if relay != nil {
 		go relayCleanupLoop(ctx, relay)
+	}
+	if relayServer != nil {
 		go func() {
 			if s.Cfg.Relay.TLSCertFile != "" {
 				errCh <- relayServer.ListenAndServeTLS(s.Cfg.Relay.TLSCertFile, s.Cfg.Relay.TLSKeyFile)
@@ -250,6 +264,9 @@ func ValidateRuntimeConfig(cfg *config.ControllerConfig) error {
 	}
 	if cfg.Relay.Listen != "" {
 		return validateRelayListenerConfig(cfg.Relay)
+	}
+	if cfg.Relay.PublicURL != "" {
+		return validateEmbeddedRelayConfig(cfg.PublicURL, cfg.Relay)
 	}
 	return nil
 }

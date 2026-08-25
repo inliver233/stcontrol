@@ -18,7 +18,7 @@ func TestOrderedRetirementTargetsFailClosedAndPreferOpenCapacity(t *testing.T) {
 		retirementTestNode(9, "compute", "open"),
 	}
 	nodes[5].CompatibilityState = "incompatible"
-	targets := orderedRetirementTargets(nodes, "compute", 4)
+	targets := orderedRetirementTargets(nodes, "compute", false, 4)
 	if len(targets) != 2 || targets[0].ID != 3 || targets[1].ID != 7 {
 		t.Fatalf("targets=%+v", targets)
 	}
@@ -30,9 +30,22 @@ func TestOrderedRetirementStorageTargetsRequireExplicitBackupRole(t *testing.T) 
 	storage := retirementTestNode(2, "storage", "open")
 	storage.IsBackupTarget = true
 	notTarget := retirementTestNode(3, "storage", "open")
-	targets := orderedRetirementTargets([]*store.Node{compute, notTarget, storage}, "storage", 1)
+	targets := orderedRetirementTargets([]*store.Node{compute, notTarget, storage}, "storage", false, 1)
 	if len(targets) != 1 || targets[0].ID != 2 {
 		t.Fatalf("targets=%+v", targets)
+	}
+}
+
+func TestOrderedRetirementTargetsAllowAddresslessAgentWithRelay(t *testing.T) {
+	t.Parallel()
+	storage := retirementTestNode(2, "storage", "open")
+	storage.IsBackupTarget = true
+	storage.TransferURL = ""
+	if targets := orderedRetirementTargets([]*store.Node{storage}, "storage", false); len(targets) != 0 {
+		t.Fatalf("addressless target selected without relay: %+v", targets)
+	}
+	if targets := orderedRetirementTargets([]*store.Node{storage}, "storage", true); len(targets) != 1 || targets[0].ID != storage.ID {
+		t.Fatalf("addressless target not selected with relay: %+v", targets)
 	}
 }
 

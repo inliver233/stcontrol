@@ -759,7 +759,7 @@ function NodesAdmin() {
                 <input type="radio" name="node-role" checked={wizard.role === 'storage'} onChange={() => setWizard({ ...wizard, role: 'storage' })} />
                 <span>
                   <strong>纯存储节点</strong><br />
-                  <small style={{ color: 'var(--text-dim)' }}>仅保存归档备份，不运行酒馆、不承载用户；需在 Agent 配置独立 backup_dir。</small>
+                  <small style={{ color: 'var(--text-dim)' }}>仅运行 Agent 并保存归档备份，不运行酒馆、不承载用户；无需域名、证书或开放入站端口。</small>
                 </span>
               </label>
             </div>
@@ -769,8 +769,9 @@ function NodesAdmin() {
             <input value={wizard.region} onChange={e => setWizard({ ...wizard, region: e.target.value })} maxLength={64} placeholder="例如 east-asia" />
           </div>
           <div className="field">
-            <label>{wizard.role === 'compute' ? '酒馆地址（Base URL）' : '数据传输地址（可选）'}</label>
-            <input value={wizard.base_url} onChange={e => setWizard({ ...wizard, base_url: e.target.value })} maxLength={512} placeholder={wizard.role === 'compute' ? 'https://tavern.example.com' : 'https://storage.example.com'} />
+            <label>{wizard.role === 'compute' ? '酒馆地址（Base URL）' : '直连加速地址（可选）'}</label>
+            <input value={wizard.base_url} onChange={e => setWizard({ ...wizard, base_url: e.target.value })} maxLength={512} placeholder={wizard.role === 'compute' ? 'https://tavern.example.com' : '留空则使用总控端到端加密中转'} />
+            {wizard.role === 'storage' && <small style={{ color: 'var(--text-dim)' }}>通常保持为空；只有已经具备可信 HTTPS/VPN 数据地址时才填写。</small>}
           </div>
           <div className="field">
             <label>磁盘配额（GB，0 = 继承 agent.yaml 的 disk_quota_bytes）</label>

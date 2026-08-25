@@ -355,6 +355,30 @@ func validateRelayListenerConfig(cfg config.RelayConfig) error {
 	return nil
 }
 
+// validateEmbeddedRelayConfig allows the encrypted relay to share the
+// Controller's existing HTTPS origin. Storage Agents then need only outbound
+// access to the Controller and never need a public listener, domain or TLS
+// certificate of their own.
+func validateEmbeddedRelayConfig(controlPublicURL string, cfg config.RelayConfig) error {
+	controlURL, controlErr := url.Parse(controlPublicURL)
+	relayURL, relayErr := url.Parse(cfg.PublicURL)
+	if controlErr != nil || relayErr != nil || controlURL.Host == "" || relayURL.Host == "" ||
+		controlURL.User != nil || relayURL.User != nil || controlURL.RawQuery != "" || relayURL.RawQuery != "" ||
+		controlURL.Fragment != "" || relayURL.Fragment != "" ||
+		controlURL.Scheme != relayURL.Scheme || !strings.EqualFold(controlURL.Host, relayURL.Host) ||
+		strings.TrimRight(controlURL.Path, "/") != strings.TrimRight(relayURL.Path, "/") {
+		return fmt.Errorf("embedded encrypted relay public_url must match the Controller public URL")
+	}
+	if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
+		return fmt.Errorf("embedded encrypted relay uses the Controller TLS listener")
+	}
+	if cfg.DataDir == "" || cfg.MaxBytes <= 0 || cfg.RetentionMin <= 0 ||
+		cfg.MaxConcurrent <= 0 || cfg.MaxConcurrent > 128 {
+		return fmt.Errorf("embedded encrypted relay configuration is invalid")
+	}
+	return nil
+}
+
 func relayCleanupLoop(ctx context.Context, relay *relayDataPlane) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()

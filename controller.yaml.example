@@ -10,11 +10,12 @@ secret_key_env: CONTROLLER_SECRET_KEY
 static_dir: ./web/dist
 agent_dist_dir: ./dist
 
-# 默认关闭。只有 Agent 直连数据面失败后才会使用这个独立监听器；生产环境
-# 必须配置 HTTPS 证书，或在可信反向代理后仅绑定 loopback。
+# 留空 listen 表示复用总控现有 HTTPS 监听器，不再另开端口。public_url 必须
+# 与上面的总控 public_url 一致；存储 Agent 因而只需出站连接，不需要域名或证书。
+# 如果需要把大流量数据面拆到独立监听器，再配置 listen 和独立 TLS/反向代理。
 relay:
   listen: ""
-  public_url: ""
+  public_url: https://account.example.com
   data_dir: ./controller-relay-data
   tls_cert_file: ""
   tls_key_file: ""

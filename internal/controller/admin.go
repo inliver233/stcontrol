@@ -260,7 +260,7 @@ func (s *Server) handleAdminNodeRegisterToken(w http.ResponseWriter, r *http.Req
 			installHint = "计算节点安装必须提供目标机器上的 SillyTavern 安装目录（--tavern-dir），请替换命令中的占位符后再执行。"
 		}
 	} else {
-		installHint = "存储节点可选 --transfer-url 指定备份传输地址；备份目录由节点本地配置。"
+		installHint = "存储节点只需运行 Agent；无需酒馆、域名、证书或开放入站端口。留空传输地址时自动使用总控端到端加密中转；备份目录由节点本地配置。"
 	}
 	protocol.WriteJSON(w, http.StatusOK, map[string]any{
 		"token": token, "expires_at": expires, "install_cmd": installCmd, "install_hint": installHint,

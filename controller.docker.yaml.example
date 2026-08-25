@@ -12,7 +12,9 @@ agent_dist_dir: /app/dist
 
 relay:
   listen: ""
-  public_url: ""
+  # 留空 listen 表示复用上面的总控 HTTPS 监听器；public_url 必须与总控一致。
+  # 这样没有公网入口的存储 Agent 也能只靠出站连接收取端到端加密备份。
+  public_url: https://account.example.com:8443
   data_dir: /app/controller-relay-data
   tls_cert_file: ""
   tls_key_file: ""

@@ -69,6 +69,10 @@ func (s *Server) createIndependentReconciliationSnapshot(
 	if target == nil {
 		return fmt.Errorf("no pure storage target for independent reconciliation")
 	}
+	transferMode, err := s.snapshotTransferMode(target)
+	if err != nil {
+		return err
+	}
 	job := &store.BackupJob{
 		UserID: item.LegacyUserID, SrcNodeID: item.NodeID, DstNodeID: target.ID,
 		Trigger: "independent_reconciliation", Status: "pending",
@@ -97,6 +101,7 @@ func (s *Server) createIndependentReconciliationSnapshot(
 		CapabilityID: capabilityID, CapabilityHash: capabilityHash[:],
 		LegacyBackupJobID: job.ID, LegacyUserID: item.LegacyUserID, GlobalUserID: item.GlobalUserID,
 		SourceNodeID: item.NodeID, TargetNodeID: target.ID, DestinationKind: "archive",
+		TransferMode:                transferMode,
 		IndependentReconciliationID: item.ID, IndependentMarker: item.Marker,
 		CapabilityExpires: now.Add(snapshotCapabilityTTL), Now: now,
 	})

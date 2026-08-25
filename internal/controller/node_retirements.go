@@ -196,7 +196,7 @@ func (s *Server) selectNodeRetirementSnapshotPath(
 		if !nodeCanServeRetirementSnapshot(source, item.NodeID) {
 			return nil, nil, "", "", "retirement_source_unavailable"
 		}
-		for _, candidate := range orderedRetirementTargets(nodes, "compute", item.NodeID, 0) {
+		for _, candidate := range orderedRetirementTargets(nodes, "compute", s.relayAvailable(), item.NodeID, 0) {
 			available, err := s.Store.RetirementTargetAvailable(ctx, item.UserID, candidate.ID, item.Handle)
 			if err == nil && available {
 				return source, candidate, "hot_standby", "node_retirement", ""
@@ -208,7 +208,7 @@ func (s *Server) selectNodeRetirementSnapshotPath(
 		if !nodeReadyForManagedOperation(source) || source.Role != "compute" {
 			return nil, nil, "", "", "retirement_home_unavailable"
 		}
-		targets := orderedRetirementTargets(nodes, "storage", item.NodeID, item.HomeNodeID)
+		targets := orderedRetirementTargets(nodes, "storage", s.relayAvailable(), item.NodeID, item.HomeNodeID)
 		if len(targets) == 0 {
 			return source, nil, "", "", "retirement_target_unavailable"
 		}
@@ -224,6 +224,14 @@ func (s *Server) createNodeRetirementSnapshotWorkflow(
 	sourceNodeID, targetNodeID int64,
 	destinationKind, trigger string,
 ) error {
+	target, err := s.Store.GetNodeByID(ctx, targetNodeID)
+	if err != nil {
+		return err
+	}
+	transferMode, err := s.snapshotTransferMode(target)
+	if err != nil {
+		return err
+	}
 	workflowID := deriveWorkflowOperationID(item.ID, fmt.Sprintf("workflow:%d", item.Attempt))
 	operationID := deriveWorkflowOperationID(item.ID, fmt.Sprintf("operation:%d", item.Attempt))
 	snapshotID := deriveWorkflowOperationID(item.ID, fmt.Sprintf("snapshot:%d", item.Attempt))
@@ -231,25 +239,26 @@ func (s *Server) createNodeRetirementSnapshotWorkflow(
 	capability := deriveTransferCapability(s.secretKey, capabilityID)
 	capabilityHash := sha256.Sum256([]byte(capability))
 	now := time.Now().UTC()
-	_, err := s.Store.CreateSnapshotWorkflow(ctx, store.CreateSnapshotWorkflowParams{
+	_, err = s.Store.CreateSnapshotWorkflow(ctx, store.CreateSnapshotWorkflowParams{
 		WorkflowID: workflowID, OperationID: operationID, SnapshotID: snapshotID,
 		CapabilityID: capabilityID, CapabilityHash: capabilityHash[:],
 		LegacyUserID: item.LegacyUserID, GlobalUserID: item.UserID,
 		SourceNodeID: sourceNodeID, TargetNodeID: targetNodeID,
-		DestinationKind: destinationKind, RetirementItemID: item.ID, RetirementTrigger: trigger,
+		DestinationKind: destinationKind, TransferMode: transferMode,
+		RetirementItemID: item.ID, RetirementTrigger: trigger,
 		CapabilityExpires: now.Add(snapshotCapabilityTTL), Now: now,
 	})
 	return err
 }
 
-func orderedRetirementTargets(nodes []*store.Node, role string, excluded ...int64) []*store.Node {
+func orderedRetirementTargets(nodes []*store.Node, role string, relayAvailable bool, excluded ...int64) []*store.Node {
 	excludedIDs := make(map[int64]struct{}, len(excluded))
 	for _, id := range excluded {
 		excludedIDs[id] = struct{}{}
 	}
 	var targets []*store.Node
 	for _, node := range nodes {
-		if node == nil || node.Role != role || node.TransferURL == "" || !nodeAcceptsNewData(node) {
+		if node == nil || node.Role != role || (node.TransferURL == "" && !relayAvailable) || !nodeAcceptsNewData(node) {
 			continue
 		}
 		if _, skip := excludedIDs[node.ID]; skip {

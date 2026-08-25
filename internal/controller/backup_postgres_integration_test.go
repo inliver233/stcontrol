@@ -429,6 +429,34 @@ func TestControllerSnapshotWorkflowThroughDurableAgentCommands(t *testing.T) {
 		)
 	})
 
+	t.Run("addressless storage starts with encrypted relay", func(t *testing.T) {
+		if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET transfer_url='' WHERE id=$1`, target.ID); err != nil {
+			t.Fatalf("remove storage direct address: %v", err)
+		}
+		user := createControllerBackupUser(t, ctx, st, source.ID, "backup-relay-first")
+		if err := server.TriggerUserBackup(ctx, user.ID, source.ID, "offline"); err != nil {
+			t.Fatalf("trigger relay-first backup: %v", err)
+		}
+		workflowID := controllerBackupWorkflowID(t, ctx, st, user.GlobalID)
+		assertControllerBackupPublished(t, ctx, st, workflowID, user.GlobalID, target.ID)
+		execution, err := st.GetSnapshotWorkflowExecution(ctx, workflowID)
+		if err != nil || execution == nil || execution.TransferMode != "relay" || execution.Attempt != 0 {
+			t.Fatalf("relay-first execution=%+v err=%v", execution, err)
+		}
+		relayTaskID := deriveWorkflowOperationID(workflowID, "relay-task:0")
+		var relayState string
+		if err := st.DB.QueryRowContext(ctx, `SELECT state FROM relay_transfers WHERE id=$1`, relayTaskID).Scan(&relayState); err != nil || relayState != "consumed" {
+			t.Fatalf("relay-first transfer state=%q err=%v", relayState, err)
+		}
+		directOperationID := deriveWorkflowOperationID(
+			workflowID, fmt.Sprintf("start-source:%s:0", execution.CapabilityID),
+		)
+		var directCommands int
+		if err := st.DB.QueryRowContext(ctx, `SELECT count(*) FROM agent_commands WHERE operation_id=$1`, directOperationID).Scan(&directCommands); err != nil || directCommands != 0 {
+			t.Fatalf("relay-first unexpectedly attempted direct transfer: commands=%d err=%v", directCommands, err)
+		}
+	})
+
 	if errs := harness.errors(); len(errs) > 0 {
 		t.Fatalf("durable Agent command harness errors: %v", errs)
 	}
@@ -824,7 +852,8 @@ func (h *controllerBackupCommandHarness) handleCommand(
 }
 
 func controllerBackupRelayHandle(handle string) bool {
-	return handle == "backup-relay-normal" || handle == "backup-relay-lost"
+	return handle == "backup-relay-normal" || handle == "backup-relay-lost" ||
+		handle == "backup-relay-first"
 }
 
 func controllerBackupSnapshotReceipt(snapshotID string, relayPending bool) *protocol.SnapshotTransferReceipt {

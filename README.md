@@ -103,6 +103,20 @@ curl -sSL https://<总控>/install.sh | bash -s -- \
 HTTPS 地址；否则应省略，不能发布一个不可达或明文数据面地址。直连不可达时由持久
 workflow 明确切换到受控的端到端加密 relay，而不会把 capability 放入 URL。
 
+纯存储节点只需安装 Agent，不运行 SillyTavern，也不需要域名、证书或开放入站端口：
+
+```bash
+curl -sSL https://<总控>/install.sh | bash -s -- \
+  --controller https://<总控地址> \
+  --token <一次性令牌> \
+  --role storage
+```
+
+未配置 `--transfer-url` 时，用户快照从第一步就使用总控的端到端加密 relay：计算
+Agent 主动上传密文，存储 Agent 通过已有命令通道主动下载、校验并原子发布。只有需
+要节点间直连加速且已经具备可信 HTTPS/VPN 数据地址时，才为存储节点配置
+`--transfer-url`。存储路径在安装后通过 `agent.yaml` 的 `backup_dir` 指向实际数据盘。
+
 或手动（已在节点编译好 agent）：
 
 ```bash

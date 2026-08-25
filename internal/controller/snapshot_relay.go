@@ -22,8 +22,9 @@ type snapshotRelayExecution struct {
 }
 
 func (s *Server) relayAvailable() bool {
-	return s.Cfg != nil && s.Cfg.Relay.Listen != "" && s.Cfg.Relay.PublicURL != "" &&
-		s.Cfg.Relay.MaxBytes > 0 && s.Cfg.Relay.RetentionMin > 0
+	return s.Cfg != nil && s.Cfg.Relay.PublicURL != "" && s.Cfg.Relay.DataDir != "" &&
+		s.Cfg.Relay.MaxBytes > 0 && s.Cfg.Relay.RetentionMin > 0 &&
+		s.Cfg.Relay.MaxConcurrent > 0
 }
 
 func (s *Server) prepareSnapshotRelay(

@@ -44,6 +44,7 @@ func (s *Server) newStorageRepairExecutionParams(
 		WorkflowID: ids[2], OperationID: ids[3], SnapshotID: ids[4], CapabilityID: ids[5],
 		CapabilityHash: capabilityHash[:], CapabilityExpires: now.Add(snapshotCapabilityTTL),
 		LeaseTTL: storageRepairTaskLeaseTTL, MaxAttempts: storageRepairMaxAttempts(s.Cfg), Now: now,
+		RelayAvailable: s.relayAvailable(),
 	}, nil
 }
 

@@ -117,8 +117,9 @@ func (s *Server) createUserBackup(
 		return nil // 无可用备份目标, 跳过
 	}
 
-	if dstNode.TransferURL == "" {
-		return fmt.Errorf("目标节点未提供 HTTPS 快照数据面")
+	transferMode, err := s.snapshotTransferMode(dstNode)
+	if err != nil {
+		return err
 	}
 
 	// The legacy job remains a compatibility read model. Durable workflow,
@@ -155,7 +156,7 @@ func (s *Server) createUserBackup(
 		CapabilityID: capabilityID, CapabilityHash: capabilityHash[:],
 		LegacyBackupJobID: job.ID, LegacyUserID: user.ID, GlobalUserID: user.GlobalID,
 		SourceNodeID: srcNode.ID, TargetNodeID: dstNode.ID,
-		DestinationKind:   dstKind,
+		DestinationKind: dstKind, TransferMode: transferMode,
 		CapabilityExpires: capabilityExpires, Now: now,
 	})
 	if err != nil {
@@ -231,7 +232,9 @@ func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string)
 		return s.retrySnapshotWorkflow(ctx, execution, "source_unavailable", "源节点不可用", err)
 	}
 	target, err := s.Store.GetNodeByID(ctx, execution.TargetNodeID)
-	if err != nil || target == nil || target.TransferURL == "" {
+	if err != nil || target == nil ||
+		(execution.TransferMode != "relay" && target.TransferURL == "") ||
+		(execution.TransferMode == "relay" && !s.relayAvailable()) {
 		return s.retrySnapshotWorkflow(ctx, execution, "target_unavailable", "目标数据面不可用", err)
 	}
 	if execution.DestinationKind == "hot_standby" {
@@ -592,7 +595,7 @@ func (s *Server) pickBackupTarget(ctx context.Context, userID, srcNodeID int64) 
 				continue
 			}
 			n, err := s.Store.GetNodeByID(ctx, rep.NodeID)
-			if err == nil && n != nil && nodeAcceptsNewData(n) &&
+			if err == nil && n != nil && s.nodeHasSnapshotDataPath(n) && nodeAcceptsNewData(n) &&
 				((kind == "archive" && n.Role == "storage") || (kind == "hot_standby" && n.Role == "compute")) {
 				return n, rep.Kind
 			}
@@ -614,7 +617,7 @@ func (s *Server) pickBackupTarget(ctx context.Context, userID, srcNodeID int64) 
 		if n.ID == srcNodeID {
 			continue
 		}
-		if n.IsBackupTarget && nodeAcceptsNewData(n) {
+		if n.IsBackupTarget && s.nodeHasSnapshotDataPath(n) && nodeAcceptsNewData(n) {
 			pos := unhinted
 			if p, ok := position[n.ID]; ok {
 				pos = p
@@ -641,10 +644,10 @@ func (s *Server) pickStorageRepairTarget(ctx context.Context, srcNodeID int64) *
 	}
 	// 决策④采纳的备份目标排序仅作同容量档内的次级偏好；确定性容量/健康
 	// 门禁与最小 ID 平局规则保持不变。
-	return chooseStorageRepairTarget(nodes, srcNodeID, s.aiOrderingHint(ctx, "backup_order_hint", "backup"))
+	return chooseStorageRepairTarget(nodes, srcNodeID, s.aiOrderingHint(ctx, "backup_order_hint", "backup"), s.relayAvailable())
 }
 
-func chooseStorageRepairTarget(nodes []*store.Node, srcNodeID int64, backupOrderHint []int64) *store.Node {
+func chooseStorageRepairTarget(nodes []*store.Node, srcNodeID int64, backupOrderHint []int64, relayAvailable bool) *store.Node {
 	position := make(map[int64]int, len(backupOrderHint))
 	for idx, id := range backupOrderHint {
 		position[id] = idx
@@ -654,7 +657,7 @@ func chooseStorageRepairTarget(nodes []*store.Node, srcNodeID int64, backupOrder
 	var bestPos int
 	for _, node := range nodes {
 		if node == nil || node.ID == srcNodeID || node.Role != "storage" || !node.IsBackupTarget ||
-			node.TransferURL == "" || !nodeAcceptsNewData(node) {
+			(node.TransferURL == "" && !relayAvailable) || !nodeAcceptsNewData(node) {
 			continue
 		}
 		if best == nil {
@@ -688,4 +691,21 @@ func chooseStorageRepairTarget(nodes []*store.Node, srcNodeID int64, backupOrder
 		}
 	}
 	return best
+}
+
+func (s *Server) nodeHasSnapshotDataPath(node *store.Node) bool {
+	return node != nil && (node.TransferURL != "" || s.relayAvailable())
+}
+
+func (s *Server) snapshotTransferMode(node *store.Node) (string, error) {
+	if node == nil {
+		return "", fmt.Errorf("目标节点不存在")
+	}
+	if node.TransferURL != "" {
+		return "direct", nil
+	}
+	if s.relayAvailable() {
+		return "relay", nil
+	}
+	return "", fmt.Errorf("目标节点没有直连数据地址，且总控加密中转未启用")
 }

@@ -120,6 +120,49 @@ func TestControllerRunStartsRelayAndShutsDownBothListeners(t *testing.T) {
 	}
 }
 
+func TestControllerRunEmbedsRelayOnExistingPublicOrigin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Controller embedded relay lifecycle PostgreSQL integration is disabled in short mode")
+	}
+	dsn, cleanupSchema := newControllerBackupPostgresSchema(t)
+	t.Cleanup(cleanupSchema)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	controlPort := reserveLoopbackPort(t)
+	cfg := config.DefaultController()
+	cfg.Listen = fmt.Sprintf("127.0.0.1:%d", controlPort)
+	cfg.PublicURL = fmt.Sprintf("http://127.0.0.1:%d", controlPort)
+	cfg.StaticDir = t.TempDir()
+	cfg.Relay.Listen = ""
+	cfg.Relay.PublicURL = cfg.PublicURL
+	cfg.Relay.DataDir = t.TempDir()
+	cfg.ControllerBackup.Enabled = false
+	server := New(cfg, st, []byte("0123456789abcdef0123456789abcdef"))
+
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- server.Run(runCtx) }()
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	waitForHTTPStatus(t, client, done, cfg.PublicURL+"/api/health", http.StatusNoContent)
+	waitForHTTPStatus(t, client, done, cfg.PublicURL+"/relay/v1/transfers/not-a-uuid", http.StatusForbidden)
+
+	stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Controller embedded relay shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Controller with embedded relay did not stop after cancellation")
+	}
+}
+
 func reserveLoopbackPort(t *testing.T) int {
 	t.Helper()
 	reservation, err := net.Listen("tcp", "127.0.0.1:0")

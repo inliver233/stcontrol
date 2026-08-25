@@ -504,6 +504,41 @@ func TestValidateRelayListenerConfig(t *testing.T) {
 	}
 }
 
+func TestEmbeddedRelaySharesControllerOriginWithoutItsOwnTLS(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultController().Relay
+	cfg.PublicURL = "https://controller.example"
+	cfg.Listen = ""
+	if err := validateEmbeddedRelayConfig("https://controller.example", cfg); err != nil {
+		t.Fatalf("valid embedded relay rejected: %v", err)
+	}
+	for _, mutate := range []func(*config.RelayConfig){
+		func(cfg *config.RelayConfig) { cfg.PublicURL = "https://other.example" },
+		func(cfg *config.RelayConfig) { cfg.TLSCertFile, cfg.TLSKeyFile = "relay.crt", "relay.key" },
+		func(cfg *config.RelayConfig) { cfg.MaxConcurrent = 0 },
+	} {
+		invalid := cfg
+		mutate(&invalid)
+		if err := validateEmbeddedRelayConfig("https://controller.example", invalid); err == nil {
+			t.Fatalf("invalid embedded relay accepted: %+v", invalid)
+		}
+	}
+}
+
+func TestEmbeddedRelayBypassesControlMiddlewareAndKeepsFixedRoute(t *testing.T) {
+	t.Parallel()
+	server := &Server{
+		Cfg:   config.DefaultController(),
+		relay: &relayDataPlane{maxBytes: 1 << 20, slots: make(chan struct{}, 1)},
+	}
+	request := httptest.NewRequest(http.MethodGet, "/relay/v1/transfers/not-a-uuid", nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("embedded relay status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func sqlNullInt64(value int64) sql.NullInt64 {
 	return sql.NullInt64{Int64: value, Valid: true}
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -29,6 +30,7 @@ type CreateStorageRepairExecutionParams struct {
 	CapabilityExpires time.Time
 	LeaseTTL          time.Duration
 	MaxAttempts       int
+	RelayAvailable    bool
 	Now               time.Time
 }
 
@@ -398,7 +400,7 @@ func (s *Store) ClaimAndCreateStorageRepair(
 	// Both real free space and configured quota are reduced by other active
 	// reservations. Metrics must be recent so unknown capacity never becomes a
 	// speculative target. Ordering is intentionally small and deterministic.
-	err = tx.QueryRowContext(ctx, `
+	targetQuery := `
 		SELECT node.id
 		FROM nodes node
 		WHERE node.id<>$1 AND node.role='storage' AND node.is_backup_target
@@ -429,15 +431,31 @@ func (s *Store) ClaimAndCreateStorageRepair(
 		      FROM storage_repair_tasks reservation
 		      WHERE reservation.target_node_id=node.id AND reservation.state='workflow_running'),0) DESC,
 		  node.id
-		FOR UPDATE OF node SKIP LOCKED LIMIT 1`,
-		out.SourceNodeID, out.EstimatedBytes, p.Now.Add(-2*time.Minute), out.GlobalUserID,
-		nullInt64(preferredTarget.Int64)).
-		Scan(&out.TargetNodeID)
+		FOR UPDATE OF node SKIP LOCKED LIMIT 1`
+	targetArgs := []any{
+		out.SourceNodeID, out.EstimatedBytes, p.Now.Add(-2 * time.Minute), out.GlobalUserID,
+		nullInt64(preferredTarget.Int64),
+	}
+	targetTransferURL := "direct"
+	if p.RelayAvailable {
+		targetQuery = strings.Replace(targetQuery,
+			"SELECT node.id", "SELECT node.id,COALESCE(node.transfer_url,'')", 1)
+		targetQuery = strings.Replace(targetQuery,
+			"AND COALESCE(node.transfer_url,'')<>''", "AND TRUE", 1)
+		err = tx.QueryRowContext(ctx, targetQuery, targetArgs...).Scan(&out.TargetNodeID, &targetTransferURL)
+	} else {
+		err = tx.QueryRowContext(ctx, targetQuery, targetArgs...).Scan(&out.TargetNodeID)
+	}
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("select storage repair target: %w", err)
+	}
+
+	transferMode := "direct"
+	if targetTransferURL == "" {
+		transferMode = "relay"
 	}
 
 	if err := tx.QueryRowContext(ctx, `
@@ -447,13 +465,23 @@ func (s *Store) ClaimAndCreateStorageRepair(
 		Scan(&out.LegacyBackupJobID); err != nil {
 		return nil, fmt.Errorf("create storage repair backup job: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
+	workflowInsert := `
 		INSERT INTO workflows (
 		  id,operation_id,workflow_type,state,user_id,source_node_id,target_node_id,
 		  activity_epoch,controller_generation,created_at,updated_at
-		) VALUES ($1,$2,'snapshot','scheduled',$3,$4,$5,$6,$7,$8,$8)`,
+		) VALUES ($1,$2,'snapshot','scheduled',$3,$4,$5,$6,$7,$8,$8)`
+	workflowArgs := []any{
 		p.WorkflowID, p.OperationID, out.GlobalUserID, out.SourceNodeID, out.TargetNodeID,
-		out.ActivityEpoch, out.ControllerGeneration, p.Now); err != nil {
+		out.ActivityEpoch, out.ControllerGeneration, p.Now,
+	}
+	if transferMode == "relay" {
+		workflowInsert = `
+			INSERT INTO workflows (
+			  id,operation_id,workflow_type,state,user_id,source_node_id,target_node_id,
+			  activity_epoch,controller_generation,transfer_mode,created_at,updated_at
+			) VALUES ($1,$2,'snapshot','scheduled',$3,$4,$5,$6,$7,'relay',$8,$8)`
+	}
+	if _, err := tx.ExecContext(ctx, workflowInsert, workflowArgs...); err != nil {
 		return nil, fmt.Errorf("create storage repair workflow: %w", err)
 	}
 	for _, step := range []string{"quiesce", "snapshot", "prepare_target", "transfer", "verify", "publish", "cleanup"} {

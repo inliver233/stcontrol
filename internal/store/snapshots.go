@@ -26,6 +26,7 @@ type CreateSnapshotWorkflowParams struct {
 	SourceNodeID                int64
 	TargetNodeID                int64
 	DestinationKind             string
+	TransferMode                string
 	IndependentReconciliationID string
 	IndependentMarker           string
 	RetirementItemID            string
@@ -64,11 +65,16 @@ type SnapshotWorkflowExecution struct {
 }
 
 func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWorkflowParams) (SnapshotWorkflow, error) {
+	transferMode := p.TransferMode
+	if transferMode == "" {
+		transferMode = "direct"
+	}
 	retirementSnapshot := p.RetirementItemID != "" || p.RetirementTrigger != ""
 	if p.WorkflowID == "" || p.OperationID == "" || p.SnapshotID == "" || p.CapabilityID == "" ||
 		len(p.CapabilityHash) != 32 || (!retirementSnapshot && p.LegacyBackupJobID <= 0) || p.LegacyUserID <= 0 ||
 		p.GlobalUserID <= 0 || p.SourceNodeID <= 0 || p.TargetNodeID <= 0 || p.SourceNodeID == p.TargetNodeID ||
-		(p.DestinationKind != "archive" && p.DestinationKind != "hot_standby") {
+		(p.DestinationKind != "archive" && p.DestinationKind != "hot_standby") ||
+		(transferMode != "direct" && transferMode != "relay") {
 		return SnapshotWorkflow{}, ErrInvalidSnapshotWorkflow
 	}
 	if retirementSnapshot && (!validUUIDText(p.RetirementItemID) || p.LegacyBackupJobID != 0 ||
@@ -133,7 +139,11 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 			return SnapshotWorkflow{}, ErrNodeRetirementState
 		}
 		var sourceEligible, targetEligible bool
-		if err := tx.QueryRowContext(ctx, `
+		transferPredicate := "AND COALESCE(target.transfer_url,'')<>''"
+		if transferMode == "relay" {
+			transferPredicate = "AND TRUE"
+		}
+		if err := tx.QueryRowContext(ctx, fmt.Sprintf(`
 			SELECT source.role='compute'
 			    AND source.connectivity_state='online'
 			    AND source.compatibility_state='compatible'
@@ -144,11 +154,11 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 			    AND target.compatibility_state='compatible'
 			    AND target.control_mode='managed' AND target.desired_control_mode='managed'
 			    AND target.capacity_state IN ('open','busy')
-			    AND COALESCE(target.transfer_url,'')<>''
+			    %s
 			    AND ($3='authoritative_home' OR target.is_backup_target)
 			FROM nodes source CROSS JOIN nodes target
 			WHERE source.id=$1 AND target.id=$2
-			FOR SHARE OF source,target`, p.SourceNodeID, p.TargetNodeID, itemKind).Scan(
+			FOR SHARE OF source,target`, transferPredicate), p.SourceNodeID, p.TargetNodeID, itemKind).Scan(
 			&sourceEligible, &targetEligible,
 		); err != nil {
 			return SnapshotWorkflow{}, err
@@ -185,18 +195,26 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 			return SnapshotWorkflow{}, ErrIndependentReconciliationState
 		}
 		var targetEligible bool
-		if err := tx.QueryRowContext(ctx, `
+		transferPredicate := "AND COALESCE(transfer_url,'')<>''"
+		if transferMode == "relay" {
+			transferPredicate = "AND TRUE"
+		}
+		if err := tx.QueryRowContext(ctx, fmt.Sprintf(`
 			SELECT role='storage' AND is_backup_target
 			  AND connectivity_state='online' AND operational_state='active'
 			  AND compatibility_state='compatible' AND capacity_state IN ('open','busy')
-			  AND COALESCE(transfer_url,'')<>''
-			FROM nodes WHERE id=$1 FOR SHARE`, p.TargetNodeID).Scan(&targetEligible); err != nil || !targetEligible {
+			  %s
+			FROM nodes WHERE id=$1 FOR SHARE`, transferPredicate), p.TargetNodeID).Scan(&targetEligible); err != nil || !targetEligible {
 			return SnapshotWorkflow{}, ErrIndependentReconciliationState
 		}
 	}
 	if !retirementSnapshot && !independentReconciliation {
 		var sourceEligible, targetEligible bool
-		if err := tx.QueryRowContext(ctx, `
+		transferPredicate := "AND COALESCE(target.transfer_url,'')<>''"
+		if transferMode == "relay" {
+			transferPredicate = "AND TRUE"
+		}
+		if err := tx.QueryRowContext(ctx, fmt.Sprintf(`
 			SELECT source.role='compute'
 			    AND source.connectivity_state='online' AND source.operational_state='active'
 			    AND source.compatibility_state='compatible' AND source.control_mode='managed'
@@ -205,7 +223,7 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 			    AND target.connectivity_state='online' AND target.operational_state='active'
 			    AND target.compatibility_state='compatible' AND target.control_mode='managed'
 			    AND target.desired_control_mode='managed' AND target.capacity_state IN ('open','busy')
-			    AND COALESCE(target.transfer_url,'')<>''
+			    %s
 			    AND ($3<>'archive' OR target.is_backup_target)
 			    AND NOT EXISTS (
 			      SELECT 1 FROM replica_cleanup_tasks cleanup
@@ -213,7 +231,7 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 			        AND cleanup.state IN ('pending','running','retry_wait')
 			    )
 			FROM nodes source CROSS JOIN nodes target
-			WHERE source.id=$1 AND target.id=$2 FOR SHARE OF source,target`,
+			WHERE source.id=$1 AND target.id=$2 FOR SHARE OF source,target`, transferPredicate),
 			p.SourceNodeID, p.TargetNodeID, p.DestinationKind, p.GlobalUserID).Scan(
 			&sourceEligible, &targetEligible,
 		); err != nil {
@@ -264,13 +282,23 @@ func (s *Store) CreateSnapshotWorkflow(ctx context.Context, p CreateSnapshotWork
 			return SnapshotWorkflow{}, ErrSnapshotUserActive
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `
+	workflowInsert := `
 		INSERT INTO workflows (
 		  id, operation_id, workflow_type, state, user_id, source_node_id,
 		  target_node_id, activity_epoch, controller_generation, created_at, updated_at
-		) VALUES ($1,$2,'snapshot','scheduled',$3,$4,$5,$6,$7,$8,$8)`,
+		) VALUES ($1,$2,'snapshot','scheduled',$3,$4,$5,$6,$7,$8,$8)`
+	workflowArgs := []any{
 		p.WorkflowID, p.OperationID, p.GlobalUserID, p.SourceNodeID, p.TargetNodeID,
-		activityEpoch, generation, p.Now); err != nil {
+		activityEpoch, generation, p.Now,
+	}
+	if transferMode == "relay" {
+		workflowInsert = `
+			INSERT INTO workflows (
+			  id, operation_id, workflow_type, state, user_id, source_node_id,
+			  target_node_id, activity_epoch, controller_generation, transfer_mode, created_at, updated_at
+			) VALUES ($1,$2,'snapshot','scheduled',$3,$4,$5,$6,$7,'relay',$8,$8)`
+	}
+	if _, err := tx.ExecContext(ctx, workflowInsert, workflowArgs...); err != nil {
 		return SnapshotWorkflow{}, fmt.Errorf("create snapshot workflow: %w", err)
 	}
 	accountProvisionRequired := false
