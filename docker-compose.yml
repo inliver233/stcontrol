@@ -24,6 +24,7 @@ services:
     environment:
       CONTROLLER_SECRET_KEY: ${CONTROLLER_SECRET_KEY:?请设置 CONTROLLER_SECRET_KEY(32字节base64)}
       CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD: ${CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD:-}
+      STCONTROL_AI_API_KEY: ${STCONTROL_AI_API_KEY:-}
     volumes:
       - ./controller.docker.yaml:/app/controller.yaml:ro
       - ./certs:/run/stcontrol-tls:ro

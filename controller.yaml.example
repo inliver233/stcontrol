@@ -72,3 +72,15 @@ oauth:
 admin:
   username: admin
   password_env: CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD
+
+# AI 监管层默认只在后台生成脱敏建议，不参与登录、备份等关键请求路径。
+ai_supervisor:
+  enabled: false
+  mode: shadow
+  provider: openai_compatible
+  base_url: https://api.example.com/v1
+  model: example-model
+  api_key_env: STCONTROL_AI_API_KEY
+  timeout_ms: 60000
+  inspect_every_sec: 600
+  auto_adopt_min_confidence: 0.8
