@@ -1038,7 +1038,10 @@ func (s *Store) RotateSnapshotCapability(
 	if workflowID == "" || capabilityID == "" || len(tokenHash) != 32 || !expiresAt.After(now) {
 		return ErrInvalidSnapshotWorkflow
 	}
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	// The workflow row is locked before revoking and replacing its sole prepared
+	// capability. READ COMMITTED avoids heartbeat FK/SSI conflicts while keeping
+	// capability rotation atomic and scoped to one workflow.
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
