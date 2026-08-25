@@ -162,7 +162,7 @@ func TestControllerAccountImportScanAndPasswordClaim(t *testing.T) {
 			if err := json.Unmarshal(plaintext, &request); err != nil {
 				return agentCommandSummary{}, fmt.Errorf("decode inventory page request: %w", err)
 			}
-			if request.Cursor != 0 || request.InventoryRevision != "" || request.Limit != protocol.MaxAccountInventoryPageUsers {
+			if request.Cursor != 0 || request.InventoryRevision != "" || request.Limit != accountInventoryPageUsers {
 				return agentCommandSummary{}, fmt.Errorf("unexpected inventory page request: %+v", request)
 			}
 			return agentCommandSummary{OK: true, InventoryPage: &protocol.ScanExistingPageResult{

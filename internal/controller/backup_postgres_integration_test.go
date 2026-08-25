@@ -457,6 +457,84 @@ func TestControllerSnapshotWorkflowThroughDurableAgentCommands(t *testing.T) {
 		}
 	})
 
+	t.Run("controller generation recovery confirms receipts before safe retry", func(t *testing.T) {
+		if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET transfer_url='https://storage.example.test' WHERE id=$1`, target.ID); err != nil {
+			t.Fatalf("restore direct storage address: %v", err)
+		}
+		receiptWorkflowID, receiptSnapshotID := createControllerSnapshotWorkflowFixture(
+			t, ctx, st, source, target, "generation-receipt-present",
+		)
+		retryWorkflowID, _ := createControllerSnapshotWorkflowFixture(
+			t, ctx, st, source, target, "generation-receipt-missing",
+		)
+		now := time.Now().UTC()
+		if err := st.SetSnapshotWorkflowState(ctx, receiptWorkflowID, "scheduled", "quiescing", now); err != nil {
+			t.Fatalf("enter generation recovery quiescing: %v", err)
+		}
+		for index, progress := range []struct {
+			nodeID int64
+			state  string
+		}{{source.ID, "drained"}, {source.ID, "snapshotting"}, {source.ID, "transferring"}} {
+			if err := st.SetSnapshotWorkflowProgress(
+				ctx, receiptWorkflowID, receiptSnapshotID, progress.nodeID, progress.state,
+				now.Add(time.Duration(index+1)*time.Millisecond),
+			); err != nil {
+				t.Fatalf("advance generation recovery to %s: %v", progress.state, err)
+			}
+		}
+		harness.mu.Lock()
+		harness.receipts[receiptWorkflowID] = controllerBackupSnapshotReceipt(receiptSnapshotID, false)
+		harness.mu.Unlock()
+
+		newGeneration, err := st.PromoteControllerEpoch(ctx, "snapshot-generation-recovery-test", now.Add(time.Second))
+		if err != nil {
+			t.Fatalf("promote snapshot recovery generation: %v", err)
+		}
+		if _, err := st.DB.ExecContext(ctx, `
+			UPDATE nodes SET controller_generation=$2,status='online',connectivity_state='online',
+			  operational_state='active',compatibility_state='compatible',control_mode='managed',
+			  desired_control_mode='managed'
+			WHERE id IN ($1,$3)`, source.ID, newGeneration, target.ID); err != nil {
+			t.Fatalf("activate generation recovery nodes: %v", err)
+		}
+		if _, err := st.DB.ExecContext(ctx, `
+			UPDATE agent_credentials SET controller_generation=$3
+			WHERE node_id IN ($1,$2) AND revoked_at IS NULL`, source.ID, target.ID, newGeneration); err != nil {
+			t.Fatalf("activate generation recovery credentials: %v", err)
+		}
+		adopted, err := st.AdoptStaleSnapshotWorkflows(ctx, now.Add(2*time.Second), 100)
+		if err != nil || adopted < 2 {
+			t.Fatalf("adopt stale snapshots=%d err=%v", adopted, err)
+		}
+
+		if err := server.executeSnapshotWorkflow(ctx, receiptWorkflowID); err != nil {
+			t.Fatalf("complete generation receipt workflow: %v", err)
+		}
+		receiptExecution, err := st.GetSnapshotWorkflowExecution(ctx, receiptWorkflowID)
+		if err != nil || receiptExecution == nil || receiptExecution.State != "succeeded" ||
+			receiptExecution.Attempt != 0 || receiptExecution.GenerationRecoveries != 0 {
+			t.Fatalf("generation receipt execution=%+v err=%v", receiptExecution, err)
+		}
+
+		if err := server.executeSnapshotWorkflow(ctx, retryWorkflowID); err != nil {
+			t.Fatalf("reset generation retry workflow: %v", err)
+		}
+		retryExecution, err := st.GetSnapshotWorkflowExecution(ctx, retryWorkflowID)
+		if err != nil || retryExecution == nil || retryExecution.State != "retry_wait" ||
+			retryExecution.Attempt != 1 || retryExecution.GenerationRecoveries != 1 ||
+			retryExecution.CapabilityState != "revoked" {
+			t.Fatalf("generation retry reset=%+v err=%v", retryExecution, err)
+		}
+		if err := server.executeSnapshotWorkflow(ctx, retryWorkflowID); err != nil {
+			t.Fatalf("finish generation retry workflow: %v", err)
+		}
+		retryExecution, err = st.GetSnapshotWorkflowExecution(ctx, retryWorkflowID)
+		if err != nil || retryExecution == nil || retryExecution.State != "succeeded" ||
+			retryExecution.Attempt != 1 || retryExecution.GenerationRecoveries != 1 {
+			t.Fatalf("generation retry completion=%+v err=%v", retryExecution, err)
+		}
+	})
+
 	if errs := harness.errors(); len(errs) > 0 {
 		t.Fatalf("durable Agent command harness errors: %v", errs)
 	}

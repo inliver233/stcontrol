@@ -46,6 +46,8 @@ type SnapshotWorkflowExecution struct {
 	WorkflowID           string
 	State                string
 	Attempt              int
+	GenerationRecoveries int
+	ErrorCode            string
 	SnapshotID           string
 	ActivityEpoch        int64
 	ControllerGeneration int64
@@ -421,7 +423,8 @@ func (s *Store) GetSnapshotWorkflowExecution(ctx context.Context, workflowID str
 	}
 	var execution SnapshotWorkflowExecution
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT workflow.id, workflow.state, workflow.attempt, snapshot.id, workflow.activity_epoch,
+		SELECT workflow.id, workflow.state, workflow.attempt,workflow.generation_recovery_count,
+		  COALESCE(workflow.error_code,''),snapshot.id, workflow.activity_epoch,
 		  workflow.controller_generation, workflow.user_id, global_user.legacy_user_id,
 		  legacy_user.username, workflow.source_node_id, workflow.target_node_id,
 		  capability.id, capability.token_hash, capability.expires_at, capability.state,
@@ -443,7 +446,8 @@ func (s *Store) GetSnapshotWorkflowExecution(ctx context.Context, workflowID str
 		) capability ON true
 		WHERE workflow.id=$1`, workflowID).
 		Scan(
-			&execution.WorkflowID, &execution.State, &execution.Attempt, &execution.SnapshotID, &execution.ActivityEpoch,
+			&execution.WorkflowID, &execution.State, &execution.Attempt, &execution.GenerationRecoveries,
+			&execution.ErrorCode, &execution.SnapshotID, &execution.ActivityEpoch,
 			&execution.ControllerGeneration, &execution.GlobalUserID, &execution.LegacyUserID,
 			&execution.Handle, &execution.SourceNodeID, &execution.TargetNodeID,
 			&execution.CapabilityID, &execution.CapabilityHash, &execution.CapabilityExpires,
@@ -456,16 +460,206 @@ func (s *Store) GetSnapshotWorkflowExecution(ctx context.Context, workflowID str
 	return &execution, err
 }
 
+// AdoptStaleSnapshotWorkflows rebinds only durable snapshot orchestration to
+// the active Controller generation. It does not assume whether an old Agent
+// finished its final side effect: the Controller must query the target receipt
+// before either publishing or resetting the workflow.
+func (s *Store) AdoptStaleSnapshotWorkflows(ctx context.Context, now time.Time, limit int) (int, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+		WITH active AS (
+		  SELECT generation FROM controller_epochs WHERE state='active'
+		), candidates AS (
+		  SELECT workflow.id
+		  FROM workflows workflow CROSS JOIN active
+		  WHERE workflow.workflow_type='snapshot'
+		    AND workflow.state NOT IN ('succeeded','cancelled','failed')
+		    AND workflow.controller_generation<>active.generation
+		  ORDER BY workflow.updated_at,workflow.id
+		  FOR UPDATE OF workflow SKIP LOCKED LIMIT $1
+		)
+		UPDATE workflows workflow SET
+		  controller_generation=active.generation,
+		  error_code='controller_generation_recovery',
+		  error_summary='主控换代，正在核对目标节点快照回执',
+		  next_attempt_at=$2,lease_owner=NULL,lease_until=NULL,updated_at=$2
+		FROM active,candidates
+		WHERE workflow.id=candidates.id
+		RETURNING workflow.id`, limit, now)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	return count, rows.Err()
+}
+
+// PrepareRecoveredSnapshotCompletion converts a target's durable publication
+// receipt into the exact workflow phase expected by CompleteSnapshotWorkflow.
+// The receipt itself is checked by the Controller before this state change.
+func (s *Store) PrepareRecoveredSnapshotCompletion(
+	ctx context.Context,
+	workflowID string,
+	controllerGeneration int64,
+	now time.Time,
+) error {
+	if workflowID == "" || controllerGeneration <= 0 {
+		return ErrInvalidSnapshotWorkflow
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE workflows workflow SET state='publishing',error_code=NULL,error_summary=NULL,
+		  next_attempt_at=NULL,updated_at=$3
+		FROM controller_epochs epoch
+		WHERE workflow.id=$1 AND workflow.workflow_type='snapshot'
+		  AND workflow.controller_generation=$2 AND epoch.generation=$2 AND epoch.state='active'
+		  AND workflow.error_code='controller_generation_recovery'
+		  AND workflow.state IN ('transferring','verifying','publishing')`,
+		workflowID, controllerGeneration, now)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE relay_transfers SET expires_at=LEAST(expires_at,$2),
+		  upload_lease_until=NULL,download_lease_until=NULL,updated_at=$2
+		WHERE workflow_id=$1 AND state NOT IN ('consumed','expired','failed')`, workflowID, now); err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		if err != nil {
+			return err
+		}
+		return ErrSnapshotStateConflict
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE workflow_steps SET state='succeeded',finished_at=COALESCE(finished_at,$2),
+		  error_code=NULL,lease_owner=NULL,lease_until=NULL,updated_at=$2
+		WHERE workflow_id=$1 AND step_name IN ('quiesce','snapshot','prepare_target','transfer','verify')`,
+		workflowID, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE workflow_steps SET state='running',started_at=COALESCE(started_at,$2),
+		  finished_at=NULL,error_code=NULL,lease_owner=NULL,lease_until=NULL,updated_at=$2
+		WHERE workflow_id=$1 AND step_name='publish'`, workflowID, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ResetRecoveredSnapshotWorkflow safely abandons an unconfirmed old data
+// plane. A fresh capability and fresh attempt identity will be created on the
+// next reconciler pass. Generation recovery attempts are tracked separately
+// so planned Controller upgrades do not exhaust the transport retry budget.
+func (s *Store) ResetRecoveredSnapshotWorkflow(
+	ctx context.Context,
+	workflowID string,
+	controllerGeneration int64,
+	now time.Time,
+) error {
+	if workflowID == "" || controllerGeneration <= 0 {
+		return ErrInvalidSnapshotWorkflow
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var jobStatus string
+	err = tx.QueryRowContext(ctx, `
+		SELECT job.status FROM workflows workflow
+		JOIN backup_jobs job ON job.workflow_id=workflow.id
+		JOIN controller_epochs epoch ON epoch.generation=workflow.controller_generation AND epoch.state='active'
+		WHERE workflow.id=$1 AND workflow.workflow_type='snapshot'
+		  AND workflow.controller_generation=$2
+		  AND workflow.error_code='controller_generation_recovery'
+		  AND workflow.state NOT IN ('succeeded','cancelled','failed')
+		FOR UPDATE OF workflow,job`, workflowID, controllerGeneration).Scan(&jobStatus)
+	if err != nil {
+		return err
+	}
+	// Whether this workflow is retried or cancelled after a user returned, the
+	// fenced relay ciphertext is no longer authoritative and may be removed by
+	// the normal relay cleanup pass.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE relay_transfers SET expires_at=LEAST(expires_at,$2),
+		  upload_lease_until=NULL,download_lease_until=NULL,updated_at=$2
+		WHERE workflow_id=$1 AND state NOT IN ('consumed','expired','failed')`, workflowID, now); err != nil {
+		return err
+	}
+	if jobStatus == "aborted" {
+		if err := cancelSnapshotWorkflowTx(ctx, tx, workflowID, "用户恢复使用，取消换代中的未发布快照", now); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE snapshot_transfer_capabilities SET state='revoked'
+		WHERE workflow_id=$1 AND state='prepared'`, workflowID); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE workflows SET state='retry_wait',resume_state='quiescing',
+		  attempt=attempt+1,generation_recovery_count=generation_recovery_count+1,
+		  next_attempt_at=$3,error_code='controller_generation_retry',
+		  error_summary='主控换代且目标无已发布回执，已安排安全重试',
+		  lease_owner=NULL,lease_until=NULL,updated_at=$3
+		WHERE id=$1 AND controller_generation=$2
+		  AND error_code='controller_generation_recovery'`, workflowID, controllerGeneration, now)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		if err != nil {
+			return err
+		}
+		return ErrSnapshotStateConflict
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE workflow_steps SET state='retry_wait',attempt=attempt+1,error_code='controller_generation_retry',
+		  lease_owner=NULL,lease_until=NULL,started_at=NULL,finished_at=NULL,updated_at=$2
+		WHERE workflow_id=$1
+		  AND step_name IN ('quiesce','snapshot','prepare_target','transfer','verify','publish')`,
+		workflowID, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE backup_jobs SET status='pending',error=NULL,finished_at=NULL
+		WHERE workflow_id=$1 AND status NOT IN ('done','aborted')`, workflowID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) ListResumableSnapshotWorkflowIDs(ctx context.Context, limit int) ([]string, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id FROM workflows
-		WHERE workflow_type='snapshot'
-		  AND state IN ('scheduled','quiescing','drained','snapshotting','transferring','verifying','publishing','retry_wait')
-		  AND (next_attempt_at IS NULL OR next_attempt_at<=now())
-		ORDER BY updated_at LIMIT $1`, limit)
+		SELECT workflow.id FROM workflows workflow
+		JOIN controller_epochs epoch ON epoch.generation=workflow.controller_generation AND epoch.state='active'
+		WHERE workflow.workflow_type='snapshot'
+		  AND workflow.state IN ('scheduled','quiescing','drained','snapshotting','transferring','verifying','publishing','retry_wait')
+		  AND (workflow.next_attempt_at IS NULL OR workflow.next_attempt_at<=now())
+		ORDER BY workflow.updated_at LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}

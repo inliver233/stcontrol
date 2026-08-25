@@ -24,6 +24,15 @@ type scanExistingRequest struct {
 
 var errAccountInventoryPending = errors.New("account inventory page is still running")
 
+const (
+	// Keep one authenticated adapter request comfortably below common reverse
+	// proxy timeouts even when legacy user directories contain years of data.
+	// The protocol still accepts pages up to 250 users for rolling compatibility;
+	// the Controller deliberately dispatches smaller durable work units.
+	accountInventoryPageUsers = 50
+	accountInventoryPollWait  = 5 * time.Second
+)
+
 type accountInventoryProgress struct {
 	OperationID    string `json:"operation_id"`
 	Pending        bool   `json:"pending"`
@@ -184,11 +193,23 @@ func (s *Server) handleAdminScanExisting(w http.ResponseWriter, r *http.Request)
 		protocol.WriteJSON(w, http.StatusOK, existing)
 		return
 	}
+	scanGeneration, err := s.Store.GetActiveControllerGeneration(r.Context())
+	if err != nil || scanGeneration <= 0 {
+		protocol.WriteError(w, http.StatusServiceUnavailable, "总控扫描世代暂不可用")
+		return
+	}
 	// Bind every durable page command to the administrator's stable operation
 	// ID. A large node can therefore finish one page at a time across HTTP
 	// polls, browser refreshes and Controller restarts without rescanning pages
 	// that have already been acknowledged.
-	scanAttemptID := deriveWorkflowOperationID(req.OperationID, "account-inventory-scan")
+	// A Controller generation change invalidates every old Agent command. Bind
+	// the read-only scan attempt to that generation so the same browser
+	// operation can restart safely after a Controller upgrade instead of
+	// colliding with an expired page command from the previous generation.
+	scanAttemptID := deriveWorkflowOperationID(
+		req.OperationID,
+		fmt.Sprintf("account-inventory-scan-v2:g%d", scanGeneration),
+	)
 	users, progress, err := s.scanAccountInventory(r.Context(), node, scanAttemptID)
 	if err != nil {
 		if errors.Is(err, errAccountInventoryPending) {
@@ -283,15 +304,15 @@ func (s *Server) scanAccountInventory(
 	state := accountInventoryScan{}
 	progress := accountInventoryProgress{}
 	cursor := 0
-	maxPages := (protocol.MaxAccountInventoryUsers + protocol.MaxAccountInventoryPageUsers - 1) /
-		protocol.MaxAccountInventoryPageUsers
+	maxPages := (protocol.MaxAccountInventoryUsers + accountInventoryPageUsers - 1) /
+		accountInventoryPageUsers
 	for pageIndex := 0; pageIndex < maxPages; pageIndex++ {
 		operationID := deriveWorkflowOperationID(
 			attemptID, fmt.Sprintf("scan-existing-page-%04d", pageIndex),
 		)
 		payload := protocol.ScanExistingPageRequest{
 			Cursor: cursor, InventoryRevision: state.revision,
-			Limit: protocol.MaxAccountInventoryPageUsers,
+			Limit: accountInventoryPageUsers,
 		}
 		// Inventory reads are side-effect free, so an exact terminal transport
 		// attempt may be safely requeued while completed pages stay immutable.
@@ -300,14 +321,14 @@ func (s *Server) scanAccountInventory(
 		); err != nil {
 			return nil, progress, err
 		}
-		result, err := s.waitAgentCommandSummary(ctx, operationID, 3*time.Second)
+		result, err := s.waitAgentCommandSummary(ctx, operationID, accountInventoryPollWait)
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return nil, progress, errAccountInventoryPending
 		}
 		if err != nil || result.InventoryPage == nil {
 			return nil, progress, store.ErrInvalidAccountImport
 		}
-		complete, err := state.appendPage(cursor, *result.InventoryPage)
+		complete, err := state.appendPage(cursor, payload.Limit, *result.InventoryPage)
 		if err != nil {
 			return nil, progress, err
 		}
@@ -324,9 +345,11 @@ func (s *Server) scanAccountInventory(
 
 func (scan *accountInventoryScan) appendPage(
 	requestedCursor int,
+	requestedLimit int,
 	page protocol.ScanExistingPageResult,
 ) (bool, error) {
-	if requestedCursor < 0 || page.Cursor != requestedCursor ||
+	if requestedCursor < 0 || requestedLimit <= 0 ||
+		requestedLimit > protocol.MaxAccountInventoryPageUsers || page.Cursor != requestedCursor ||
 		page.TotalUsers < 0 || page.TotalUsers > protocol.MaxAccountInventoryUsers ||
 		!validScannedFingerprint(page.InventoryRevision) ||
 		len(page.Users) > protocol.MaxAccountInventoryPageUsers ||
@@ -354,7 +377,7 @@ func (scan *accountInventoryScan) appendPage(
 	}
 	end := page.Cursor + len(page.Users)
 	if page.HasMore {
-		if len(page.Users) != protocol.MaxAccountInventoryPageUsers ||
+		if len(page.Users) != requestedLimit ||
 			page.NextCursor != end || end >= page.TotalUsers {
 			return false, store.ErrInvalidAccountImport
 		}

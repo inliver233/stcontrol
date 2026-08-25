@@ -19,6 +19,7 @@ const (
 	snapshotWorkflowLeaseTTL   = 30 * time.Second
 	snapshotWorkflowLeaseRenew = 10 * time.Second
 	snapshotWorkflowCommandTTL = 8 * time.Hour
+	snapshotGenerationRecovery = "controller_generation_recovery"
 )
 
 // scheduleOfflineBackups 扫描所有用户副本, 找出"已离线且数据有变化、配置了备份目标"的用户, 触发备份。
@@ -237,6 +238,9 @@ func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string)
 		(execution.TransferMode == "relay" && !s.relayAvailable()) {
 		return s.retrySnapshotWorkflow(ctx, execution, "target_unavailable", "目标数据面不可用", err)
 	}
+	if execution.ErrorCode == snapshotGenerationRecovery {
+		return s.recoverSnapshotAfterControllerGeneration(ctx, execution, target)
+	}
 	if execution.DestinationKind == "hot_standby" {
 		account, err := s.Store.GetWorkflowTargetAccountProvision(ctx, execution.WorkflowID)
 		if err != nil || account == nil {
@@ -331,6 +335,47 @@ func (s *Server) executeSnapshotWorkflow(ctx context.Context, workflowID string)
 		return s.retrySnapshotWorkflow(ctx, execution, "unexpected_relay_receipt", "直连传输返回了无效中转回执", nil)
 	}
 	return s.completeSnapshotExecution(ctx, execution, result.Snapshot)
+}
+
+func (s *Server) recoverSnapshotAfterControllerGeneration(
+	ctx context.Context,
+	execution *store.SnapshotWorkflowExecution,
+	target *store.Node,
+) error {
+	if execution == nil || target == nil {
+		return store.ErrInvalidSnapshotWorkflow
+	}
+	// A target publication receipt is authoritative even if the old command's
+	// HTTP result was lost during credential rotation. Probe it before revoking
+	// the old capability or starting a second transfer.
+	if execution.State == "transferring" || execution.State == "verifying" || execution.State == "publishing" {
+		result, err := s.runAgentCommandWithOperation(ctx, target, "get_snapshot_receipt", map[string]string{
+			"workflow_id": execution.WorkflowID, "snapshot_id": execution.SnapshotID,
+		}, deriveWorkflowOperationID(execution.WorkflowID, fmt.Sprintf(
+			"generation-recovery-receipt:%d:%s:%d",
+			execution.ControllerGeneration, execution.CapabilityID, execution.Attempt,
+		)), 2*time.Minute)
+		if err == nil && result.Snapshot != nil {
+			if err := s.Store.PrepareRecoveredSnapshotCompletion(
+				ctx, execution.WorkflowID, execution.ControllerGeneration, time.Now().UTC(),
+			); err != nil {
+				return err
+			}
+			recovered, err := s.Store.GetSnapshotWorkflowExecution(ctx, execution.WorkflowID)
+			if err != nil || recovered == nil {
+				return err
+			}
+			return s.completeSnapshotExecution(ctx, recovered, result.Snapshot)
+		}
+		// Timeouts and control-channel failures are inconclusive. Keep the
+		// durable recovery marker and poll the same idempotent command later.
+		if err != nil && agentCommandErrorCode(err) != "snapshot_receipt_unavailable" {
+			return err
+		}
+	}
+	return s.Store.ResetRecoveredSnapshotWorkflow(
+		ctx, execution.WorkflowID, execution.ControllerGeneration, time.Now().UTC(),
+	)
 }
 
 func (s *Server) maintainSnapshotWorkflowLease(
@@ -490,8 +535,12 @@ func (s *Server) retrySnapshotWorkflow(
 		}
 		return fmt.Errorf("snapshot workflow aborted")
 	}
+	ordinaryAttempts := execution.Attempt - execution.GenerationRecoveries
+	if ordinaryAttempts < 0 {
+		ordinaryAttempts = 0
+	}
 	delay := 5 * time.Second
-	for i := 0; i < execution.Attempt && delay < 5*time.Minute; i++ {
+	for i := 0; i < ordinaryAttempts && delay < 5*time.Minute; i++ {
 		delay *= 2
 	}
 	attempt, err := s.Store.ScheduleSnapshotRetry(ctx, execution.WorkflowID, code, summary, time.Now().UTC(), delay)
@@ -502,7 +551,7 @@ func (s *Server) retrySnapshotWorkflow(
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
-	if attempt >= maxAttempts {
+	if attempt-execution.GenerationRecoveries >= maxAttempts {
 		s.failSnapshotWorkflow(ctx, job, execution.WorkflowID, code, summary)
 	}
 	if cause != nil {
@@ -533,6 +582,14 @@ func (s *Server) snapshotWorkflowReconciler(ctx context.Context) {
 }
 
 func (s *Server) resumeSnapshotWorkflows(ctx context.Context) {
+	if s.checkNewOperations() != nil {
+		return
+	}
+	// Promotion fences old commands first. Only after the control-plane rebuild
+	// gate opens do we adopt old snapshot workflows and query their targets.
+	if _, err := s.Store.AdoptStaleSnapshotWorkflows(ctx, time.Now().UTC(), 100); err != nil {
+		return
+	}
 	ids, err := s.Store.ListResumableSnapshotWorkflowIDs(ctx, 100)
 	if err != nil {
 		return

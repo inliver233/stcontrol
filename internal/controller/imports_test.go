@@ -88,9 +88,9 @@ func TestAccountInventoryScanAcceptsTenThousandUsersInBoundedPages(t *testing.T)
 	t.Parallel()
 	state := accountInventoryScan{}
 	revision := strings.Repeat("c", 64)
-	for cursor := 0; cursor < protocol.MaxAccountInventoryUsers; cursor += protocol.MaxAccountInventoryPageUsers {
-		users := make([]protocol.ScanExistingUser, 0, protocol.MaxAccountInventoryPageUsers)
-		for index := cursor; index < cursor+protocol.MaxAccountInventoryPageUsers; index++ {
+	for cursor := 0; cursor < protocol.MaxAccountInventoryUsers; cursor += accountInventoryPageUsers {
+		users := make([]protocol.ScanExistingUser, 0, accountInventoryPageUsers)
+		for index := cursor; index < cursor+accountInventoryPageUsers; index++ {
 			users = append(users, protocol.ScanExistingUser{
 				LocalUserID:          fmt.Sprintf("local-%05d", index),
 				Handle:               fmt.Sprintf("user-%05d", index),
@@ -103,7 +103,7 @@ func TestAccountInventoryScanAcceptsTenThousandUsersInBoundedPages(t *testing.T)
 		if !hasMore {
 			next = 0
 		}
-		complete, err := state.appendPage(cursor, protocol.ScanExistingPageResult{
+		complete, err := state.appendPage(cursor, accountInventoryPageUsers, protocol.ScanExistingPageResult{
 			Users: users, Cursor: cursor, NextCursor: next,
 			TotalUsers:        protocol.MaxAccountInventoryUsers,
 			InventoryRevision: revision, HasMore: hasMore,
@@ -132,7 +132,7 @@ func TestAccountInventoryScanRejectsRevisionDriftAndCrossPageDuplicates(t *testi
 		InventoryRevision: strings.Repeat("b", 64), HasMore: true,
 	}
 	state := accountInventoryScan{}
-	if complete, err := state.appendPage(0, first); err != nil || complete {
+	if complete, err := state.appendPage(0, protocol.MaxAccountInventoryPageUsers, first); err != nil || complete {
 		t.Fatalf("first complete=%v err=%v", complete, err)
 	}
 	drift := protocol.ScanExistingPageResult{
@@ -144,12 +144,43 @@ func TestAccountInventoryScanRejectsRevisionDriftAndCrossPageDuplicates(t *testi
 		TotalUsers:        protocol.MaxAccountInventoryPageUsers + 1,
 		InventoryRevision: strings.Repeat("c", 64),
 	}
-	if _, err := state.appendPage(protocol.MaxAccountInventoryPageUsers, drift); !errors.Is(err, store.ErrInvalidAccountImport) {
+	if _, err := state.appendPage(protocol.MaxAccountInventoryPageUsers, protocol.MaxAccountInventoryPageUsers, drift); !errors.Is(err, store.ErrInvalidAccountImport) {
 		t.Fatalf("revision drift error=%v", err)
 	}
 	drift.InventoryRevision = first.InventoryRevision
 	drift.Users[0].LocalUserID = firstUsers[len(firstUsers)-1].LocalUserID
-	if _, err := state.appendPage(protocol.MaxAccountInventoryPageUsers, drift); !errors.Is(err, store.ErrInvalidAccountImport) {
+	if _, err := state.appendPage(protocol.MaxAccountInventoryPageUsers, protocol.MaxAccountInventoryPageUsers, drift); !errors.Is(err, store.ErrInvalidAccountImport) {
 		t.Fatalf("duplicate error=%v", err)
+	}
+}
+
+func TestAccountInventoryScanAcceptsShortDurablePages(t *testing.T) {
+	t.Parallel()
+	state := accountInventoryScan{}
+	revision := strings.Repeat("d", 64)
+	firstUsers := make([]protocol.ScanExistingUser, accountInventoryPageUsers)
+	for index := range firstUsers {
+		firstUsers[index] = protocol.ScanExistingUser{
+			LocalUserID: fmt.Sprintf("local-%03d", index), Handle: fmt.Sprintf("user-%03d", index),
+			DirectoryFingerprint: strings.Repeat("a", 64), Source: "adapter", AccountKind: "password",
+		}
+	}
+	complete, err := state.appendPage(0, accountInventoryPageUsers, protocol.ScanExistingPageResult{
+		Users: firstUsers, Cursor: 0, NextCursor: accountInventoryPageUsers,
+		TotalUsers: accountInventoryPageUsers + 1, InventoryRevision: revision, HasMore: true,
+	})
+	if err != nil || complete {
+		t.Fatalf("short first page complete=%v err=%v", complete, err)
+	}
+	complete, err = state.appendPage(accountInventoryPageUsers, accountInventoryPageUsers, protocol.ScanExistingPageResult{
+		Users: []protocol.ScanExistingUser{{
+			LocalUserID: "local-999", Handle: "user-999",
+			DirectoryFingerprint: strings.Repeat("a", 64), Source: "adapter", AccountKind: "password",
+		}},
+		Cursor: accountInventoryPageUsers, TotalUsers: accountInventoryPageUsers + 1,
+		InventoryRevision: revision,
+	})
+	if err != nil || !complete || len(state.users) != accountInventoryPageUsers+1 {
+		t.Fatalf("short final page complete=%v users=%d err=%v", complete, len(state.users), err)
 	}
 }

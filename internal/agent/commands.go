@@ -23,6 +23,8 @@ type encryptedCommandEnvelope struct {
 	Ciphertext string `json:"ciphertext"`
 }
 
+var errCommandResultSuperseded = errors.New("command result superseded by controller generation")
+
 type safeCommandResult struct {
 	OK                 bool                                `json:"ok"`
 	Code               string                              `json:"code,omitempty"`
@@ -124,7 +126,11 @@ func (a *Agent) pollAndRunCommand(ctx context.Context) error {
 	go func() {
 		defer func() { <-a.commandSlots }()
 		if err := a.executeAndReportCommand(ctx, workerID, command); err != nil && ctx.Err() == nil {
-			log.Printf("命令结果暂未确认: %v", err)
+			if errors.Is(err, errCommandResultSuperseded) {
+				log.Printf("旧世代命令结果已封存，等待总控对账: command_id=%s generation=%d", command.ID, command.ControllerGeneration)
+			} else {
+				log.Printf("命令结果暂未确认: %v", err)
+			}
 		}
 	}()
 	return nil
@@ -163,6 +169,10 @@ func (a *Agent) executeAndReportCommand(ctx context.Context, workerID string, co
 	for attempt := 0; attempt < 8; attempt++ {
 		if err := a.callController(ctx, http.MethodPost, "/api/agent/commands/"+command.ID+"/result", payload, nil); err == nil {
 			return nil
+		}
+		_, highestGeneration := a.commandIdentity()
+		if highestGeneration > command.ControllerGeneration {
+			return errCommandResultSuperseded
 		}
 		timer := time.NewTimer(backoff)
 		select {

@@ -408,12 +408,12 @@ func TestGetSnapshotWorkflowExecutionReadsDurableTransferMode(t *testing.T) {
 	expires := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	mock.ExpectQuery(`SELECT workflow.id, workflow.state, workflow.attempt`).WithArgs("workflow").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"workflow_id", "state", "attempt", "snapshot_id", "activity_epoch",
+			"workflow_id", "state", "attempt", "generation_recovery_count", "error_code", "snapshot_id", "activity_epoch",
 			"controller_generation", "global_user_id", "legacy_user_id", "username",
 			"source_node_id", "target_node_id", "capability_id", "token_hash",
 			"expires_at", "capability_state", "job_id", "trigger", "transfer_mode", "kind",
 		}).AddRow(
-			"workflow", "quiescing", 1, "snapshot", int64(4), int64(3), int64(70), int64(7), "alice",
+			"workflow", "quiescing", 1, 0, "", "snapshot", int64(4), int64(3), int64(70), int64(7), "alice",
 			int64(8), int64(9), "capability", make([]byte, 32), expires, "prepared", int64(11),
 			"offline", "relay", "archive",
 		))
