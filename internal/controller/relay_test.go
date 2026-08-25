@@ -369,6 +369,17 @@ func TestEncryptedRelayFailsClosedAcrossUploadDownloadAndCleanupErrors(t *testin
 		}
 	})
 
+	t.Run("download terminal", func(t *testing.T) {
+		plane := newPlane(t, &fakeRelayStore{claimDownloadErr: store.ErrRelayTransferTerminal})
+		request := httptest.NewRequest(http.MethodGet, "/relay/v1/transfers/"+taskID, nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		recorder := httptest.NewRecorder()
+		plane.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusGone {
+			t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	})
+
 	t.Run("download file missing", func(t *testing.T) {
 		fake := &fakeRelayStore{completedBytes: 5, completedHash: bytes.Repeat([]byte{2}, 32)}
 		plane := newPlane(t, fake)

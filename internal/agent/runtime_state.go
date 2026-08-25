@@ -402,7 +402,8 @@ func (a *Agent) prepareTransferLocked(transfer pendingTransfer) error {
 			}
 		}
 		replaceableExactRetry := sameTransferScope(existing, transfer) &&
-			((existing.State == "failed" && !sameCapability) ||
+			((existing.State == "failed" && (!sameCapability ||
+				(transfer.RelayTaskID != "" && existing.RelayTaskID != transfer.RelayTaskID))) ||
 				(existing.State == "prepared" && (!sameCapability || transfer.RelayTaskID != "")))
 		retryableExpiredRestore := sameTransferScope(existing, transfer) &&
 			existing.DestinationKind == "restore" && transfer.DestinationKind == "restore" &&

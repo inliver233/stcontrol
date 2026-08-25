@@ -537,7 +537,7 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		}
 		receipt, err := a.RunRelayReceive(ctx, payload)
 		if err != nil {
-			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "relay_receive_failed"})
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: relayReceiveErrorCode(err)})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, Snapshot: &receipt})
 	case "start_restore_transfer":
@@ -644,7 +644,7 @@ func (a *Agent) executeCommand(ctx context.Context, command protocol.AgentComman
 		}
 		receipt, err := a.RunConflictEvidenceTransfer(ctx, payload)
 		if err != nil {
-			return false, marshalSafeResult(safeCommandResult{OK: false, Code: "conflict_evidence_transfer_failed"})
+			return false, marshalSafeResult(safeCommandResult{OK: false, Code: conflictEvidenceTransferErrorCode(err)})
 		}
 		return true, marshalSafeResult(safeCommandResult{OK: true, Snapshot: &receipt})
 	case "prepare_conflict_resolution":

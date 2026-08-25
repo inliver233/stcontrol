@@ -340,6 +340,36 @@ func TestRelayPreparationReplacesDirectCapabilityAndKeepsStableTargetKey(t *test
 	}
 }
 
+func TestRelayPreparationReplacesFailedAttemptWithFreshTaskID(t *testing.T) {
+	t.Parallel()
+	a, err := New(&config.AgentConfig{DataDir: t.TempDir(), NodeID: 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte("same-capability"))
+	transfer := pendingTransfer{
+		WorkflowID: testWorkflowID, SnapshotID: testSnapshotID, GlobalUserID: 70, TargetNodeID: 9,
+		Handle: "alice", DestinationKind: "conflict_input", SourceNodeID: 8, ActivityEpoch: 1,
+		CapabilityHash: hex.EncodeToString(digest[:]), ExpiresAt: time.Now().Add(time.Hour),
+	}
+	firstTask := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	if _, err := a.prepareRelayTransfer(transfer, firstTask); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.finishTransfer(testSnapshotID, "failed"); err != nil {
+		t.Fatal(err)
+	}
+	secondTask := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	publicKey, err := a.prepareRelayTransfer(transfer, secondTask)
+	if err != nil || publicKey == "" {
+		t.Fatalf("fresh retry publicKey=%q err=%v", publicKey, err)
+	}
+	persisted, err := a.relayTransfer(testSnapshotID, testWorkflowID, secondTask)
+	if err != nil || persisted.State != "prepared" || persisted.RelayTaskID != secondTask {
+		t.Fatalf("persisted=%+v err=%v", persisted, err)
+	}
+}
+
 func TestSnapshotRelayUploadStreamsAuthenticatedCiphertext(t *testing.T) {
 	t.Parallel()
 	taskID := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"

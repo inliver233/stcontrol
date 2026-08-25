@@ -41,6 +41,8 @@ type publicConflictResolutionStatus struct {
 	Error        string `json:"error,omitempty"`
 }
 
+const minimumConflictRelayAgentVersion = "0.4.5"
+
 func (s *Server) handleStartConflictResolution(w http.ResponseWriter, r *http.Request) {
 	var req startConflictResolutionRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<20))
@@ -106,7 +108,7 @@ func (s *Server) handleStartConflictResolution(w http.ResponseWriter, r *http.Re
 		digest := sha256.Sum256([]byte(capability))
 		transfers = append(transfers, store.ConflictResolutionTransferInput{
 			EvidenceID: source.EvidenceID, SourceNodeID: source.NodeID,
-			CapabilityID: capabilityID, CapabilityHash: digest[:], ExpiresAt: now.Add(15 * time.Minute),
+			CapabilityID: capabilityID, CapabilityHash: digest[:], ExpiresAt: now.Add(2 * time.Hour),
 		})
 	}
 	execution, err := s.Store.CreateConflictResolution(r.Context(), store.CreateConflictResolutionParams{
@@ -371,8 +373,27 @@ func (s *Server) executeConflictResolution(ctx context.Context, workflowID strin
 		}
 	}
 	base, err := s.Store.GetNodeByID(ctx, execution.BaseNodeID)
-	if err != nil || base == nil || base.Role != "compute" || base.TransferURL == "" {
+	if err != nil || base == nil || base.Role != "compute" ||
+		(base.TransferURL == "" && !s.relayAvailable()) {
 		return s.retryConflictResolution(ctx, execution, "base_unavailable", "主计算节点暂不可用", err)
+	}
+	if !snapshotNodeReady(base) {
+		return s.deferConflictResolution(ctx, execution, "base_not_ready", "等待所选计算节点恢复就绪")
+	}
+	for _, source := range execution.Sources {
+		if source.NodeID == execution.BaseNodeID || source.TransferState == "consumed" {
+			continue
+		}
+		sourceNode, sourceErr := s.Store.GetNodeByID(ctx, source.NodeID)
+		if sourceErr != nil || !snapshotNodeReady(sourceNode) {
+			return s.deferConflictResolution(ctx, execution, "source_not_ready", "等待冲突来源节点恢复就绪")
+		}
+		if base.TransferURL == "" &&
+			(!sourceNode.AgentVersion.Valid || compareControllerAgentVersions(
+				sourceNode.AgentVersion.String, minimumConflictRelayAgentVersion,
+			) < 0) {
+			return s.deferConflictResolution(ctx, execution, "source_upgrade_pending", "等待冲突来源 Agent 安全升级")
+		}
 	}
 	for _, source := range execution.Sources {
 		if source.NodeID == execution.BaseNodeID || source.TransferState == "consumed" {
@@ -448,6 +469,22 @@ func (s *Server) executeConflictResolution(ctx context.Context, workflowID strin
 	return nil
 }
 
+func (s *Server) deferConflictResolution(
+	ctx context.Context,
+	execution *store.ConflictResolutionExecution,
+	code, summary string,
+) error {
+	if execution == nil {
+		return store.ErrInvalidConflictResolution
+	}
+	if err := s.Store.DeferConflictResolution(
+		ctx, execution.WorkflowID, code, summary, time.Now().UTC(), time.Minute,
+	); err != nil {
+		return err
+	}
+	return fmt.Errorf("%s", code)
+}
+
 func (s *Server) transferConflictResolutionSource(
 	ctx context.Context,
 	execution *store.ConflictResolutionExecution,
@@ -478,6 +515,9 @@ func (s *Server) transferConflictResolutionSource(
 	if !hmac.Equal(digest[:], source.CapabilityHash) {
 		return fmt.Errorf("conflict transfer capability mismatch")
 	}
+	if base.TransferURL == "" {
+		return s.transferConflictResolutionSourceViaRelay(ctx, execution, source, sourceNode, base, capability)
+	}
 	prepareOperationID := deriveWorkflowOperationID(execution.WorkflowID, "prepare-evidence:"+source.CapabilityID)
 	if _, err := s.runAgentCommandWithOperation(ctx, base, "prepare_snapshot_receive", protocol.PrepareSnapshotReceiveRequest{
 		WorkflowID: execution.ConflictID, SnapshotID: source.EvidenceID,
@@ -494,6 +534,10 @@ func (s *Server) transferConflictResolutionSource(
 		protocol.StartConflictEvidenceTransferRequest{
 			ConflictID: execution.ConflictID, EvidenceID: source.EvidenceID,
 			GlobalUserID: execution.GlobalUserID, Handle: source.LocalHandle,
+			SourceKind: source.SourceKind, SourceSnapshotID: source.SourceSnapshotID,
+			SourceManifestHash: hex.EncodeToString(source.ManifestSHA256),
+			EntriesSHA256:      hex.EncodeToString(source.EntriesSHA256),
+			FileCount:          source.FileCount, TotalBytes: source.TotalBytes,
 			TargetNodeID: execution.BaseNodeID, TargetTransferURL: base.TransferURL,
 			TransferCapability: capability, CapabilityExpires: source.CapabilityExpiry,
 		}, deriveWorkflowOperationID(execution.WorkflowID, "transfer-evidence:"+source.CapabilityID), 55*time.Minute)
@@ -509,6 +553,115 @@ func (s *Server) transferConflictResolutionSource(
 	}
 	if result.Snapshot.SnapshotID != source.EvidenceID {
 		return fmt.Errorf("conflict transfer receipt scope mismatch")
+	}
+	return s.Store.MarkConflictResolutionTransferComplete(ctx, execution.OperationID,
+		source.EvidenceID, source.CapabilityHash, time.Now().UTC())
+}
+
+func (s *Server) transferConflictResolutionSourceViaRelay(
+	ctx context.Context,
+	execution *store.ConflictResolutionExecution,
+	source store.ConflictResolutionSource,
+	sourceNode, base *store.Node,
+	capability string,
+) error {
+	if !s.relayAvailable() {
+		return fmt.Errorf("encrypted conflict relay unavailable")
+	}
+	taskID := deriveWorkflowOperationID(execution.WorkflowID,
+		fmt.Sprintf("conflict-relay:%s:%d", source.EvidenceID, execution.Attempt))
+	uploadToken := deriveRelayBearer(s.secretKey, taskID, "upload")
+	downloadToken := deriveRelayBearer(s.secretKey, taskID, "download")
+	uploadHash := sha256.Sum256([]byte(uploadToken))
+	downloadHash := sha256.Sum256([]byte(downloadToken))
+	now := time.Now().UTC()
+	expiresAt := source.CapabilityExpiry
+	relayExpiry := now.Add(time.Duration(s.Cfg.Relay.RetentionMin) * time.Minute)
+	if expiresAt.After(relayExpiry) {
+		expiresAt = relayExpiry
+	}
+	if !expiresAt.After(now) {
+		return fmt.Errorf("conflict relay capability expired")
+	}
+	transfer, err := s.Store.CreateConflictRelayTransfer(ctx, store.CreateRelayTransferParams{
+		ID: taskID, WorkflowID: execution.WorkflowID, SnapshotID: source.EvidenceID,
+		SourceNodeID: source.NodeID, TargetNodeID: execution.BaseNodeID, Attempt: execution.Attempt,
+		UploadTokenHash: uploadHash[:], DownloadTokenHash: downloadHash[:],
+		MaxCiphertextBytes: s.Cfg.Relay.MaxBytes, ExpiresAt: expiresAt, Now: now,
+	}, execution.OperationID)
+	if err != nil || transfer == nil {
+		return fmt.Errorf("prepare encrypted conflict relay: %w", err)
+	}
+	endpoint, err := snapshotRelayEndpoint(s.Cfg.Relay.PublicURL, taskID)
+	if err != nil {
+		return err
+	}
+	prepareResult, err := s.runAgentCommandWithOperation(ctx, base, "prepare_snapshot_receive",
+		protocol.PrepareSnapshotReceiveRequest{
+			WorkflowID: execution.ConflictID, SnapshotID: source.EvidenceID,
+			GlobalUserID: execution.GlobalUserID, Handle: execution.Handle,
+			DestinationKind: "conflict_input", SourceNodeID: source.NodeID, ActivityEpoch: 1,
+			CapabilityHash: hex.EncodeToString(source.CapabilityHash), ExpiresAt: source.CapabilityExpiry,
+			RelayTaskID: taskID,
+		}, deriveWorkflowOperationID(execution.WorkflowID, "prepare-relay-evidence:"+taskID),
+		45*time.Second)
+	if err != nil || prepareResult.RelayPublicKey == "" {
+		if recovered := s.recoverConflictTransferReceipt(ctx, execution, source, base); recovered {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("conflict relay target key missing")
+	}
+	receivePayload := protocol.StartRelayReceiveRequest{
+		WorkflowID: execution.ConflictID, SnapshotID: source.EvidenceID, RelayTaskID: taskID,
+		RelayDownloadURL: endpoint, RelayDownloadToken: downloadToken,
+		TransferCapability: capability, CapabilityExpires: source.CapabilityExpiry,
+	}
+	receiveOperationID := deriveWorkflowOperationID(execution.WorkflowID,
+		"receive-relay-evidence:"+taskID)
+	sourceResult, sourceErr := s.runAgentCommandWithOperation(ctx, sourceNode,
+		"start_conflict_evidence_transfer", protocol.StartConflictEvidenceTransferRequest{
+			ConflictID: execution.ConflictID, EvidenceID: source.EvidenceID,
+			GlobalUserID: execution.GlobalUserID, Handle: source.LocalHandle,
+			ResolutionHandle: execution.Handle,
+			SourceKind:       source.SourceKind, SourceSnapshotID: source.SourceSnapshotID,
+			SourceManifestHash: hex.EncodeToString(source.ManifestSHA256),
+			EntriesSHA256:      hex.EncodeToString(source.EntriesSHA256),
+			FileCount:          source.FileCount, TotalBytes: source.TotalBytes,
+			TargetNodeID: execution.BaseNodeID, TransferCapability: capability,
+			CapabilityExpires: source.CapabilityExpiry, TransferMode: "relay",
+			RelayTaskID: taskID, RelayUploadURL: endpoint, RelayUploadToken: uploadToken,
+			RelayTargetKey: prepareResult.RelayPublicKey,
+		}, deriveWorkflowOperationID(execution.WorkflowID, "upload-relay-evidence:"+taskID),
+		55*time.Minute)
+	if sourceErr != nil || sourceResult.Snapshot == nil || !sourceResult.Snapshot.RelayPending {
+		if recovered := s.recoverConflictTransferReceipt(ctx, execution, source, base); recovered {
+			return nil
+		}
+		if sourceErr != nil {
+			return sourceErr
+		}
+		return fmt.Errorf("conflict relay upload receipt missing")
+	}
+	// The relay is durable store-and-forward. Start the receiver only after the
+	// ciphertext is stored so a failed source cannot leave a target polling an
+	// empty task until the long capability expiry.
+	targetResult, targetErr := s.runAgentCommandWithOperation(ctx, base, "start_relay_receive",
+		receivePayload, receiveOperationID, 55*time.Minute)
+	if targetErr != nil || targetResult.Snapshot == nil {
+		if recovered := s.recoverConflictTransferReceipt(ctx, execution, source, base); recovered {
+			return nil
+		}
+		if targetErr != nil {
+			return targetErr
+		}
+		return fmt.Errorf("conflict relay receive receipt missing")
+	}
+	if !matchingRelayReceipts(sourceResult.Snapshot, targetResult.Snapshot) ||
+		targetResult.Snapshot.SnapshotID != source.EvidenceID {
+		return fmt.Errorf("conflict relay receipt mismatch")
 	}
 	return s.Store.MarkConflictResolutionTransferComplete(ctx, execution.OperationID,
 		source.EvidenceID, source.CapabilityHash, time.Now().UTC())
@@ -556,7 +709,8 @@ func (s *Server) retryConflictResolution(
 		return ctx.Err()
 	}
 	delay := 5 * time.Second
-	for i := 0; i < execution.Attempt && delay < 5*time.Minute; i++ {
+	effectiveAttempt := max(execution.Attempt-execution.GenerationRecoveries, 0)
+	for i := 0; i < effectiveAttempt && delay < 5*time.Minute; i++ {
 		delay *= 2
 	}
 	attempt, err := s.Store.ScheduleSnapshotRetry(ctx, execution.WorkflowID, code, summary, time.Now().UTC(), delay)
@@ -567,7 +721,7 @@ func (s *Server) retryConflictResolution(
 	if s.Cfg != nil && s.Cfg.Backup.RetryMax > 0 {
 		maxAttempts = max(s.Cfg.Backup.RetryMax, 5)
 	}
-	if attempt >= maxAttempts {
+	if attempt-execution.GenerationRecoveries >= maxAttempts {
 		_ = s.Store.FailConflictResolution(context.WithoutCancel(ctx), execution.WorkflowID, code, summary, time.Now().UTC())
 	}
 	if cause != nil {
@@ -591,6 +745,12 @@ func (s *Server) conflictResolutionReconciler(ctx context.Context) {
 }
 
 func (s *Server) resumeConflictResolutions(ctx context.Context) {
+	if s.checkNewOperations() != nil {
+		return
+	}
+	if _, err := s.Store.AdoptStaleConflictResolutions(ctx, time.Now().UTC(), 100); err != nil {
+		return
+	}
 	ids, err := s.Store.ListResumableConflictResolutionIDs(ctx, 100)
 	if err != nil {
 		return

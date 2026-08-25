@@ -136,7 +136,7 @@ func (relay *relayDataPlane) handleUpload(w http.ResponseWriter, r *http.Request
 		r.Context(), id, tokenHash, plaintextBytes, r.ContentLength,
 		archiveSHA256, now, relay.retention,
 	)
-	if err != nil || transfer == nil || transfer.WorkflowID != r.Header.Get("X-Workflow-Id") ||
+	if err != nil || transfer == nil || relayTransportScope(transfer) != r.Header.Get("X-Workflow-Id") ||
 		transfer.SnapshotID != r.Header.Get("X-Snapshot-Id") || r.ContentLength > transfer.MaxCiphertextBytes {
 		protocol.WriteError(w, http.StatusForbidden, "中转上传授权无效")
 		return
@@ -188,6 +188,16 @@ func (relay *relayDataPlane) handleUpload(w http.ResponseWriter, r *http.Request
 	protocol.WriteJSON(w, http.StatusCreated, map[string]any{"ok": true, "state": "stored"})
 }
 
+func relayTransportScope(transfer *store.RelayTransfer) string {
+	if transfer == nil {
+		return ""
+	}
+	if transfer.TransportScopeID != "" {
+		return transfer.TransportScopeID
+	}
+	return transfer.WorkflowID
+}
+
 func (relay *relayDataPlane) handleDownload(w http.ResponseWriter, r *http.Request) {
 	relayHeaders(w)
 	if !relay.acquire(w, r) {
@@ -212,6 +222,10 @@ func (relay *relayDataPlane) handleDownload(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	transfer, err := relay.store.ClaimRelayDownload(r.Context(), id, tokenHash, now, leaseTTL)
+	if errors.Is(err, store.ErrRelayTransferTerminal) {
+		protocol.WriteError(w, http.StatusGone, "中转任务已结束")
+		return
+	}
 	if err != nil || transfer == nil || !transfer.StoragePath.Valid || !transfer.CiphertextBytes.Valid ||
 		!transfer.PlaintextBytes.Valid || len(transfer.ArchiveSHA256) != sha256.Size ||
 		len(transfer.CiphertextSHA256) != sha256.Size {
@@ -241,7 +255,7 @@ func (relay *relayDataPlane) handleDownload(w http.ResponseWriter, r *http.Reque
 	}
 	w.Header().Set("Content-Type", relayContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
-	w.Header().Set("X-Workflow-Id", transfer.WorkflowID)
+	w.Header().Set("X-Workflow-Id", relayTransportScope(transfer))
 	w.Header().Set("X-Snapshot-Id", transfer.SnapshotID)
 	w.Header().Set("X-Plaintext-Length", strconv.FormatInt(transfer.PlaintextBytes.Int64, 10))
 	w.Header().Set("X-Archive-Sha256", hex.EncodeToString(transfer.ArchiveSHA256))

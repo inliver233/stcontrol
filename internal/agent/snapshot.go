@@ -47,6 +47,40 @@ const (
 var errSnapshotDirectUnreachable = errors.New("direct snapshot target unreachable")
 var errSnapshotStorageExhausted = errors.New("snapshot storage exhausted")
 
+type relayReceiveError struct {
+	code  string
+	cause error
+}
+
+func (err *relayReceiveError) Error() string {
+	if err == nil || err.cause == nil {
+		return "relay receive failed"
+	}
+	return err.cause.Error()
+}
+
+func (err *relayReceiveError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.cause
+}
+
+func relayReceiveStageError(code string, cause error) error {
+	if cause == nil {
+		cause = fmt.Errorf("relay receive failed")
+	}
+	return &relayReceiveError{code: code, cause: cause}
+}
+
+func relayReceiveErrorCode(err error) string {
+	var stage *relayReceiveError
+	if errors.As(err, &stage) && stage.code != "" {
+		return stage.code
+	}
+	return "relay_receive_failed"
+}
+
 type archiveReplicaMetadata struct {
 	FormatVersion int                              `json:"format_version"`
 	PublishedAt   time.Time                        `json:"published_at"`
@@ -88,7 +122,8 @@ type snapshotReleaseRequest struct {
 
 func (a *Agent) RunSnapshot(ctx context.Context, req protocol.StartSnapshotRequest) (protocol.SnapshotTransferReceipt, error) {
 	if runtime.GOOS != "linux" {
-		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("snapshot publication is enabled only on Linux")
+		return protocol.SnapshotTransferReceipt{}, relayReceiveStageError(
+			"relay_receive_unsupported", fmt.Errorf("snapshot publication is enabled only on Linux"))
 	}
 	if err := validateStartSnapshotRequest(req); err != nil {
 		return protocol.SnapshotTransferReceipt{}, err
@@ -932,11 +967,12 @@ func (a *Agent) RunRelayReceive(
 	if !validUUID(req.WorkflowID) || !validUUID(req.SnapshotID) || !validUUID(req.RelayTaskID) ||
 		req.RelayDownloadToken == "" || req.TransferCapability == "" ||
 		!req.CapabilityExpires.After(time.Now().UTC()) {
-		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("invalid relay receive request")
+		return protocol.SnapshotTransferReceipt{}, relayReceiveStageError(
+			"relay_receive_request_invalid", fmt.Errorf("invalid relay receive request"))
 	}
 	endpoint, err := relayTransferEndpoint(req.RelayDownloadURL, req.RelayTaskID)
 	if err != nil {
-		return protocol.SnapshotTransferReceipt{}, err
+		return protocol.SnapshotTransferReceipt{}, relayReceiveStageError("relay_receive_endpoint_invalid", err)
 	}
 	// Publication is durable local state. If the Agent or Controller restarted
 	// after publication but before the command result was acknowledged, replay
@@ -944,18 +980,19 @@ func (a *Agent) RunRelayReceive(
 	// and publishing the same snapshot again.
 	if receipt, ok := a.snapshotReceipt(req.WorkflowID, req.SnapshotID); ok {
 		if err := completeRelayDownload(ctx, endpoint, req.RelayDownloadToken); err != nil {
-			return protocol.SnapshotTransferReceipt{}, err
+			return protocol.SnapshotTransferReceipt{}, relayReceiveStageError("relay_receive_cleanup_failed", err)
 		}
 		return *receipt, nil
 	}
 	transfer, err := a.relayTransfer(req.SnapshotID, req.WorkflowID, req.RelayTaskID)
 	if err != nil || !transfer.ExpiresAt.Equal(req.CapabilityExpires) {
-		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("relay transfer state mismatch")
+		return protocol.SnapshotTransferReceipt{}, relayReceiveStageError(
+			"relay_receive_state_mismatch", fmt.Errorf("relay transfer state mismatch"))
 	}
 	defer a.failTransferIfIncomplete(req.SnapshotID)
 	resp, err := pullRelayCiphertext(ctx, endpoint, req.RelayDownloadToken, req.CapabilityExpires)
 	if err != nil {
-		return protocol.SnapshotTransferReceipt{}, err
+		return protocol.SnapshotTransferReceipt{}, relayReceiveStageError("relay_receive_download_failed", err)
 	}
 	defer resp.Body.Close()
 	receiveCtx, cancelReceive := context.WithCancel(ctx)
@@ -981,7 +1018,8 @@ func (a *Agent) RunRelayReceive(
 		resp.Header.Get("X-Workflow-Id") != req.WorkflowID || resp.Header.Get("X-Snapshot-Id") != req.SnapshotID ||
 		!validCapabilityHash(archiveHash) || cipherHashErr != nil || len(ciphertextDigest) != sha256.Size {
 		_ = stopLeaseRenewal()
-		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("invalid relay ciphertext metadata")
+		return protocol.SnapshotTransferReceipt{}, relayReceiveStageError(
+			"relay_receive_metadata_invalid", fmt.Errorf("invalid relay ciphertext metadata"))
 	}
 	ciphertextHash := sha256.New()
 	reader, writer := io.Pipe()
@@ -1005,17 +1043,18 @@ func (a *Agent) RunRelayReceive(
 	decryptResult := <-decryptDone
 	renewErr := stopLeaseRenewal()
 	if receiveErr != nil {
-		return protocol.SnapshotTransferReceipt{}, receiveErr
+		return protocol.SnapshotTransferReceipt{}, relayReceiveStageError("relay_receive_publish_failed", receiveErr)
 	}
 	if renewErr != nil {
-		return protocol.SnapshotTransferReceipt{}, renewErr
+		return protocol.SnapshotTransferReceipt{}, relayReceiveStageError("relay_receive_lease_failed", renewErr)
 	}
 	if decryptResult.err != nil || decryptResult.plaintextBytes != plaintextBytes ||
 		!hmac.Equal(ciphertextHash.Sum(nil), ciphertextDigest) {
-		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("relay ciphertext verification failed")
+		return protocol.SnapshotTransferReceipt{}, relayReceiveStageError(
+			"relay_receive_integrity_failed", fmt.Errorf("relay ciphertext verification failed"))
 	}
 	if err := completeRelayDownload(ctx, endpoint, req.RelayDownloadToken); err != nil {
-		return protocol.SnapshotTransferReceipt{}, err
+		return protocol.SnapshotTransferReceipt{}, relayReceiveStageError("relay_receive_cleanup_failed", err)
 	}
 	return receipt, nil
 }

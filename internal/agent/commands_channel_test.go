@@ -196,10 +196,10 @@ func TestExecuteCommandMapsValidWorkflowFailuresToClosedStableCodes(t *testing.T
 		wantCode    string
 	}{
 		{commandType: "start_snapshot", payload: `{}`, wantCode: "snapshot_failed"},
-		{commandType: "start_relay_receive", payload: `{}`, wantCode: "relay_receive_failed"},
+		{commandType: "start_relay_receive", payload: `{}`, wantCode: "relay_receive_request_invalid"},
 		{commandType: "start_restore_transfer", payload: `{}`, wantCode: "restore_transfer_failed"},
 		{commandType: "verify_replica_integrity_v2", payload: `{}`, wantCode: "replica_integrity_unavailable"},
-		{commandType: "start_conflict_evidence_transfer", payload: `{}`, wantCode: "conflict_evidence_transfer_failed"},
+		{commandType: "start_conflict_evidence_transfer", payload: `{}`, wantCode: "conflict_evidence_request_invalid"},
 		{commandType: "prepare_conflict_resolution", payload: `{}`, wantCode: "conflict_resolution_prepare_failed"},
 		{commandType: "apply_conflict_resolution_decisions", payload: `{}`, wantCode: "conflict_resolution_decisions_failed"},
 		{commandType: "publish_conflict_resolution", payload: `{}`, wantCode: "conflict_resolution_publish_failed"},

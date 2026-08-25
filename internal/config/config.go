@@ -81,12 +81,13 @@ type ImportScanPolicy struct {
 	MaxNodesPerRun int  `yaml:"max_nodes_per_run"` // default 2
 }
 
-// AgentAutoUpdatePolicy enables one-at-a-time, idle-only Agent upgrades. An
-// Agent never accepts a URL or shell from the Controller; it downloads the
-// exact architecture artifact from controller_url and verifies its sidecar.
+// AgentAutoUpdatePolicy enables one-at-a-time Agent upgrades. An Agent never
+// accepts a URL or shell from the Controller; it downloads the exact
+// architecture artifact from controller_url and verifies its sidecar.
 type AgentAutoUpdatePolicy struct {
-	Enabled     bool `yaml:"enabled"`
-	IntervalSec int  `yaml:"interval_sec"` // default 60; one eligible node per pass
+	Enabled          bool `yaml:"enabled"`
+	IntervalSec      int  `yaml:"interval_sec"`       // default 60; one eligible node per pass
+	AllowOnlineUsers bool `yaml:"allow_online_users"` // Agent-only restart; never restarts SillyTavern
 }
 
 // NodePolicy 节点策略。

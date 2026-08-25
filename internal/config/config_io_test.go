@@ -40,7 +40,7 @@ func TestLoadRoundTripPreservesBackupAndImportScanPolicies(t *testing.T) {
 		RecoveryPassphraseEnv: "CONTROLLER_RECOVERY_PASSPHRASE",
 	}
 	cfg.ImportScan = ImportScanPolicy{Enabled: true, IntervalSec: 300, MaxNodesPerRun: 4}
-	cfg.AgentAutoUpdate = AgentAutoUpdatePolicy{Enabled: true, IntervalSec: 45}
+	cfg.AgentAutoUpdate = AgentAutoUpdatePolicy{Enabled: true, IntervalSec: 45, AllowOnlineUsers: true}
 	if err := Save(path, cfg); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -56,7 +56,8 @@ func TestLoadRoundTripPreservesBackupAndImportScanPolicies(t *testing.T) {
 	if !loaded.ImportScan.Enabled || loaded.ImportScan.IntervalSec != 300 || loaded.ImportScan.MaxNodesPerRun != 4 {
 		t.Fatalf("import scan round-trip mismatch: %+v", loaded.ImportScan)
 	}
-	if !loaded.AgentAutoUpdate.Enabled || loaded.AgentAutoUpdate.IntervalSec != 45 {
+	if !loaded.AgentAutoUpdate.Enabled || loaded.AgentAutoUpdate.IntervalSec != 45 ||
+		!loaded.AgentAutoUpdate.AllowOnlineUsers {
 		t.Fatalf("Agent auto-update round-trip mismatch: %+v", loaded.AgentAutoUpdate)
 	}
 }
@@ -126,7 +127,7 @@ func TestDefaultControllerHasExplicitDisasterBackupAndImportScanPolicies(t *test
 	if cfg.ImportScan.Enabled || cfg.ImportScan.IntervalSec != 6*3600 || cfg.ImportScan.MaxNodesPerRun != 2 {
 		t.Fatalf("import scan defaults=%+v", cfg.ImportScan)
 	}
-	if cfg.AgentAutoUpdate.Enabled || cfg.AgentAutoUpdate.IntervalSec != 60 {
+	if cfg.AgentAutoUpdate.Enabled || cfg.AgentAutoUpdate.IntervalSec != 60 || cfg.AgentAutoUpdate.AllowOnlineUsers {
 		t.Fatalf("Agent auto-update defaults=%+v", cfg.AgentAutoUpdate)
 	}
 	if cfg.AISupervisor.InspectEverySec != 1800 {

@@ -461,6 +461,8 @@ func TestSnapshotWorkflowClaimRetryAndResume(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery(`UPDATE workflows SET state=resume_state`).WithArgs("workflow", now).
 		WillReturnRows(sqlmock.NewRows([]string{"workflow_type"}).AddRow("snapshot"))
+	mock.ExpectExec(`UPDATE relay_transfers SET expires_at=LEAST`).WithArgs("workflow", now).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`UPDATE workflow_steps SET state='pending'`).WithArgs("workflow", now).
 		WillReturnResult(sqlmock.NewResult(0, 6))
 	mock.ExpectCommit()
@@ -502,9 +504,9 @@ func TestScheduleSnapshotRetryResetsEachSharedWorkflowType(t *testing.T) {
 			if test.revokesCapability {
 				mock.ExpectExec(`UPDATE snapshot_transfer_capabilities SET state='revoked'`).WithArgs("workflow").
 					WillReturnResult(sqlmock.NewResult(0, 1))
-				mock.ExpectExec(`UPDATE relay_transfers SET expires_at=LEAST`).WithArgs("workflow", now).
-					WillReturnResult(sqlmock.NewResult(0, 0))
 			}
+			mock.ExpectExec(`UPDATE relay_transfers SET expires_at=LEAST`).WithArgs("workflow", now).
+				WillReturnResult(sqlmock.NewResult(0, 0))
 			mock.ExpectExec(`UPDATE workflow_steps SET state='retry_wait'`).
 				WithArgs("workflow", "temporary_error", now).
 				WillReturnResult(sqlmock.NewResult(0, test.stepRows))
@@ -519,6 +521,8 @@ func TestScheduleSnapshotRetryResetsEachSharedWorkflowType(t *testing.T) {
 			mock.ExpectBegin()
 			mock.ExpectQuery(`UPDATE workflows SET state=resume_state`).WithArgs("workflow", resumeNow).
 				WillReturnRows(sqlmock.NewRows([]string{"workflow_type"}).AddRow(test.workflowType))
+			mock.ExpectExec(`UPDATE relay_transfers SET expires_at=LEAST`).WithArgs("workflow", resumeNow).
+				WillReturnResult(sqlmock.NewResult(0, 0))
 			mock.ExpectExec(`UPDATE workflow_steps SET state='pending'`).WithArgs("workflow", resumeNow).
 				WillReturnResult(sqlmock.NewResult(0, test.stepRows))
 			mock.ExpectCommit()

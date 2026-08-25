@@ -61,6 +61,7 @@ func TestControllerConflictEvidenceAndResolutionThroughDurableCommands(t *testin
 	t.Cleanup(harness.stop)
 	cfg := config.DefaultController()
 	cfg.Backup.RetryMax = 5
+	cfg.Relay.PublicURL = "https://relay.example.test"
 	server := New(cfg, st, secretKey)
 
 	if _, err := st.ReconcileProtectionStates(ctx, time.Now().UTC(), time.Minute); err != nil {
@@ -183,6 +184,12 @@ func TestControllerConflictEvidenceAndResolutionThroughDurableCommands(t *testin
 	if _, err := st.DB.ExecContext(ctx, `DELETE FROM user_replicas WHERE user_id=$1 AND node_id=$2`,
 		user.ID, lateNode.ID); err != nil {
 		t.Fatalf("remove late source race fixture: %v", err)
+	}
+	// Agent-only nodes intentionally have no public data URL. Resolution must
+	// still be accepted; production uses the Controller's encrypted relay.
+	if _, err := st.DB.ExecContext(ctx, `UPDATE nodes SET transfer_url='',agent_version='0.4.5' WHERE id IN ($1,$2)`,
+		base.ID, source.ID); err != nil {
+		t.Fatalf("clear conflict node transfer URLs: %v", err)
 	}
 	for range cap(server.snapshotSlots) {
 		server.snapshotSlots <- struct{}{}
@@ -482,7 +489,11 @@ func (h *controllerConflictCommandHarness) handleCommand(
 		if err := json.Unmarshal(plaintext, &request); err != nil || request.DestinationKind != "conflict_input" {
 			return agentCommandSummary{}, false, fmt.Errorf("decode conflict input prepare: %w", err)
 		}
-		return agentCommandSummary{OK: true}, true, nil
+		result := agentCommandSummary{OK: true}
+		if request.RelayTaskID != "" {
+			result.RelayPublicKey = "test-relay-target-public-key"
+		}
+		return result, true, nil
 
 	case "start_conflict_evidence_transfer":
 		if nodeID != h.sourceNodeID {
@@ -492,11 +503,26 @@ func (h *controllerConflictCommandHarness) handleCommand(
 		if err := json.Unmarshal(plaintext, &request); err != nil || request.TargetNodeID != h.baseNodeID {
 			return agentCommandSummary{}, false, fmt.Errorf("decode conflict evidence transfer: %w", err)
 		}
+		if request.TransferMode == "relay" {
+			receipt := controllerBackupSnapshotReceipt(request.EvidenceID, true)
+			return agentCommandSummary{OK: true, Snapshot: receipt}, true, nil
+		}
 		receipt := controllerBackupSnapshotReceipt(request.EvidenceID, false)
 		h.mu.Lock()
 		h.transferReceipts[request.EvidenceID] = receipt
 		h.mu.Unlock()
 		return agentCommandSummary{OK: false, Code: "response_lost"}, false, nil
+
+	case "start_relay_receive":
+		if nodeID != h.baseNodeID {
+			return agentCommandSummary{}, false, fmt.Errorf("conflict relay received by non-base node")
+		}
+		var request protocol.StartRelayReceiveRequest
+		if err := json.Unmarshal(plaintext, &request); err != nil || request.SnapshotID == "" ||
+			request.WorkflowID == "" || request.RelayTaskID == "" {
+			return agentCommandSummary{}, false, fmt.Errorf("decode conflict relay receive: %w", err)
+		}
+		return agentCommandSummary{OK: true, Snapshot: controllerBackupSnapshotReceipt(request.SnapshotID, false)}, true, nil
 
 	case "get_snapshot_receipt":
 		if nodeID != h.baseNodeID {
@@ -629,14 +655,16 @@ func assertControllerConflictResolved(
 			conflictState, workflowState, globalStatus, legacyStatus, leaseState, baseKind, baseState,
 			sourceState, manifestState, protectionState, reasonCode, authoritativeCopies, audits)
 	}
-	var recoveredTransfers, decisionCommands int
+	var recoveredTransfers, relayTransfers, decisionCommands int
 	if err := st.DB.QueryRowContext(ctx, `
 		SELECT count(*) FILTER (WHERE command_type='get_snapshot_receipt' AND state='succeeded'),
+		       count(*) FILTER (WHERE command_type='start_relay_receive' AND state='succeeded'),
 		       count(*) FILTER (WHERE command_type='apply_conflict_resolution_decisions' AND state='succeeded')
-		FROM agent_commands`).Scan(&recoveredTransfers, &decisionCommands); err != nil {
+		FROM agent_commands`).Scan(&recoveredTransfers, &relayTransfers, &decisionCommands); err != nil {
 		t.Fatalf("query conflict command completion: %v", err)
 	}
-	if recoveredTransfers != 1 || decisionCommands != 2 {
-		t.Fatalf("conflict durable command history: recovered=%d decision_pages=%d", recoveredTransfers, decisionCommands)
+	if recoveredTransfers != 0 || relayTransfers != 1 || decisionCommands != 2 {
+		t.Fatalf("conflict durable command history: recovered=%d relay=%d decision_pages=%d",
+			recoveredTransfers, relayTransfers, decisionCommands)
 	}
 }

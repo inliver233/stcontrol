@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,7 +11,7 @@ import (
 )
 
 var relayColumns = []string{
-	"id", "workflow_id", "snapshot_id", "source_node_id", "target_node_id",
+	"id", "workflow_id", "transport_scope_id", "snapshot_id", "source_node_id", "target_node_id",
 	"attempt", "state", "controller_generation", "max_ciphertext_bytes",
 	"plaintext_bytes", "ciphertext_bytes", "archive_sha256", "ciphertext_sha256",
 	"storage_path", "expires_at",
@@ -28,7 +30,7 @@ func relayParams(now time.Time) CreateRelayTransferParams {
 
 func relayRow(p CreateRelayTransferParams, state string) *sqlmock.Rows {
 	return sqlmock.NewRows(relayColumns).AddRow(
-		p.ID, p.WorkflowID, p.SnapshotID, p.SourceNodeID, p.TargetNodeID,
+		p.ID, p.WorkflowID, p.WorkflowID, p.SnapshotID, p.SourceNodeID, p.TargetNodeID,
 		p.Attempt, state, int64(8), p.MaxCiphertextBytes,
 		nil, nil, nil, nil, nil, p.ExpiresAt,
 	)
@@ -51,6 +53,32 @@ func TestCreateRelayTransferBindsWorkflowAndActiveGeneration(t *testing.T) {
 	assertMockExpectations(t, mock)
 }
 
+func TestCreateConflictRelayTransferUsesConflictTransportScope(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	p := relayParams(now)
+	operationID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	conflictID := "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	row := sqlmock.NewRows(relayColumns).AddRow(
+		p.ID, p.WorkflowID, conflictID, p.SnapshotID, p.SourceNodeID, p.TargetNodeID,
+		p.Attempt, "prepared", int64(8), p.MaxCiphertextBytes,
+		nil, nil, nil, nil, nil, p.ExpiresAt,
+	)
+	mock.ExpectQuery(`(?s)INSERT INTO relay_transfers.*JOIN conflict_resolution_operations`).WithArgs(
+		p.ID, p.WorkflowID, p.SnapshotID, p.SourceNodeID, p.TargetNodeID, p.Attempt,
+		p.UploadTokenHash, p.DownloadTokenHash, p.MaxCiphertextBytes, p.ExpiresAt, p.Now,
+		operationID,
+	).WillReturnRows(row)
+	transfer, err := st.CreateConflictRelayTransfer(context.Background(), p, operationID)
+	if err != nil || transfer == nil || transfer.TransportScopeID != conflictID ||
+		transfer.SnapshotID != p.SnapshotID {
+		t.Fatalf("transfer=%+v err=%v", transfer, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
 func TestRelayUploadLifecycleIsTokenAndLeaseFenced(t *testing.T) {
 	t.Parallel()
 	st, mock, closeDB := newMockStore(t)
@@ -61,7 +89,7 @@ func TestRelayUploadLifecycleIsTokenAndLeaseFenced(t *testing.T) {
 	leaseTTL := 5 * time.Minute
 	uploading := relayRow(p, "uploading")
 	uploading = sqlmock.NewRows(relayColumns).AddRow(
-		p.ID, p.WorkflowID, p.SnapshotID, p.SourceNodeID, p.TargetNodeID,
+		p.ID, p.WorkflowID, p.WorkflowID, p.SnapshotID, p.SourceNodeID, p.TargetNodeID,
 		p.Attempt, "uploading", int64(8), p.MaxCiphertextBytes,
 		int64(900), nil, archiveHash, nil, nil, p.ExpiresAt,
 	)
@@ -99,7 +127,7 @@ func TestRelayDownloadLifecycleDoesNotConsumeUntilExplicitConfirmation(t *testin
 	p := relayParams(now)
 	leaseTTL := 10 * time.Minute
 	downloading := sqlmock.NewRows(relayColumns).AddRow(
-		p.ID, p.WorkflowID, p.SnapshotID, p.SourceNodeID, p.TargetNodeID,
+		p.ID, p.WorkflowID, p.WorkflowID, p.SnapshotID, p.SourceNodeID, p.TargetNodeID,
 		p.Attempt, "downloading", int64(8), p.MaxCiphertextBytes,
 		int64(900), int64(1024), bytesOf(2, 32), bytesOf(3, 32), "relay/task.relay", p.ExpiresAt,
 	)
@@ -133,6 +161,26 @@ func TestRelayDownloadLifecycleDoesNotConsumeUntilExplicitConfirmation(t *testin
 	path, err := st.CompleteRelayDownload(context.Background(), p.ID, p.DownloadTokenHash, now)
 	if err != nil || path != "relay/task.relay" {
 		t.Fatalf("path=%q err=%v", path, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestRelayDownloadReturnsTerminalStateAfterWorkflowAbandonsTask(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 25, 12, 45, 0, 0, time.UTC)
+	p := relayParams(now)
+	mock.ExpectQuery(`UPDATE relay_transfers relay SET state='downloading'`).WithArgs(
+		p.ID, p.DownloadTokenHash, now, now.Add(time.Minute),
+	).WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`SELECT EXISTS`).WithArgs(p.ID, p.DownloadTokenHash, now).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	transfer, err := st.ClaimRelayDownload(
+		context.Background(), p.ID, p.DownloadTokenHash, now, time.Minute,
+	)
+	if transfer != nil || !errors.Is(err, ErrRelayTransferTerminal) {
+		t.Fatalf("transfer=%+v err=%v", transfer, err)
 	}
 	assertMockExpectations(t, mock)
 }

@@ -10,13 +10,15 @@ import (
 )
 
 var (
-	ErrInvalidRelayTransfer = errors.New("invalid relay transfer input")
-	ErrRelayTransferState   = errors.New("relay transfer state conflict")
+	ErrInvalidRelayTransfer  = errors.New("invalid relay transfer input")
+	ErrRelayTransferState    = errors.New("relay transfer state conflict")
+	ErrRelayTransferTerminal = errors.New("relay transfer is terminal")
 )
 
 type RelayTransfer struct {
 	ID                   string
 	WorkflowID           string
+	TransportScopeID     string
 	SnapshotID           string
 	SourceNodeID         int64
 	TargetNodeID         int64
@@ -62,11 +64,11 @@ func (s *Store) CreateRelayTransfer(ctx context.Context, p CreateRelayTransferPa
 	var out RelayTransfer
 	err := scanRelayTransfer(s.DB.QueryRowContext(ctx, `
 		INSERT INTO relay_transfers (
-		  id,workflow_id,snapshot_id,source_node_id,target_node_id,attempt,state,
+		  id,workflow_id,transport_scope_id,snapshot_id,source_node_id,target_node_id,attempt,state,
 		  upload_token_hash,download_token_hash,controller_generation,
 		  max_ciphertext_bytes,expires_at,created_at,updated_at
 		)
-		SELECT $1,$2,$3,$4,$5,$6,'prepared',$7,$8,workflow.controller_generation,
+		SELECT $1,$2,$2,$3,$4,$5,$6,'prepared',$7,$8,workflow.controller_generation,
 		  $9,$10,$11,$11
 		FROM workflows workflow
 		JOIN snapshot_manifests snapshot ON snapshot.workflow_id=workflow.id AND snapshot.id=$3
@@ -75,8 +77,8 @@ func (s *Store) CreateRelayTransfer(ctx context.Context, p CreateRelayTransferPa
 		WHERE workflow.id=$2 AND workflow.source_node_id=$4 AND workflow.target_node_id=$5
 		  AND workflow.attempt=$6 AND workflow.transfer_mode='relay'
 		  AND workflow.state NOT IN ('succeeded','cancelled','failed')
-		ON CONFLICT (workflow_id,attempt) DO NOTHING
-		RETURNING id::text,workflow_id::text,snapshot_id::text,source_node_id,target_node_id,
+		ON CONFLICT (workflow_id,attempt,snapshot_id) DO NOTHING
+		RETURNING id::text,workflow_id::text,transport_scope_id::text,snapshot_id::text,source_node_id,target_node_id,
 		  attempt,state,controller_generation,max_ciphertext_bytes,plaintext_bytes,
 		  ciphertext_bytes,archive_sha256,ciphertext_sha256,storage_path,expires_at`,
 		p.ID, p.WorkflowID, p.SnapshotID, p.SourceNodeID, p.TargetNodeID, p.Attempt,
@@ -89,11 +91,12 @@ func (s *Store) CreateRelayTransfer(ctx context.Context, p CreateRelayTransferPa
 	}
 	var uploadHash, downloadHash []byte
 	err = scanRelayTransferAndHashes(s.DB.QueryRowContext(ctx, `
-		SELECT id::text,workflow_id::text,snapshot_id::text,source_node_id,target_node_id,
+		SELECT id::text,workflow_id::text,transport_scope_id::text,snapshot_id::text,source_node_id,target_node_id,
 		  attempt,state,controller_generation,max_ciphertext_bytes,plaintext_bytes,
 		  ciphertext_bytes,archive_sha256,ciphertext_sha256,storage_path,expires_at,
 		  upload_token_hash,download_token_hash
-		FROM relay_transfers WHERE workflow_id=$1 AND attempt=$2`, p.WorkflowID, p.Attempt),
+		FROM relay_transfers WHERE workflow_id=$1 AND attempt=$2 AND snapshot_id=$3`,
+		p.WorkflowID, p.Attempt, p.SnapshotID),
 		&out, &uploadHash, &downloadHash)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -110,6 +113,81 @@ func (s *Store) CreateRelayTransfer(ctx context.Context, p CreateRelayTransferPa
 	return &out, nil
 }
 
+// CreateConflictRelayTransfer binds an encrypted relay task to one immutable
+// conflict-evidence source. Unlike an ordinary snapshot, evidence_id is owned
+// by replica_conflict_sources rather than snapshot_manifests.
+func (s *Store) CreateConflictRelayTransfer(
+	ctx context.Context,
+	p CreateRelayTransferParams,
+	operationID string,
+) (*RelayTransfer, error) {
+	if p.ID == "" || p.WorkflowID == "" || p.SnapshotID == "" || operationID == "" ||
+		p.SourceNodeID <= 0 || p.TargetNodeID <= 0 || p.SourceNodeID == p.TargetNodeID ||
+		p.Attempt < 0 || len(p.UploadTokenHash) != 32 || len(p.DownloadTokenHash) != 32 ||
+		p.MaxCiphertextBytes <= 0 {
+		return nil, ErrInvalidRelayTransfer
+	}
+	if p.Now.IsZero() {
+		p.Now = time.Now().UTC()
+	}
+	if !p.ExpiresAt.After(p.Now) {
+		return nil, ErrInvalidRelayTransfer
+	}
+	var out RelayTransfer
+	err := scanRelayTransfer(s.DB.QueryRowContext(ctx, `
+		INSERT INTO relay_transfers (
+		  id,workflow_id,transport_scope_id,snapshot_id,source_node_id,target_node_id,attempt,state,
+		  upload_token_hash,download_token_hash,controller_generation,
+		  max_ciphertext_bytes,expires_at,created_at,updated_at
+		)
+		SELECT $1,$2,operation.conflict_id,$3,$4,$5,$6,'prepared',$7,$8,workflow.controller_generation,
+		  $9,$10,$11,$11
+		FROM workflows workflow
+		JOIN conflict_resolution_operations operation
+		  ON operation.workflow_id=workflow.id AND operation.operation_id=$12
+		JOIN replica_conflict_sources source
+		  ON source.conflict_id=operation.conflict_id AND source.evidence_id=$3
+		    AND source.node_id=$4 AND source.evidence_state='ready'
+		JOIN controller_epochs epoch
+		  ON epoch.generation=workflow.controller_generation AND epoch.state='active'
+		WHERE workflow.id=$2 AND workflow.workflow_type='conflict_resolution'
+		  AND operation.base_node_id=$5 AND workflow.attempt=$6
+		  AND workflow.state NOT IN ('succeeded','cancelled','failed')
+		ON CONFLICT (workflow_id,attempt,snapshot_id) DO NOTHING
+		RETURNING id::text,workflow_id::text,transport_scope_id::text,snapshot_id::text,source_node_id,target_node_id,
+		  attempt,state,controller_generation,max_ciphertext_bytes,plaintext_bytes,
+		  ciphertext_bytes,archive_sha256,ciphertext_sha256,storage_path,expires_at`,
+		p.ID, p.WorkflowID, p.SnapshotID, p.SourceNodeID, p.TargetNodeID, p.Attempt,
+		p.UploadTokenHash, p.DownloadTokenHash, p.MaxCiphertextBytes, p.ExpiresAt, p.Now,
+		operationID), &out)
+	if err == nil {
+		return &out, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("create conflict relay transfer: %w", err)
+	}
+	var uploadHash, downloadHash []byte
+	err = scanRelayTransferAndHashes(s.DB.QueryRowContext(ctx, `
+		SELECT id::text,workflow_id::text,transport_scope_id::text,snapshot_id::text,source_node_id,target_node_id,
+		  attempt,state,controller_generation,max_ciphertext_bytes,plaintext_bytes,
+		  ciphertext_bytes,archive_sha256,ciphertext_sha256,storage_path,expires_at,
+		  upload_token_hash,download_token_hash
+		FROM relay_transfers WHERE workflow_id=$1 AND attempt=$2 AND snapshot_id=$3`,
+		p.WorkflowID, p.Attempt, p.SnapshotID), &out, &uploadHash, &downloadHash)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrRelayTransferState
+		}
+		return nil, err
+	}
+	if out.ID != p.ID || out.SourceNodeID != p.SourceNodeID || out.TargetNodeID != p.TargetNodeID ||
+		out.MaxCiphertextBytes != p.MaxCiphertextBytes || !bytes.Equal(uploadHash, p.UploadTokenHash) ||
+		!bytes.Equal(downloadHash, p.DownloadTokenHash) {
+		return nil, ErrRelayTransferState
+	}
+	return &out, nil
+}
+
 // rowScanner keeps the long relay projection identical across QueryRow calls.
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -117,7 +195,7 @@ type rowScanner interface {
 
 func scanRelayTransfer(row rowScanner, out *RelayTransfer) error {
 	return row.Scan(
-		&out.ID, &out.WorkflowID, &out.SnapshotID, &out.SourceNodeID, &out.TargetNodeID,
+		&out.ID, &out.WorkflowID, &out.TransportScopeID, &out.SnapshotID, &out.SourceNodeID, &out.TargetNodeID,
 		&out.Attempt, &out.State, &out.ControllerGeneration, &out.MaxCiphertextBytes,
 		&out.PlaintextBytes, &out.CiphertextBytes, &out.ArchiveSHA256,
 		&out.CiphertextSHA256, &out.StoragePath, &out.ExpiresAt,
@@ -126,7 +204,7 @@ func scanRelayTransfer(row rowScanner, out *RelayTransfer) error {
 
 func scanRelayTransferAndHashes(row rowScanner, out *RelayTransfer, uploadHash, downloadHash *[]byte) error {
 	return row.Scan(
-		&out.ID, &out.WorkflowID, &out.SnapshotID, &out.SourceNodeID, &out.TargetNodeID,
+		&out.ID, &out.WorkflowID, &out.TransportScopeID, &out.SnapshotID, &out.SourceNodeID, &out.TargetNodeID,
 		&out.Attempt, &out.State, &out.ControllerGeneration, &out.MaxCiphertextBytes,
 		&out.PlaintextBytes, &out.CiphertextBytes, &out.ArchiveSHA256,
 		&out.CiphertextSHA256, &out.StoragePath, &out.ExpiresAt, uploadHash, downloadHash,
@@ -160,7 +238,7 @@ func (s *Store) ClaimRelayUpload(
 		  AND (relay.state='prepared' OR (relay.state='uploading' AND relay.upload_lease_until<=$6))
 		  AND (relay.plaintext_bytes IS NULL OR relay.plaintext_bytes=$3)
 		  AND (relay.archive_sha256 IS NULL OR relay.archive_sha256=$5)
-		RETURNING relay.id::text,relay.workflow_id::text,relay.snapshot_id::text,
+		RETURNING relay.id::text,relay.workflow_id::text,relay.transport_scope_id::text,relay.snapshot_id::text,
 		  relay.source_node_id,relay.target_node_id,relay.attempt,relay.state,
 		  relay.controller_generation,relay.max_ciphertext_bytes,relay.plaintext_bytes,
 		  relay.ciphertext_bytes,relay.archive_sha256,relay.ciphertext_sha256,
@@ -176,7 +254,7 @@ func (s *Store) ClaimRelayUpload(
 	// A response may be lost after the ciphertext was durably published. An
 	// exact retry receives the stored fact rather than opening a second spool.
 	err = scanRelayTransfer(s.DB.QueryRowContext(ctx, `
-		SELECT relay.id::text,relay.workflow_id::text,relay.snapshot_id::text,
+		SELECT relay.id::text,relay.workflow_id::text,relay.transport_scope_id::text,relay.snapshot_id::text,
 		  relay.source_node_id,relay.target_node_id,relay.attempt,relay.state,
 		  relay.controller_generation,relay.max_ciphertext_bytes,relay.plaintext_bytes,
 		  relay.ciphertext_bytes,relay.archive_sha256,relay.ciphertext_sha256,
@@ -267,12 +345,23 @@ func (s *Store) ClaimRelayDownload(
 		  AND relay.controller_generation=epoch.generation AND epoch.state='active'
 		  AND relay.expires_at>$3
 		  AND (relay.state='stored' OR (relay.state='downloading' AND relay.download_lease_until<=$3))
-		RETURNING relay.id::text,relay.workflow_id::text,relay.snapshot_id::text,
+		RETURNING relay.id::text,relay.workflow_id::text,relay.transport_scope_id::text,relay.snapshot_id::text,
 		  relay.source_node_id,relay.target_node_id,relay.attempt,relay.state,
 		  relay.controller_generation,relay.max_ciphertext_bytes,relay.plaintext_bytes,
 		  relay.ciphertext_bytes,relay.archive_sha256,relay.ciphertext_sha256,
 		  relay.storage_path,relay.expires_at`, id, downloadTokenHash, now, now.Add(leaseTTL)), &out)
 	if err == sql.ErrNoRows {
+		var terminal bool
+		terminalErr := s.DB.QueryRowContext(ctx, `SELECT EXISTS (
+			SELECT 1 FROM relay_transfers WHERE id=$1::uuid AND download_token_hash=$2
+			  AND (state IN ('failed','expired','consumed') OR expires_at<=$3)
+		)`, id, downloadTokenHash, now).Scan(&terminal)
+		if terminalErr != nil {
+			return nil, terminalErr
+		}
+		if terminal {
+			return nil, ErrRelayTransferTerminal
+		}
 		return nil, ErrRelayTransferState
 	}
 	return &out, err

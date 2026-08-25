@@ -77,6 +77,60 @@ func TestCreateConflictResolutionReplaysOnlyExactOperation(t *testing.T) {
 	}
 }
 
+func TestDeferConflictResolutionPreservesAttemptBudget(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 25, 12, 30, 0, 0, time.UTC)
+	workflowID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)UPDATE workflows workflow SET next_attempt_at=.*workflow_type='conflict_resolution'.*workflow.state='scheduled'`).
+		WithArgs(workflowID, "source_upgrade_pending", "等待冲突来源 Agent 安全升级", now.Add(time.Minute), now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`(?s)UPDATE relay_transfers.*expires_at=LEAST\(expires_at,\$2\).*workflow_id=\$1`).
+		WithArgs(workflowID, now).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectCommit()
+	if err := st.DeferConflictResolution(
+		context.Background(), workflowID, "source_upgrade_pending",
+		"等待冲突来源 Agent 安全升级", now, time.Minute,
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestAdoptStaleConflictResolutionFencesRelayAndRebindsGeneration(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	now := time.Date(2026, 8, 25, 13, 5, 0, 0, time.UTC)
+	workflowID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)WITH active AS.*SELECT workflow.id::text,active.generation,EXISTS.*FOR UPDATE OF workflow SKIP LOCKED`).
+		WithArgs(100).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "generation", "had_relay"}).
+			AddRow(workflowID, int64(38), true))
+	mock.ExpectExec(`(?s)UPDATE workflows SET.*controller_generation=\$2,state='scheduled'.*attempt=attempt\+\$3`).
+		WithArgs(workflowID, int64(38), 1, now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`(?s)UPDATE replica_conflicts conflict.*controller_generation=\$2`).
+		WithArgs(workflowID, int64(38), now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`(?s)UPDATE relay_transfers.*expires_at=LEAST\(expires_at,\$2\)`).
+		WithArgs(workflowID, now).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(`(?s)UPDATE workflow_steps SET state='pending'.*attempt=attempt\+\$2`).
+		WithArgs(workflowID, 1, now).
+		WillReturnResult(sqlmock.NewResult(0, 5))
+	mock.ExpectCommit()
+	adopted, err := st.AdoptStaleConflictResolutions(context.Background(), now, 100)
+	if err != nil || adopted != 1 {
+		t.Fatalf("adopted=%d err=%v", adopted, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
 func conflictResolutionCompletionParams(now time.Time) CompleteConflictResolutionParams {
 	return CompleteConflictResolutionParams{
 		WorkflowID:       "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",

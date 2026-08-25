@@ -41,7 +41,8 @@ func (s *Server) updateOneIdleAgent(ctx context.Context) {
 		return
 	}
 	for _, node := range nodes {
-		if !nodeReadyForManagedOperation(node) || node.OnlineUsers != 0 || node.TaskQueueDepth != 0 ||
+		if !nodeReadyForManagedOperation(node) ||
+			(node.OnlineUsers != 0 && !s.Cfg.AgentAutoUpdate.AllowOnlineUsers) || node.TaskQueueDepth != 0 ||
 			!node.AgentVersion.Valid ||
 			compareControllerAgentVersions(node.AgentVersion.String, minimumSelfUpdatingAgentVersion) < 0 ||
 			compareControllerAgentVersions(node.AgentVersion.String, protocol.CurrentAgentVersion) >= 0 {

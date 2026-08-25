@@ -830,15 +830,15 @@ func (s *Store) ScheduleSnapshotRetry(
 		if rows != 1 {
 			return 0, ErrSnapshotStateConflict
 		}
-		// A retry always receives a fresh capability and operation identity. Make
-		// any abandoned encrypted relay spool immediately eligible for cleanup so
-		// a failed source upload cannot leave a receiver and ciphertext behind.
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE relay_transfers SET expires_at=LEAST(expires_at,$2),
-			  upload_lease_until=NULL,download_lease_until=NULL,updated_at=$2
-			WHERE workflow_id=$1 AND state NOT IN ('consumed','expired','failed')`, workflowID, now); err != nil {
-			return 0, err
-		}
+	}
+	// Every retry receives a fresh data-plane identity. Expire any abandoned
+	// relay task for snapshots, restores, or conflict resolution so old Agents
+	// receive a terminal response instead of polling until capability expiry.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE relay_transfers SET expires_at=LEAST(expires_at,$2),
+		  upload_lease_until=NULL,download_lease_until=NULL,updated_at=$2
+		WHERE workflow_id=$1 AND state NOT IN ('consumed','expired','failed')`, workflowID, now); err != nil {
+		return 0, err
 	}
 	result, err := tx.ExecContext(ctx, stepQuery, workflowID, errorCode, now)
 	if err != nil {
@@ -986,6 +986,15 @@ func (s *Store) ResumeSnapshotRetry(ctx context.Context, workflowID string, now 
 		expectedStepRows = 5
 	default:
 		return ErrSnapshotStateConflict
+	}
+	// Retry scheduling already fences abandoned relay tasks. Repeat the fence
+	// while resuming so workflows written by an older Controller cannot reuse
+	// a stale relay identity after an upgrade.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE relay_transfers SET expires_at=LEAST(expires_at,$2),
+		  upload_lease_until=NULL,download_lease_until=NULL,updated_at=$2
+		WHERE workflow_id=$1 AND state NOT IN ('consumed','expired','failed')`, workflowID, now); err != nil {
+		return err
 	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE workflow_steps SET state='pending',error_code=NULL,updated_at=$2

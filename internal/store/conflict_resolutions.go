@@ -49,8 +49,13 @@ type ConflictResolutionSource struct {
 	NodeID           int64
 	NodeRole         string
 	LocalHandle      string
+	SourceKind       string
+	SourceSnapshotID string
+	ManifestSHA256   []byte
 	EvidenceID       string
 	EntriesSHA256    []byte
+	FileCount        int64
+	TotalBytes       int64
 	TransferState    string
 	CapabilityID     string
 	CapabilityHash   []byte
@@ -63,6 +68,7 @@ type ConflictResolutionExecution struct {
 	WorkflowID           string
 	State                string
 	Attempt              int
+	GenerationRecoveries int
 	ConflictID           string
 	ConflictVersion      int64
 	GlobalUserID         int64
@@ -206,7 +212,7 @@ func (s *Store) CreateConflictResolution(
 		WHERE source.conflict_id=$1 AND source.node_id=$2 AND source.evidence_state='ready'
 		  AND source.node_role='compute' AND node.role='compute'
 		  AND node.connectivity_state='online' AND node.operational_state='active'
-		  AND node.compatibility_state='compatible' AND node.transfer_url<>''
+		  AND node.compatibility_state='compatible'
 		FOR SHARE OF source,node`, p.ConflictID, p.BaseNodeID).Scan(&baseEvidenceID)
 	if err == sql.ErrNoRows {
 		return nil, ErrConflictResolutionState
@@ -383,7 +389,8 @@ func (s *Store) GetConflictResolutionExecution(ctx context.Context, workflowID s
 	var out ConflictResolutionExecution
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT operation.operation_id::text,operation.request_digest,workflow.id::text,
-		  workflow.state,workflow.attempt,operation.conflict_id::text,conflict.version,
+		  workflow.state,workflow.attempt,workflow.generation_recovery_count,
+		  operation.conflict_id::text,conflict.version,
 		  workflow.user_id,global_user.legacy_user_id,COALESCE(base_account.local_handle,legacy.username),operation.base_node_id,
 		  operation.result_snapshot_id::text,workflow.activity_epoch,workflow.controller_generation,
 		  operation.default_action
@@ -396,6 +403,7 @@ func (s *Store) GetConflictResolutionExecution(ctx context.Context, workflowID s
 		  ON base_account.user_id=global_user.id AND base_account.node_id=operation.base_node_id
 		WHERE workflow.id=$1`, workflowID).Scan(
 		&out.OperationID, &out.RequestDigest, &out.WorkflowID, &out.State, &out.Attempt,
+		&out.GenerationRecoveries,
 		&out.ConflictID, &out.ConflictVersion, &out.GlobalUserID, &out.LegacyUserID,
 		&out.Handle, &out.BaseNodeID, &out.ResultSnapshotID, &out.ActivityEpoch,
 		&out.ControllerGeneration, &out.DefaultAction,
@@ -408,7 +416,9 @@ func (s *Store) GetConflictResolutionExecution(ctx context.Context, workflowID s
 	}
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT source.node_id,source.node_role,COALESCE(source.local_handle,legacy.username),
+		  source.source_kind,COALESCE(source.snapshot_id::text,''),COALESCE(source.manifest_sha256,''::bytea),
 		  source.evidence_id::text,source.evidence_entries_sha256,
+		  source.evidence_file_count,source.evidence_total_bytes,
 		  COALESCE(transfer.state,''),COALESCE(transfer.capability_id::text,''),
 		  transfer.capability_hash,transfer.expires_at
 		FROM replica_conflict_sources source
@@ -426,7 +436,8 @@ func (s *Store) GetConflictResolutionExecution(ctx context.Context, workflowID s
 		var capabilityHash []byte
 		var expiry sql.NullTime
 		if err := rows.Scan(&source.NodeID, &source.NodeRole, &source.LocalHandle,
-			&source.EvidenceID, &source.EntriesSHA256,
+			&source.SourceKind, &source.SourceSnapshotID, &source.ManifestSHA256,
+			&source.EvidenceID, &source.EntriesSHA256, &source.FileCount, &source.TotalBytes,
 			&source.TransferState, &source.CapabilityID, &capabilityHash, &expiry); err != nil {
 			_ = rows.Close()
 			return nil, err
@@ -476,11 +487,13 @@ func (s *Store) ListResumableConflictResolutionIDs(ctx context.Context, limit in
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT id::text FROM workflows
-		WHERE workflow_type='conflict_resolution'
-		  AND state IN ('scheduled','transferring','publishing','retry_wait')
-		  AND (next_attempt_at IS NULL OR next_attempt_at<=now())
-		ORDER BY updated_at LIMIT $1`, limit)
+	rows, err := s.DB.QueryContext(ctx, `SELECT workflow.id::text FROM workflows workflow
+		JOIN controller_epochs epoch
+		  ON epoch.generation=workflow.controller_generation AND epoch.state='active'
+		WHERE workflow.workflow_type='conflict_resolution'
+		  AND workflow.state IN ('scheduled','transferring','publishing','retry_wait')
+		  AND (workflow.next_attempt_at IS NULL OR workflow.next_attempt_at<=now())
+		ORDER BY workflow.updated_at LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -494,6 +507,121 @@ func (s *Store) ListResumableConflictResolutionIDs(ctx context.Context, limit in
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// AdoptStaleConflictResolutions safely resumes user-approved conflict work
+// after a Controller generation change. Conflict evidence is immutable and
+// already frozen before resolution starts. Agent-side prepare/apply/publish
+// operations are idempotent, so resetting orchestration to scheduled can
+// replay them without publishing a second result. Any old relay data plane is
+// fenced first and receives a fresh attempt identity.
+func (s *Store) AdoptStaleConflictResolutions(ctx context.Context, now time.Time, limit int) (int, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	type candidate struct {
+		id         string
+		generation int64
+		hadRelay   bool
+	}
+	rows, err := tx.QueryContext(ctx, `
+		WITH active AS (SELECT generation FROM controller_epochs WHERE state='active')
+		SELECT workflow.id::text,active.generation,EXISTS (
+		  SELECT 1 FROM relay_transfers relay WHERE relay.workflow_id=workflow.id
+		)
+		FROM workflows workflow CROSS JOIN active
+		WHERE workflow.workflow_type='conflict_resolution'
+		  AND workflow.state IN ('scheduled','transferring','publishing','retry_wait')
+		  AND workflow.controller_generation<>active.generation
+		ORDER BY workflow.updated_at,workflow.id
+		FOR UPDATE OF workflow SKIP LOCKED LIMIT $1`, limit)
+	if err != nil {
+		return 0, err
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var item candidate
+		if err := rows.Scan(&item.id, &item.generation, &item.hadRelay); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		candidates = append(candidates, item)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, item := range candidates {
+		recoveryIncrement := 0
+		if item.hadRelay {
+			recoveryIncrement = 1
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE workflows SET
+			controller_generation=$2,state='scheduled',resume_state=NULL,
+			attempt=attempt+$3,generation_recovery_count=generation_recovery_count+$3,
+			next_attempt_at=$4,error_code='controller_generation_recovery',
+			error_summary='主控换代，正在从已冻结的不可变证据安全续跑',
+			lease_owner=NULL,lease_until=NULL,updated_at=$4
+			WHERE id=$1 AND workflow_type='conflict_resolution'
+			  AND state IN ('scheduled','transferring','publishing','retry_wait')`,
+			item.id, item.generation, recoveryIncrement, now)
+		if err != nil {
+			return 0, err
+		}
+		if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+			if err != nil {
+				return 0, err
+			}
+			return 0, ErrConflictResolutionState
+		}
+		result, err = tx.ExecContext(ctx, `UPDATE replica_conflicts conflict
+			SET controller_generation=$2,updated_at=$3
+			FROM conflict_resolution_operations operation
+			WHERE operation.workflow_id=$1 AND conflict.id=operation.conflict_id
+			  AND conflict.state='resolving'`, item.id, item.generation, now)
+		if err != nil {
+			return 0, err
+		}
+		if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+			if err != nil {
+				return 0, err
+			}
+			return 0, ErrConflictResolutionState
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE relay_transfers
+			SET expires_at=LEAST(expires_at,$2),upload_lease_until=NULL,
+			  download_lease_until=NULL,updated_at=$2
+			WHERE workflow_id=$1 AND state NOT IN ('consumed','expired','failed')`, item.id, now); err != nil {
+			return 0, err
+		}
+		result, err = tx.ExecContext(ctx, `UPDATE workflow_steps SET state='pending',
+			attempt=attempt+$2,lease_owner=NULL,lease_until=NULL,result=NULL,error_code=NULL,
+			started_at=NULL,finished_at=NULL,updated_at=$3 WHERE workflow_id=$1`,
+			item.id, recoveryIncrement, now)
+		if err != nil {
+			return 0, err
+		}
+		if affected, err := result.RowsAffected(); err != nil || affected != 5 {
+			if err != nil {
+				return 0, err
+			}
+			return 0, ErrConflictResolutionState
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(candidates), nil
 }
 
 func (s *Store) ClaimConflictResolution(ctx context.Context, workflowID, workerID string, now time.Time, ttl time.Duration) (bool, error) {
@@ -512,6 +640,60 @@ func (s *Store) ClaimConflictResolution(ctx context.Context, workflowID, workerI
 	}
 	rows, err := result.RowsAffected()
 	return rows == 1, err
+}
+
+// DeferConflictResolution postpones a workflow before any new data-plane
+// action starts. Node readiness and a safe Agent upgrade must not consume the
+// bounded transport retry budget.
+func (s *Store) DeferConflictResolution(
+	ctx context.Context,
+	workflowID, errorCode, errorSummary string,
+	now time.Time,
+	delay time.Duration,
+) error {
+	if workflowID == "" || !ValidMachineReasonCode(errorCode) || delay <= 0 {
+		return ErrInvalidConflictResolution
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if len(errorSummary) > 512 {
+		errorSummary = errorSummary[:512]
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE workflows workflow SET next_attempt_at=$4,error_code=$2,error_summary=$3,
+		  lease_owner=NULL,lease_until=NULL,updated_at=$5
+		FROM controller_epochs epoch
+		WHERE workflow.id=$1 AND workflow.workflow_type='conflict_resolution'
+		  AND workflow.state='scheduled'
+		  AND workflow.controller_generation=epoch.generation AND epoch.state='active'`,
+		workflowID, errorCode, nullIfEmpty(errorSummary), now.Add(delay), now)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrConflictResolutionState
+	}
+	// A deferral can follow generation recovery of a previously-started relay.
+	// Fence that abandoned data plane atomically so an old receiver does not
+	// keep polling and inflate the target Agent's queue depth while the source
+	// waits for an upgrade or a node to become ready.
+	if _, err := tx.ExecContext(ctx, `UPDATE relay_transfers
+		SET expires_at=LEAST(expires_at,$2),upload_lease_until=NULL,
+		  download_lease_until=NULL,updated_at=$2
+		WHERE workflow_id=$1 AND state NOT IN ('consumed','expired','failed')`, workflowID, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) MarkConflictResolutionTransferComplete(
@@ -824,6 +1006,11 @@ func (s *Store) FailConflictResolution(ctx context.Context, workflowID, code, su
 	if _, err := tx.ExecContext(ctx, `UPDATE conflict_resolution_transfers SET state='revoked',updated_at=$2
 		WHERE operation_id=(SELECT operation_id FROM conflict_resolution_operations WHERE workflow_id=$1)
 		  AND state='prepared'`, workflowID, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE relay_transfers SET expires_at=LEAST(expires_at,$2),
+		upload_lease_until=NULL,download_lease_until=NULL,updated_at=$2
+		WHERE workflow_id=$1 AND state NOT IN ('consumed','expired','failed')`, workflowID, now); err != nil {
 		return err
 	}
 	return tx.Commit()

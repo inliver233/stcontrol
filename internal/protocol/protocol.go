@@ -302,7 +302,7 @@ type AgentCommand struct {
 	ExpiresAt            time.Time       `json:"expires_at"`
 }
 
-const CurrentAgentVersion = "0.4.1"
+const CurrentAgentVersion = "0.4.5"
 
 // AgentUpgradeRequest is deliberately tiny: the Agent only downloads the
 // architecture-specific artifact from its already trusted Controller origin.
@@ -730,10 +730,22 @@ type StartConflictEvidenceTransferRequest struct {
 	EvidenceID         string    `json:"evidence_id"`
 	GlobalUserID       int64     `json:"global_user_id"`
 	Handle             string    `json:"handle"`
+	ResolutionHandle   string    `json:"resolution_handle,omitempty"`
+	SourceKind         string    `json:"source_kind"`
+	SourceSnapshotID   string    `json:"source_snapshot_id,omitempty"`
+	SourceManifestHash string    `json:"source_manifest_sha256,omitempty"`
+	EntriesSHA256      string    `json:"entries_sha256"`
+	FileCount          int64     `json:"file_count"`
+	TotalBytes         int64     `json:"total_bytes"`
 	TargetNodeID       int64     `json:"target_node_id"`
-	TargetTransferURL  string    `json:"target_transfer_url"`
+	TargetTransferURL  string    `json:"target_transfer_url,omitempty"`
 	TransferCapability string    `json:"transfer_capability"`
 	CapabilityExpires  time.Time `json:"capability_expires"`
+	TransferMode       string    `json:"transfer_mode,omitempty"`
+	RelayTaskID        string    `json:"relay_task_id,omitempty"`
+	RelayUploadURL     string    `json:"relay_upload_url,omitempty"`
+	RelayUploadToken   string    `json:"relay_upload_token,omitempty"`
+	RelayTargetKey     string    `json:"relay_target_public_key,omitempty"`
 }
 
 type ConflictResolutionSource struct {

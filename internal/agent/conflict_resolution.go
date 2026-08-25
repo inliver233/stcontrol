@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +20,40 @@ import (
 )
 
 const conflictResolutionMaxSources = 20
+
+type conflictEvidenceTransferError struct {
+	code  string
+	cause error
+}
+
+func (err *conflictEvidenceTransferError) Error() string {
+	if err == nil || err.cause == nil {
+		return "conflict evidence transfer failed"
+	}
+	return err.cause.Error()
+}
+
+func (err *conflictEvidenceTransferError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.cause
+}
+
+func conflictEvidenceStageError(code string, cause error) error {
+	if cause == nil {
+		cause = fmt.Errorf("conflict evidence transfer failed")
+	}
+	return &conflictEvidenceTransferError{code: code, cause: cause}
+}
+
+func conflictEvidenceTransferErrorCode(err error) string {
+	var stage *conflictEvidenceTransferError
+	if errors.As(err, &stage) && stage.code != "" {
+		return stage.code
+	}
+	return "conflict_evidence_transfer_failed"
+}
 
 type conflictResolutionPlan struct {
 	FormatVersion     int                                 `json:"format_version"`
@@ -52,27 +87,64 @@ func (a *Agent) RunConflictEvidenceTransfer(
 	ctx context.Context,
 	req protocol.StartConflictEvidenceTransferRequest,
 ) (protocol.SnapshotTransferReceipt, error) {
+	resolutionHandle := req.ResolutionHandle
+	if resolutionHandle == "" {
+		resolutionHandle = req.Handle
+	}
 	if runtime.GOOS != "linux" || !validUUID(req.ConflictID) || !validUUID(req.EvidenceID) ||
-		req.GlobalUserID <= 0 || !validHandle(req.Handle) || req.TargetNodeID <= 0 ||
-		req.TargetNodeID == a.Cfg.NodeID || req.TargetTransferURL == "" ||
-		req.TransferCapability == "" || !req.CapabilityExpires.After(time.Now().UTC()) {
-		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("invalid conflict evidence transfer request")
+		req.GlobalUserID <= 0 || !validHandle(req.Handle) || !validHandle(resolutionHandle) || req.TargetNodeID <= 0 ||
+		req.TargetNodeID == a.Cfg.NodeID ||
+		req.TransferCapability == "" || !req.CapabilityExpires.After(time.Now().UTC()) ||
+		!validCapabilityHash(req.EntriesSHA256) || req.FileCount < 0 ||
+		req.FileCount > maxSnapshotFiles || req.TotalBytes < 0 || req.TotalBytes > maxSnapshotBytes {
+		return protocol.SnapshotTransferReceipt{}, conflictEvidenceStageError(
+			"conflict_evidence_request_invalid", fmt.Errorf("invalid conflict evidence transfer request"))
 	}
-	_, sourceRoot, _, err := a.conflictEvidencePaths(req.ConflictID, req.EvidenceID)
+	switch req.SourceKind {
+	case "archive":
+		if !validUUID(req.SourceSnapshotID) || !validCapabilityHash(req.SourceManifestHash) {
+			return protocol.SnapshotTransferReceipt{}, conflictEvidenceStageError(
+				"conflict_evidence_request_invalid", fmt.Errorf("invalid archive conflict evidence request"))
+		}
+	case "active", "hot_standby":
+		if req.SourceManifestHash != "" || (req.SourceSnapshotID != "" && !validUUID(req.SourceSnapshotID)) {
+			return protocol.SnapshotTransferReceipt{}, conflictEvidenceStageError(
+				"conflict_evidence_request_invalid", fmt.Errorf("invalid live conflict evidence request"))
+		}
+	default:
+		return protocol.SnapshotTransferReceipt{}, conflictEvidenceStageError(
+			"conflict_evidence_request_invalid", fmt.Errorf("invalid conflict evidence source kind"))
+	}
+	if req.TransferMode == "relay" {
+		if !validUUID(req.RelayTaskID) || req.RelayUploadURL == "" ||
+			req.RelayUploadToken == "" || req.RelayTargetKey == "" || req.TargetTransferURL != "" {
+			return protocol.SnapshotTransferReceipt{}, conflictEvidenceStageError(
+				"conflict_evidence_request_invalid", fmt.Errorf("invalid conflict evidence relay request"))
+		}
+	} else if req.TransferMode != "" || req.TargetTransferURL == "" || req.RelayTaskID != "" ||
+		req.RelayUploadURL != "" || req.RelayUploadToken != "" || req.RelayTargetKey != "" {
+		return protocol.SnapshotTransferReceipt{}, conflictEvidenceStageError(
+			"conflict_evidence_request_invalid", fmt.Errorf("invalid conflict evidence transfer request"))
+	}
+	_, immutableRoot, _, err := a.conflictEvidencePaths(req.ConflictID, req.EvidenceID)
 	if err != nil {
-		return protocol.SnapshotTransferReceipt{}, err
+		return protocol.SnapshotTransferReceipt{}, conflictEvidenceStageError("conflict_evidence_unavailable", err)
 	}
-	metadata, err := readConflictEvidenceMetadata(sourceRoot)
-	if err != nil || metadata.ConflictID != req.ConflictID || metadata.EvidenceID != req.EvidenceID ||
-		metadata.GlobalUserID != req.GlobalUserID || metadata.Handle != req.Handle || metadata.NodeID != a.Cfg.NodeID {
-		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("conflict evidence transfer scope mismatch")
+	taskRoot, err := a.sourceSnapshotTaskPath(req.ConflictID, req.EvidenceID)
+	if err != nil {
+		return protocol.SnapshotTransferReceipt{}, conflictEvidenceStageError("conflict_evidence_archive_failed", err)
 	}
-	if err := verifyConflictEvidence(ctx, sourceRoot, metadata.Files); err != nil {
+	if err := resetTaskDirectory(taskRoot); err != nil {
+		return protocol.SnapshotTransferReceipt{}, conflictEvidenceStageError("conflict_evidence_archive_failed", err)
+	}
+	defer removeTaskDirectory(taskRoot)
+	sourceRoot, metadata, err := a.conflictEvidenceTransferSource(ctx, req, immutableRoot, taskRoot)
+	if err != nil {
 		return protocol.SnapshotTransferReceipt{}, err
 	}
 	manifest := protocol.SnapshotManifest{
 		FormatVersion: 1, WorkflowID: req.ConflictID, SnapshotID: req.EvidenceID,
-		GlobalUserID: req.GlobalUserID, Handle: req.Handle, SourceNodeID: a.Cfg.NodeID,
+		GlobalUserID: req.GlobalUserID, Handle: resolutionHandle, SourceNodeID: a.Cfg.NodeID,
 		TargetNodeID: req.TargetNodeID, ActivityEpoch: 1, CreatedAt: time.Now().UTC(),
 		Files: metadata.Files,
 	}
@@ -81,37 +153,112 @@ func (a *Agent) RunConflictEvidenceTransfer(
 		return protocol.SnapshotTransferReceipt{}, err
 	}
 	manifestDigest := sha256.Sum256(manifestJSON)
-	taskRoot, err := a.sourceSnapshotTaskPath(req.ConflictID, req.EvidenceID)
-	if err != nil {
-		return protocol.SnapshotTransferReceipt{}, err
-	}
-	if err := resetTaskDirectory(taskRoot); err != nil {
-		return protocol.SnapshotTransferReceipt{}, err
-	}
-	defer removeTaskDirectory(taskRoot)
 	archivePath := filepath.Join(taskRoot, "conflict-evidence.tar.zst")
 	if err := createSnapshotArchive(ctx, archivePath, sourceRoot, manifestJSON, manifest.Files); err != nil {
-		return protocol.SnapshotTransferReceipt{}, err
+		return protocol.SnapshotTransferReceipt{}, conflictEvidenceStageError("conflict_evidence_archive_failed", err)
 	}
 	archiveDigest, err := hashFile(archivePath)
 	if err != nil {
-		return protocol.SnapshotTransferReceipt{}, err
+		return protocol.SnapshotTransferReceipt{}, conflictEvidenceStageError("conflict_evidence_archive_failed", err)
 	}
-	receipt, err := a.streamSnapshot(ctx, protocol.StartSnapshotRequest{
+	transferRequest := protocol.StartSnapshotRequest{
 		WorkflowID: req.ConflictID, SnapshotID: req.EvidenceID,
 		TargetTransferURL: req.TargetTransferURL, TransferCapability: req.TransferCapability,
 		CapabilityExpires: req.CapabilityExpires, DestinationKind: "conflict_input",
-	}, archivePath, archiveDigest)
-	if err != nil {
-		return protocol.SnapshotTransferReceipt{}, err
+		TransferMode: req.TransferMode, RelayTaskID: req.RelayTaskID,
+		RelayUploadURL: req.RelayUploadURL, RelayUploadToken: req.RelayUploadToken,
+		RelayTargetKey: req.RelayTargetKey,
 	}
-	if receipt.SnapshotID != req.EvidenceID ||
+	var receipt protocol.SnapshotTransferReceipt
+	if req.TransferMode == "relay" {
+		if err := a.streamSnapshotRelay(ctx, transferRequest, archivePath, archiveDigest); err != nil {
+			return protocol.SnapshotTransferReceipt{}, conflictEvidenceStageError("conflict_evidence_relay_upload_failed", err)
+		}
+		receipt = protocol.SnapshotTransferReceipt{
+			OK: true, SnapshotID: req.EvidenceID,
+			ManifestSHA256: hex.EncodeToString(manifestDigest[:]),
+			ArchiveSHA256:  hex.EncodeToString(archiveDigest[:]),
+			FileCount:      metadata.FileCount, TotalBytes: metadata.TotalBytes, RelayPending: true,
+		}
+	} else {
+		var err error
+		receipt, err = a.streamSnapshot(ctx, transferRequest, archivePath, archiveDigest)
+		if err != nil {
+			return protocol.SnapshotTransferReceipt{}, conflictEvidenceStageError("conflict_evidence_direct_upload_failed", err)
+		}
+	}
+	if receipt.SnapshotID != req.EvidenceID || receipt.RelayPending != (req.TransferMode == "relay") ||
 		receipt.ManifestSHA256 != hex.EncodeToString(manifestDigest[:]) ||
 		receipt.ArchiveSHA256 != hex.EncodeToString(archiveDigest[:]) ||
 		receipt.FileCount != metadata.FileCount || receipt.TotalBytes != metadata.TotalBytes {
-		return protocol.SnapshotTransferReceipt{}, fmt.Errorf("conflict evidence target receipt mismatch")
+		return protocol.SnapshotTransferReceipt{}, conflictEvidenceStageError(
+			"conflict_evidence_receipt_invalid", fmt.Errorf("conflict evidence target receipt mismatch"))
 	}
 	return receipt, nil
+}
+
+// conflictEvidenceTransferSource prefers the immutable capture. If that local
+// copy was lost or damaged, it may rebuild a transient copy from the still
+// frozen source, but only when the rebuilt manifest exactly matches the digest
+// and counts already committed by the Controller.
+func (a *Agent) conflictEvidenceTransferSource(
+	ctx context.Context,
+	req protocol.StartConflictEvidenceTransferRequest,
+	immutableRoot, taskRoot string,
+) (string, conflictEvidenceMetadata, error) {
+	metadata, metadataErr := readConflictEvidenceMetadata(immutableRoot)
+	if metadataErr == nil && conflictEvidenceTransferScopeMatches(metadata, req, a.Cfg.NodeID) {
+		if verifyErr := verifyConflictEvidence(ctx, immutableRoot, metadata.Files); verifyErr == nil {
+			return immutableRoot, metadata, nil
+		}
+	}
+	capture := protocol.CaptureConflictEvidenceRequest{
+		ConflictID: req.ConflictID, EvidenceID: req.EvidenceID,
+		GlobalUserID: req.GlobalUserID, Handle: req.Handle, SourceKind: req.SourceKind,
+		SourceSnapshotID: req.SourceSnapshotID, SourceManifestSHA256: req.SourceManifestHash,
+	}
+	liveRoot, basis, err := a.conflictEvidenceSource(ctx, capture)
+	if err != nil {
+		return "", conflictEvidenceMetadata{}, conflictEvidenceStageError("conflict_evidence_unavailable", err)
+	}
+	recoveryRoot := filepath.Join(taskRoot, "evidence-recovery")
+	files, totalBytes, err := copyConflictEvidenceTree(ctx, liveRoot, recoveryRoot)
+	if err != nil {
+		return "", conflictEvidenceMetadata{}, conflictEvidenceStageError("conflict_evidence_rebuild_failed", err)
+	}
+	entriesJSON, err := json.Marshal(files)
+	if err != nil {
+		return "", conflictEvidenceMetadata{}, conflictEvidenceStageError("conflict_evidence_rebuild_failed", err)
+	}
+	digest := sha256.Sum256(entriesJSON)
+	metadata = conflictEvidenceMetadata{
+		FormatVersion: 1, ConflictID: req.ConflictID, EvidenceID: req.EvidenceID,
+		GlobalUserID: req.GlobalUserID, Handle: req.Handle, NodeID: a.Cfg.NodeID,
+		SourceKind: req.SourceKind, CapturedAt: time.Now().UTC(), CaptureBasis: basis,
+		SourceSnapshotID: req.SourceSnapshotID, EntriesSHA256: hex.EncodeToString(digest[:]),
+		FileCount: int64(len(files)), TotalBytes: totalBytes, Files: files,
+	}
+	if !conflictEvidenceTransferScopeMatches(metadata, req, a.Cfg.NodeID) {
+		return "", conflictEvidenceMetadata{}, conflictEvidenceStageError(
+			"conflict_evidence_integrity_mismatch", fmt.Errorf("rebuilt conflict evidence differs from committed manifest"))
+	}
+	if err := verifyConflictEvidence(ctx, recoveryRoot, metadata.Files); err != nil {
+		return "", conflictEvidenceMetadata{}, conflictEvidenceStageError("conflict_evidence_rebuild_failed", err)
+	}
+	return recoveryRoot, metadata, nil
+}
+
+func conflictEvidenceTransferScopeMatches(
+	metadata conflictEvidenceMetadata,
+	req protocol.StartConflictEvidenceTransferRequest,
+	nodeID int64,
+) bool {
+	return metadata.ConflictID == req.ConflictID && metadata.EvidenceID == req.EvidenceID &&
+		metadata.GlobalUserID == req.GlobalUserID && metadata.Handle == req.Handle &&
+		metadata.NodeID == nodeID && metadata.SourceKind == req.SourceKind &&
+		metadata.SourceSnapshotID == req.SourceSnapshotID &&
+		metadata.EntriesSHA256 == req.EntriesSHA256 && metadata.FileCount == req.FileCount &&
+		metadata.TotalBytes == req.TotalBytes
 }
 
 func (a *Agent) prepareConflictResolution(ctx context.Context, req protocol.PrepareConflictResolutionRequest) error {
