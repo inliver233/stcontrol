@@ -326,18 +326,20 @@ export function submitLoginHandoff(handoff: BrowserHandoff): void {
 export async function measureLatency(baseUrl: string): Promise<number> {
   if (!baseUrl) return -1
   const start = performance.now()
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 5000)
   try {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 5000)
-    await fetch(`${baseUrl}/api/ping-public`, {
+    await fetch(`${baseUrl.replace(/\/+$/, '')}/api/ping-public`, {
       method: 'GET',
-      mode: 'no-cors',
+      mode: 'cors',
+      credentials: 'omit',
       cache: 'no-store',
       signal: controller.signal,
     })
-    clearTimeout(timer)
     return Math.round(performance.now() - start)
   } catch {
     return -1
+  } finally {
+    clearTimeout(timer)
   }
 }

@@ -35,21 +35,7 @@ func newRouter() *chi.Mux {
 func securityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		headers := w.Header()
-		headers.Set("Content-Security-Policy", strings.Join([]string{
-			"default-src 'self'",
-			"base-uri 'none'",
-			"frame-ancestors 'none'",
-			"form-action 'self'",
-			"object-src 'none'",
-			"script-src 'self'",
-			// The current React UI uses style attributes. This exception is
-			// deliberately limited to CSS; inline scripts remain forbidden.
-			"style-src 'self' 'unsafe-inline'",
-			"img-src 'self' data:",
-			"font-src 'self'",
-			"connect-src 'self'",
-			"manifest-src 'self'",
-		}, "; "))
+		headers.Set("Content-Security-Policy", contentSecurityPolicy(nil))
 		headers.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
 		headers.Set("X-Content-Type-Options", "nosniff")
 		headers.Set("X-Frame-Options", "DENY")
@@ -57,6 +43,32 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		headers.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// contentSecurityPolicy keeps all outbound browser channels closed by
+// default. The SPA response may add the exact, administrator-configured node
+// origins so browser latency probes and the one-time login handoff form can
+// reach those nodes without allowing arbitrary HTTPS destinations.
+func contentSecurityPolicy(nodeSources []string) string {
+	connectSources := []string{"'self'"}
+	formSources := []string{"'self'"}
+	connectSources = append(connectSources, nodeSources...)
+	formSources = append(formSources, nodeSources...)
+	return strings.Join([]string{
+		"default-src 'self'",
+		"base-uri 'none'",
+		"frame-ancestors 'none'",
+		"form-action " + strings.Join(formSources, " "),
+		"object-src 'none'",
+		"script-src 'self'",
+		// The current React UI uses style attributes. This exception is
+		// deliberately limited to CSS; inline scripts remain forbidden.
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data:",
+		"font-src 'self'",
+		"connect-src " + strings.Join(connectSources, " "),
+		"manifest-src 'self'",
+	}, "; ")
 }
 
 // queryRedactingLogFormatter keeps request query parameters available to the

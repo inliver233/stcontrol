@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -76,5 +77,62 @@ func TestSecurityHeadersCoverSuccessErrorsAndStaticResponses(t *testing.T) {
 		if strings.Contains(csp, "script-src 'self' 'unsafe-inline'") || strings.Contains(csp, "unsafe-eval") {
 			t.Errorf("%s CSP permits unsafe script execution: %q", path, csp)
 		}
+	}
+}
+
+func TestNodeSourcesAreRestrictedToConfiguredHTTPOrigins(t *testing.T) {
+	t.Parallel()
+	sources := nodeConnectSources([]string{
+		"https://node-b.example/tavern?ignored=yes",
+		" https://node-a.example:8443/path ",
+		"https://node-b.example/other",
+		"http://127.0.0.1:8000",
+		"https://user:secret@credential.example",
+		"javascript:alert(1)",
+		"not a URL",
+	})
+	want := []string{
+		"http://127.0.0.1:8000",
+		"https://node-a.example:8443",
+		"https://node-b.example",
+	}
+	if strings.Join(sources, "|") != strings.Join(want, "|") {
+		t.Fatalf("node CSP sources = %q, want %q", sources, want)
+	}
+
+	policy := contentSecurityPolicy(sources)
+	for _, directive := range []string{
+		"form-action 'self' http://127.0.0.1:8000 https://node-a.example:8443 https://node-b.example",
+		"connect-src 'self' http://127.0.0.1:8000 https://node-a.example:8443 https://node-b.example",
+	} {
+		if !strings.Contains(policy, directive) {
+			t.Fatalf("CSP %q does not contain %q", policy, directive)
+		}
+	}
+	if strings.Contains(policy, "credential.example") || strings.Contains(policy, "javascript:") {
+		t.Fatalf("CSP contains an unsafe node source: %q", policy)
+	}
+}
+
+func TestSPAContentSecurityPolicyIncludesDurableNodeOrigin(t *testing.T) {
+	t.Parallel()
+	server, mock := newLoginRedirectTestServer(t)
+	now := time.Now().UTC()
+	mock.ExpectQuery(`SELECT .* FROM nodes ORDER BY id`).
+		WillReturnRows(loginRedirectNodeRows(now, "compute", "online", "active", "compatible", "managed", "managed"))
+
+	recorder := httptest.NewRecorder()
+	server.setSPAContentSecurityPolicy(recorder, httptest.NewRequest(http.MethodGet, "https://control.example/register", nil))
+	policy := recorder.Header().Get("Content-Security-Policy")
+	for _, directive := range []string{
+		"form-action 'self' https://compute-b.example",
+		"connect-src 'self' https://compute-b.example",
+	} {
+		if !strings.Contains(policy, directive) {
+			t.Fatalf("SPA CSP %q does not contain %q", policy, directive)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
