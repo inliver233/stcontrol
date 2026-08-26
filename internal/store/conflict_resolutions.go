@@ -132,7 +132,22 @@ func (s *Store) CreateConflictResolution(
 		}
 		seenEvidence[transfer.EvidenceID] = true
 	}
+	var execution *ConflictResolutionExecution
+	err := retrySerializable(ctx, func() error {
+		var attemptErr error
+		execution, attemptErr = s.createConflictResolutionOnce(ctx, p)
+		return attemptErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return execution, nil
+}
 
+func (s *Store) createConflictResolutionOnce(
+	ctx context.Context,
+	p CreateConflictResolutionParams,
+) (*ConflictResolutionExecution, error) {
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return nil, err

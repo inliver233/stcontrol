@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/lib/pq"
 )
 
 func completeConflictResolutionCreateParams(now time.Time) CreateConflictResolutionParams {
@@ -277,4 +278,30 @@ func TestCreateConflictResolutionRollsBackAtEveryDurableBoundary(t *testing.T) {
 			assertMockExpectations(t, mock)
 		})
 	}
+}
+
+func TestCreateConflictResolutionRetriesSerializableTransferInsert(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 26, 1, 30, 0, 0, time.UTC)
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	p := completeConflictResolutionCreateParams(now)
+
+	serializationFailure := &pq.Error{Code: "40001", Message: "could not serialize access due to concurrent update"}
+	expectConflictResolutionCreateFailureAt(mock, p, "transfer insert", serializationFailure)
+	mock.ExpectRollback()
+
+	// A concurrent request may have committed the same idempotency key while
+	// PostgreSQL aborted this attempt. The retry must read and return that exact
+	// durable operation instead of leaking a transient 500 to the user.
+	mock.ExpectBegin()
+	expectConflictResolutionReplayRow(mock, p, p.GlobalUserID, p.BaseNodeID, p.RequestDigest)
+	mock.ExpectCommit()
+
+	execution, err := st.CreateConflictResolution(context.Background(), p)
+	if err != nil || execution == nil || execution.OperationID != p.OperationID ||
+		execution.WorkflowID != p.WorkflowID {
+		t.Fatalf("execution=%+v err=%v", execution, err)
+	}
+	assertMockExpectations(t, mock)
 }
