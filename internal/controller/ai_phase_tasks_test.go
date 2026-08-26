@@ -125,7 +125,7 @@ func TestEnqueueScheduleRecommendation(t *testing.T) {
 		AddRow(1, "node-a", "compute", "http://internal", "", "cn-east",
 			30.0, 40.0, 55.0, "1.0", "1.0", now.Add(-time.Minute), "active",
 			"online", "active", "managed", int64(1), "managed", int64(1),
-			"open", "ok", now, now, "compatible", "ok", "fp", now, now,
+			"open", "ok", now, now, "compatible", "ok", "compatibility-fingerprint-secret-a", now, now,
 			30.0, 35.0, 40.0, 45.0, 50.0, 60.0,
 			int64(1<<40), int64(500<<30), int64(0), int64(0), int64(0), "synced", now, "",
 			int64(0), int64(0), int64(0), "adapter",
@@ -134,7 +134,7 @@ func TestEnqueueScheduleRecommendation(t *testing.T) {
 		AddRow(2, "node-b", "compute", "http://internal2", "", "us-west",
 			20.0, 30.0, 45.0, "1.0", "1.0", now.Add(-time.Minute), "active",
 			"online", "active", "managed", int64(1), "managed", int64(1),
-			"open", "ok", now, now, "compatible", "ok", "fp2", now, now,
+			"open", "ok", now, now, "compatible", "ok", "compatibility-fingerprint-secret-b", now, now,
 			20.0, 25.0, 30.0, 35.0, 40.0, 50.0,
 			int64(1<<40), int64(600<<30), int64(0), int64(0), int64(0), "synced", now, "",
 			int64(0), int64(0), int64(0), "adapter",
@@ -149,7 +149,11 @@ func TestEnqueueScheduleRecommendation(t *testing.T) {
 		t.Fatalf("tasks=%+v", sup.tasks)
 	}
 	rawStr := string(sup.tasks[0].obs)
-	for _, forbidden := range []string{"http://internal", "fp", "fp2"} {
+	for _, forbidden := range []string{
+		"http://internal",
+		"compatibility-fingerprint-secret-a",
+		"compatibility-fingerprint-secret-b",
+	} {
 		if containsSubstring(rawStr, forbidden) {
 			t.Fatalf("observation leaked %q", forbidden)
 		}
