@@ -300,7 +300,13 @@ func (s *Store) claimAndCreateStorageRepairOnce(
 	ctx context.Context,
 	p CreateStorageRepairExecutionParams,
 ) (*StorageRepairExecution, error) {
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	// The claim query explicitly locks the task, user identity, source node and
+	// source replica; the later queries also lock the activity lease and chosen
+	// capacity row. READ COMMITTED waits for a concurrent heartbeat and then
+	// rechecks the updated row predicates. SERIALIZABLE instead aborted this
+	// SELECT FOR UPDATE on routine node metric updates, producing a steady stream
+	// of harmless 40001 errors before the bounded retry could succeed.
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return nil, err
 	}
