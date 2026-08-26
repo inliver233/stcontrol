@@ -199,7 +199,14 @@ func TestConflictEvidenceTransferUsesEncryptedRelayWithoutNodeDataURL(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(evidenceRoot, "settings.json"), []byte("damaged"), 0o400); err != nil {
+	evidenceFile := filepath.Join(evidenceRoot, "settings.json")
+	if err := os.Chmod(evidenceFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(evidenceFile, []byte("damaged"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(evidenceFile, 0o400); err != nil {
 		t.Fatal(err)
 	}
 	_, targetKey, err := controlcrypto.GenerateRelayKeyPair()

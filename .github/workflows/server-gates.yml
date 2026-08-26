@@ -77,7 +77,7 @@ jobs:
     env:
       STCONTROL_TEST_POSTGRES_DSN: postgres://stcontrol_test:stcontrol_ci_only@127.0.0.1:5432/stcontrol_test?sslmode=disable
       STCONTROL_TEST_TAVERN_ROOT: /tmp/stcontrol-ci-Sillytarven-online
-      STCONTROL_TEST_TAVERN_SHA: 419cdec7e96560d39585f074b0faa1e9e217afcf
+      STCONTROL_TEST_TAVERN_SHA: f4c84f33b2364b8a7d1b5e10a1046ab6d147bc0d
       STCONTROL_TEST_PG_BIN: /tmp/stcontrol-ci-pg17/pg_dump
     steps:
       - uses: actions/checkout@v7
