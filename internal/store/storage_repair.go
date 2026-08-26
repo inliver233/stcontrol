@@ -284,6 +284,22 @@ func (s *Store) ClaimAndCreateStorageRepair(
 	if !p.CapabilityExpires.After(p.Now) {
 		return nil, ErrInvalidStorageRepairExecution
 	}
+	var execution *StorageRepairExecution
+	err := retrySerializable(ctx, func() error {
+		var attemptErr error
+		execution, attemptErr = s.claimAndCreateStorageRepairOnce(ctx, p)
+		return attemptErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return execution, nil
+}
+
+func (s *Store) claimAndCreateStorageRepairOnce(
+	ctx context.Context,
+	p CreateStorageRepairExecutionParams,
+) (*StorageRepairExecution, error) {
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return nil, err

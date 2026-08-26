@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/lib/pq"
 )
 
 func storageRepairExecutionParams(now time.Time) CreateStorageRepairExecutionParams {
@@ -85,6 +86,33 @@ func TestClaimAndCreateStorageRepairRejectsClosedRecoveryGate(t *testing.T) {
 		WithArgs(p.Now, p.MaxAttempts).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "legacy_user_id", "user_id", "source_node_id", "estimated_bytes", "attempt"}))
 	mock.ExpectRollback()
+	execution, err := st.ClaimAndCreateStorageRepair(context.Background(), p)
+	if err != nil || execution != nil {
+		t.Fatalf("execution=%+v err=%v", execution, err)
+	}
+	assertMockExpectations(t, mock)
+}
+
+func TestClaimAndCreateStorageRepairRetriesSerializableClaim(t *testing.T) {
+	t.Parallel()
+	st, mock, closeDB := newMockStore(t)
+	defer closeDB()
+	p := storageRepairExecutionParams(time.Date(2026, 8, 26, 1, 32, 0, 0, time.UTC))
+	claimQuery := `(?s)FROM storage_repair_tasks task.*FOR UPDATE OF task,global_user,legacy,home,home_replica SKIP LOCKED`
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(claimQuery).WithArgs(p.Now, p.MaxAttempts).
+		WillReturnError(&pq.Error{Code: "40001", Message: "could not serialize access due to concurrent update"})
+	mock.ExpectRollback()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(claimQuery).WithArgs(p.Now, p.MaxAttempts).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "legacy_user_id", "user_id", "source_node_id",
+			"estimated_bytes", "attempt", "preferred_target_node_id",
+		}))
+	mock.ExpectRollback()
+
 	execution, err := st.ClaimAndCreateStorageRepair(context.Background(), p)
 	if err != nil || execution != nil {
 		t.Fatalf("execution=%+v err=%v", execution, err)
