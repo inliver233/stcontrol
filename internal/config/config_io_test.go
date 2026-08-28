@@ -127,7 +127,7 @@ func TestDefaultControllerHasExplicitDisasterBackupAndImportScanPolicies(t *test
 	if cfg.ImportScan.Enabled || cfg.ImportScan.IntervalSec != 6*3600 || cfg.ImportScan.MaxNodesPerRun != 2 {
 		t.Fatalf("import scan defaults=%+v", cfg.ImportScan)
 	}
-	if cfg.AgentAutoUpdate.Enabled || cfg.AgentAutoUpdate.IntervalSec != 60 || cfg.AgentAutoUpdate.AllowOnlineUsers {
+	if !cfg.AgentAutoUpdate.Enabled || cfg.AgentAutoUpdate.IntervalSec != 60 || !cfg.AgentAutoUpdate.AllowOnlineUsers {
 		t.Fatalf("Agent auto-update defaults=%+v", cfg.AgentAutoUpdate)
 	}
 	if cfg.AISupervisor.InspectEverySec != 1800 {

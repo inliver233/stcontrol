@@ -1,6 +1,12 @@
 package controller
 
-import "testing"
+import (
+	"database/sql"
+	"testing"
+
+	"stcontrol/internal/config"
+	"stcontrol/internal/store"
+)
 
 func TestControllerAgentVersionOrdering(t *testing.T) {
 	t.Parallel()
@@ -13,5 +19,33 @@ func TestControllerAgentVersionOrdering(t *testing.T) {
 		if _, ok := parseControllerAgentVersion(invalid); ok {
 			t.Fatalf("invalid Agent version accepted: %q", invalid)
 		}
+	}
+}
+
+func TestAgentAutoUpdateDoesNotGetBlockedByCapacityState(t *testing.T) {
+	t.Parallel()
+	base := &store.Node{
+		ConnectivityState: "online", OperationalState: "active",
+		CompatibilityState: "compatible", ControlMode: "managed", DesiredControlMode: "managed",
+		AgentVersion:   sql.NullString{String: "0.4.6", Valid: true},
+		TaskQueueDepth: 0,
+	}
+	policy := config.AgentAutoUpdatePolicy{Enabled: true, AllowOnlineUsers: true}
+	for _, capacity := range []string{"open", "busy", "full", "unknown"} {
+		node := *base
+		node.CapacityState = capacity
+		if !agentEligibleForAutoUpdate(&node, policy) {
+			t.Fatalf("capacity state %q incorrectly blocked update", capacity)
+		}
+	}
+	base.OnlineUsers = 1
+	policy.AllowOnlineUsers = false
+	if agentEligibleForAutoUpdate(base, policy) {
+		t.Fatal("online users must remain a safety gate when disabled")
+	}
+	base.OnlineUsers = 0
+	base.TaskQueueDepth = 1
+	if agentEligibleForAutoUpdate(base, policy) {
+		t.Fatal("active command queue must remain a safety gate")
 	}
 }

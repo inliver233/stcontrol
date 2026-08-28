@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"stcontrol/internal/config"
 	"stcontrol/internal/protocol"
+	"stcontrol/internal/store"
 )
 
 const minimumSelfUpdatingAgentVersion = "0.4.0"
@@ -20,6 +22,11 @@ func (s *Server) agentAutoUpdateReconciler(ctx context.Context) {
 	if interval < 30*time.Second {
 		interval = time.Minute
 	}
+	// Do not wait for the first ticker tick after a Controller restart.  The
+	// current Agent artifact is already built into this Controller image, so an
+	// immediate pass safely starts the rolling upgrade while the old process is
+	// still serving requests.
+	s.updateOneIdleAgent(ctx)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -41,11 +48,7 @@ func (s *Server) updateOneIdleAgent(ctx context.Context) {
 		return
 	}
 	for _, node := range nodes {
-		if !nodeReadyForManagedOperation(node) ||
-			(node.OnlineUsers != 0 && !s.Cfg.AgentAutoUpdate.AllowOnlineUsers) || node.TaskQueueDepth != 0 ||
-			!node.AgentVersion.Valid ||
-			compareControllerAgentVersions(node.AgentVersion.String, minimumSelfUpdatingAgentVersion) < 0 ||
-			compareControllerAgentVersions(node.AgentVersion.String, protocol.CurrentAgentVersion) >= 0 {
+		if !agentEligibleForAutoUpdate(node, s.Cfg.AgentAutoUpdate) {
 			continue
 		}
 		// A ten-minute attempt bucket retries transport/staging failures without
@@ -66,6 +69,19 @@ func (s *Server) updateOneIdleAgent(ctx context.Context) {
 		}
 		return
 	}
+}
+
+// agentEligibleForAutoUpdate deliberately does not require CapacityState=open
+// or busy.  Capacity is a scheduling signal, not a reason to leave an Agent
+// stranded on an old binary; in particular, a bad metric must not prevent the
+// Agent update that fixes that metric.  Connectivity, lifecycle, compatibility
+// and an empty command queue remain hard safety gates.
+func agentEligibleForAutoUpdate(node *store.Node, policy config.AgentAutoUpdatePolicy) bool {
+	return nodeReadyForManagedOperation(node) &&
+		(node.OnlineUsers == 0 || policy.AllowOnlineUsers) &&
+		node.TaskQueueDepth == 0 && node.AgentVersion.Valid &&
+		compareControllerAgentVersions(node.AgentVersion.String, minimumSelfUpdatingAgentVersion) >= 0 &&
+		compareControllerAgentVersions(node.AgentVersion.String, protocol.CurrentAgentVersion) < 0
 }
 
 func compareControllerAgentVersions(left, right string) int {

@@ -79,10 +79,11 @@ import_scan:
   interval_sec: 21600
   max_nodes_per_run: 1
 
-# 仅逐台更新空闲且已支持自更新的 Agent；首次升级到 0.4.0 仍需安装器引导。
+# 逐台自动更新已支持自更新的 Agent；Agent 只重启自身，不重启酒馆。
 agent_auto_update:
-  enabled: false
+  enabled: true
   interval_sec: 60
+  allow_online_users: true
 
 # AI 监管层默认只在后台生成脱敏建议，不参与登录、备份等关键请求路径。
 ai_supervisor:

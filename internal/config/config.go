@@ -239,7 +239,10 @@ func DefaultController() *ControllerConfig {
 		ImportScan: ImportScanPolicy{
 			Enabled: false, IntervalSec: 6 * 3600, MaxNodesPerRun: 2,
 		},
-		AgentAutoUpdate: AgentAutoUpdatePolicy{Enabled: false, IntervalSec: 60},
+		// Agents are updated one at a time from the Controller's verified
+		// architecture artifact.  The Agent restarts itself only after the new
+		// binary is checksum/version verified and rolls back on failed health.
+		AgentAutoUpdate: AgentAutoUpdatePolicy{Enabled: true, IntervalSec: 60, AllowOnlineUsers: true},
 		AISupervisor: AISupervisorPolicy{
 			Enabled: false, Mode: "shadow", Provider: "openai_compatible",
 			APIKeyEnv: "STCONTROL_AI_API_KEY", TimeoutMS: 5000, InspectEverySec: 1800,

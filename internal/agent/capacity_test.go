@@ -105,6 +105,27 @@ func TestCollectCapacityMetricsReturnsRealDiskBytes(t *testing.T) {
 	}
 }
 
+func TestNormalizedLoadPercentUsesLogicalCPUCountAndClamps(t *testing.T) {
+	t.Parallel()
+	if got := normalizedLoadPercent(0.13, 4); got != 3.25 {
+		t.Fatalf("normalized load=%v, want 3.25", got)
+	}
+	if got := normalizedLoadPercent(8, 4); got != 100 {
+		t.Fatalf("normalized load was not clamped: %v", got)
+	}
+	for _, test := range []struct {
+		load float64
+		cpus int
+	}{
+		{load: -1, cpus: 4},
+		{load: 1, cpus: 0},
+	} {
+		if got := normalizedLoadPercent(test.load, test.cpus); got != 0 {
+			t.Fatalf("invalid load=%v cpus=%d returned %v", test.load, test.cpus, got)
+		}
+	}
+}
+
 func TestNewStorageAgentRequiresAndCreatesPrivateBackupRoot(t *testing.T) {
 	t.Parallel()
 	if _, err := New(&config.AgentConfig{Role: "storage", DataDir: t.TempDir()}); err == nil {

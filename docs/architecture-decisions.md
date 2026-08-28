@@ -35,7 +35,7 @@
 - 决定：Agent 上报数据分区真实总量/可用字节、受管目录已分配字节、显式配额、在线用户和本地任务负载。磁盘配额不得超过真实文件系统总量；指标无效时容量进入 `unknown` 并停止新分配。
 - 决定：120 秒窗口均值达到约 50% 时标为 `busy` 并降权；关键资源达到 60% 后需持续 120 秒才进入 `full`。真实磁盘或配额低水位、在线人数和任务上限立即进入 `full`。恢复必须连续低于繁忙水位 180 秒，并同时满足 300 秒冷却期。
 - 决定：计算节点还必须通过协议版本 1 和固定能力集合的 loopback adapter 健康契约；版本、能力、报告格式或 adapter 不可用均不得接收新分配。存储节点用 Agent 自身能力契约，不伪造酒馆版本事实。
-- 依据：gopsutil 的 [`disk.Usage`](https://pkg.go.dev/github.com/shirou/gopsutil/v3/disk#Usage) 提供文件系统总量、可用量和使用率，[`cpu.Percent`](https://pkg.go.dev/github.com/shirou/gopsutil/v3/cpu#Percent) 提供区间 CPU 使用率。本实现使用真实 `Free` 字节做硬水位，并把受管目录大小与文件系统可用量分开，避免用百分比替代可分配空间。
+- 依据：gopsutil 的 [`load.Avg`](https://pkg.go.dev/github.com/shirou/gopsutil/v3/load#Avg) 提供与 `uptime` 同源的 1 分钟 runnable-load，Agent 按逻辑 CPU 数归一化为容量压力百分比；不再用单次 500ms `cpu.Percent` 样本代表持续负载。gopsutil 的 [`disk.Usage`](https://pkg.go.dev/github.com/shirou/gopsutil/v3/disk#Usage) 提供文件系统总量、可用量和使用率。本实现使用真实 `Free` 字节做硬水位，并把受管目录大小与文件系统可用量分开，避免用百分比替代可分配空间。
 - 影响：公开节点 API 只返回产品状态、推荐和邀请码需求，不返回 CPU/内存/磁盘或内部原因码；管理员 API 保留四维健康、窗口均值/峰值、字节事实和安全原因码。真实 adapter 会话遥测、客户端延迟持久化、插件指纹和目标规模压测仍是后续门禁。
 
 ## ADR-007：热备接管必须显式确认并原子晋升
