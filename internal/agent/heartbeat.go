@@ -228,13 +228,26 @@ func (a *Agent) capacityMetricsPath() string {
 
 func (a *Agent) managedCapacityFacts(ctx context.Context) ([]protocol.UserStatus, int64, string, error) {
 	if a.Cfg.Role == "storage" {
-		size, err := directorySize(a.Cfg.BackupDir)
+		size, err := a.cachedAllocatedBytes(func() (int64, error) {
+			return directorySize(a.Cfg.BackupDir)
+		})
 		return nil, size, "agent", err
 	}
-	fallback, size, sizeErr := a.scanUserActivityAndSize()
 	users, adapterErr := a.collectUserStatuses(ctx)
 	if adapterErr == nil {
+		// The adapter already knows who is online, so only the data size is
+		// needed from disk, and a cached value is good enough for it.
+		size, sizeErr := a.cachedAllocatedBytes(func() (int64, error) {
+			_, size, err := a.scanUserActivityAndSize()
+			return size, err
+		})
 		return users, size, "adapter", sizeErr
+	}
+	// Without the adapter, online users can only be approximated from file
+	// modification times, which needs a fresh full walk.
+	fallback, size, sizeErr := a.scanUserActivityAndSize()
+	if sizeErr == nil {
+		a.storeAllocation(size, time.Now())
 	}
 	return fallback, size, "directory_fallback", sizeErr
 }

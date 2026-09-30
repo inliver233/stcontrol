@@ -39,6 +39,14 @@ type Agent struct {
 	peerWitnessSecret   []byte
 	peerWitnessProbe    func(context.Context) bool
 	state               agentRuntimeState
+
+	// allocation caches the managed data size reported in heartbeats. Walking
+	// every file of a large tavern takes longer than a heartbeat interval, so
+	// it is refreshed in the background instead of on every heartbeat. Zero
+	// allocationRefreshInterval recomputes the size on every heartbeat.
+	allocationRefreshInterval time.Duration
+	allocationMu              sync.Mutex
+	allocation                allocationSnapshot
 }
 
 // New 创建子控。
@@ -81,6 +89,8 @@ func New(cfg *config.AgentConfig) (*Agent, error) {
 		witnessSlots:    make(chan struct{}, 8),
 		adapterNonces:   make(map[string]time.Time),
 		witnessNonces:   make(map[string]time.Time),
+
+		allocationRefreshInterval: defaultAllocationRefreshInterval,
 	}
 	if err := agent.loadPeerWitnessSecret(); err != nil {
 		return nil, err
