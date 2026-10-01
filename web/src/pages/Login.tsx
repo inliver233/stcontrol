@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { useAuth } from '../App'
+import DcNotice from '../components/DcNotice'
 
 export default function LoginPage() {
   const [username, setUsername] = useState('')
@@ -41,6 +42,7 @@ export default function LoginPage() {
           <h1>云酒馆</h1>
           <p>登录以进入你的酒馆</p>
         </div>
+        <DcNotice />
         {error && <div className="error-msg">{error}</div>}
         <form onSubmit={submit}>
           <div className="field">

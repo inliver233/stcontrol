@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { api, Node, measureLatency } from '../api'
 import { useAuth } from '../App'
 import { NodeCard } from '../components/NodeCard'
+import DcNotice from '../components/DcNotice'
 import { waitForRegistration } from '../registration'
 
 export default function RegisterPage() {
@@ -128,6 +129,7 @@ export default function RegisterPage() {
           <h1>注册云酒馆</h1>
           <p>选择一个节点，开始你的旅程</p>
         </div>
+        <DcNotice />
         {error && <div className="error-msg">{error}</div>}
 
         {/* 节点选择 */}

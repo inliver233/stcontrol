@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import DcNotice from '../components/DcNotice'
 import { api, ConflictDifferences, ConflictResolutionDecision, ConflictResolutionStatus, ReplicaConflict } from '../api'
 
 const pageSize = 50
@@ -243,6 +244,7 @@ export default function ConflictPage() {
           <h1>副本冲突已冻结</h1>
           <p>系统不会自动覆盖任一份数据。证据准备完成前，请勿在节点上手工改动文件。</p>
         </div>
+        <DcNotice variant="conflict" />
         {error && <div className="error-msg">{error}</div>}
         {conflict && <>
           <div className="warning-msg">
