@@ -7,10 +7,10 @@ export default function DcNotice({ variant = 'login' }: { variant?: 'login' | 'c
     <div className="dc-notice" role="alert">
       <strong>重要提示：dc 酒馆用户请勿在本站登录</strong>
       {variant === 'conflict'
-        ? <p>如您为 dc 酒馆（dc.sillytarven.online）用户，您的数据仍完整保存在 dc 酒馆，本页面无需处理。请前往 dc 酒馆登录使用。</p>
+        ? <p>如您为 <b className="dc-key">dc 酒馆</b>（dc.sillytarven.online）用户，<b className="dc-key">您的数据仍完整保存在 dc 酒馆</b>，本页面无需处理。请<b className="dc-key">前往 dc 酒馆登录</b>使用。</p>
         : <>
-          <p>本站与 dc 酒馆（dc.sillytarven.online）为两套相互独立的服务，账号与数据不互通。请勿使用 dc 酒馆的 Discord / LinuxDo 账号在本站登录或注册，否则本站账号将被系统冻结。dc 酒馆中的数据不受影响。</p>
-          <p>如您登录后看到「副本冲突已冻结」页面，说明该账号属于 dc 酒馆，请直接前往 dc 酒馆登录使用，您的数据仍完整保存在 dc 酒馆。</p>
+          <p>本站与 <b className="dc-key">dc 酒馆</b>（dc.sillytarven.online）为两套相互独立的服务，<b className="dc-key">账号与数据不互通</b>。<b className="dc-key">请勿使用 dc 酒馆的 Discord / LinuxDo 账号在本站登录或注册</b>，否则本站账号将<b className="dc-key">被系统冻结</b>。dc 酒馆中的数据不受影响。</p>
+          <p>如您登录后看到<b className="dc-key">「副本冲突已冻结」</b>页面，说明该账号属于 dc 酒馆，请直接<b className="dc-key">前往 dc 酒馆登录</b>使用，您的数据仍完整保存在 dc 酒馆。</p>
         </>}
       <a className="dc-notice-btn" href={DC_LOGIN_URL}>前往 dc 酒馆登录</a>
     </div>

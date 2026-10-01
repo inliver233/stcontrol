@@ -396,3 +396,4 @@ a:hover { color: var(--primary-hover); }
   border-radius: 8px;
 }
 .dc-notice-btn:hover { color: #1a1408; filter: brightness(1.08); }
+.dc-notice .dc-key { color: var(--red); font-weight: 700; }
