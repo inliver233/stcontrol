@@ -164,7 +164,7 @@ func TestPostgresPasskeys(t *testing.T) {
 		if err := st.RecordPasskeyLogin(ctx, owner.Passkey.ID, alice, []byte(`{"id":"cred-a1","signCount":5}`), now.Add(time.Minute)); err != nil {
 			t.Fatalf("record login: %v", err)
 		}
-		if err := st.RecordPasskeyLoginFailure(ctx, "unknown_credential"); err != nil {
+		if err := st.RecordPasskeyLoginFailure(ctx, "unknown_credential", nil); err != nil {
 			t.Fatalf("record failure: %v", err)
 		}
 		updated, err := st.GetPasskeyOwner(ctx, []byte("cred-a1"))
@@ -195,6 +195,34 @@ func TestPostgresPasskeys(t *testing.T) {
 		today := overview.Days[len(overview.Days)-1]
 		if today.Day != now.Format("2006-01-02") || today.Registered != 3 || today.LoginSuccess != 1 || today.LoginFailure != 1 {
 			t.Fatalf("today=%+v", today)
+		}
+		// Newest first: the anonymous failure, then alice's sign-in under the
+		// name the passkey had at the time (it was renamed afterwards).
+		if len(overview.RecentLogins) != 2 {
+			t.Fatalf("recent logins=%+v", overview.RecentLogins)
+		}
+		failed, signedIn := overview.RecentLogins[0], overview.RecentLogins[1]
+		if failed.OK || failed.Reason != "unknown_credential" || failed.DisplayName != "" || failed.PasskeyName != "" {
+			t.Fatalf("failed attempt=%+v", failed)
+		}
+		if !signedIn.OK || signedIn.DisplayName != "passkey-alice" || signedIn.PasskeyName != "iPhone · Safari" || signedIn.At.IsZero() {
+			t.Fatalf("sign-in=%+v", signedIn)
+		}
+		// A failure with a known passkey names its owner and the passkey.
+		owner, err := st.GetPasskeyOwner(ctx, []byte("cred-a1"))
+		if err != nil || owner == nil {
+			t.Fatalf("owner=%+v err=%v", owner, err)
+		}
+		if err := st.RecordPasskeyLoginFailure(ctx, "verification_failed", &owner.Passkey); err != nil {
+			t.Fatalf("record known failure: %v", err)
+		}
+		overview, err = st.GetPasskeyOverview(ctx, 21, now)
+		if err != nil || len(overview.RecentLogins) != 3 {
+			t.Fatalf("overview with known failure=%+v err=%v", overview.RecentLogins, err)
+		}
+		if known := overview.RecentLogins[0]; known.OK || known.Reason != "verification_failed" ||
+			known.DisplayName != "passkey-alice" || known.PasskeyName != "我的手机" {
+			t.Fatalf("known failure=%+v", known)
 		}
 		if err := st.DeletePasskey(ctx, alicePasskeys[1].ID, 0, 1); err != nil {
 			t.Fatalf("admin delete: %v", err)

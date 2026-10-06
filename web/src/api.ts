@@ -231,6 +231,7 @@ export interface PasskeyAdminOverview {
     total_passkeys: number
     users: Array<{ uuid: string; username: string; display_name: string; passkeys: PasskeyItem[] }>
     days: Array<{ day: string; registered: number; login_success: number; login_failure: number }>
+    recent_logins: Array<{ at: string; ok: boolean; reason?: string; username?: string; display_name?: string; passkey_name?: string }>
   }
 }
 

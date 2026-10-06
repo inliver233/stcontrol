@@ -12,6 +12,21 @@ function formatDate(value?: string) {
   return value ? new Date(value).toLocaleDateString() : '—'
 }
 
+const failureReasons: Record<string, string> = {
+  unknown_credential: '密钥已删除或不属于本站',
+  verification_failed: '验证没通过',
+  clone_warning: '疑似被复制的密钥',
+  account_disabled: '账号已禁用',
+  malformed_response: '数据无效',
+}
+
+function formatTime(value: string) {
+  const date = new Date(value)
+  const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+  if (date.toDateString() === new Date().toDateString()) return `今天 ${time}`
+  return `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${time}`
+}
+
 // 管理后台「通行密钥」：开关与文案、使用统计、按用户查看与删除。
 export default function PasskeysAdmin() {
   const [data, setData] = useState<PasskeyAdminOverview | null>(null)
@@ -160,6 +175,28 @@ export default function PasskeysAdmin() {
           {status && <span className={`passkey-save-status ${status.state}`} role="status">{status.text}</span>}
         </div>
       </div>
+
+      <h3 className="passkey-users-title">最近登录</h3>
+      {overview.recent_logins.length === 0 ? <div className="empty-state passkey-recent-empty"><p>还没有人用通行密钥登录过。</p></div> : (
+        <div className="passkey-recent">
+          {overview.recent_logins.map((login, index) => {
+            const who = login.username
+              ? (login.display_name && login.display_name !== login.username ? `${login.display_name}（${login.username}）` : login.username)
+              : login.display_name || '未知账号'
+            const what = login.ok
+              ? login.passkey_name || '通行密钥'
+              : `失败：${failureReasons[login.reason || ''] || '验证没通过'}${login.passkey_name ? ` · ${login.passkey_name}` : ''}`
+            return (
+              <div className={`passkey-recent-row${login.ok ? '' : ' failed'}`} key={`${login.at}-${index}`}
+                title={`${new Date(login.at).toLocaleString()} · ${who} · ${what}`}>
+                <span className="passkey-recent-time">{formatTime(login.at)}</span>
+                <span className="passkey-recent-who">{who}</span>
+                <span className="passkey-recent-what">{what}</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       <h3 className="passkey-users-title">已添加的用户（{overview.users_with_passkeys}）</h3>
       {overview.users.length === 0 ? <div className="empty-state"><p>还没有人添加通行密钥。</p></div> : (

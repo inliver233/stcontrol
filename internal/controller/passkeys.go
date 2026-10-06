@@ -290,8 +290,14 @@ func (s *Server) handlePasskeyLoginVerify(w http.ResponseWriter, r *http.Request
 		return
 	}
 	ctx := r.Context()
+	var owner *store.PasskeyOwner
+	var user *store.User
 	fail := func(status int, reason, message string) {
-		if err := s.Store.RecordPasskeyLoginFailure(ctx, reason); err != nil {
+		var presented *store.UserPasskey
+		if owner != nil {
+			presented = &owner.Passkey
+		}
+		if err := s.Store.RecordPasskeyLoginFailure(ctx, reason, presented); err != nil {
 			log.Printf("记录通行密钥登录失败: %v", err)
 		}
 		// The code lets the page tell the browser to stop offering a deleted passkey.
@@ -302,8 +308,6 @@ func (s *Server) handlePasskeyLoginVerify(w http.ResponseWriter, r *http.Request
 		fail(http.StatusBadRequest, "malformed_response", "通行密钥响应无效，请重试")
 		return
 	}
-	var owner *store.PasskeyOwner
-	var user *store.User
 	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
 		found, err := s.Store.GetPasskeyOwner(ctx, rawID)
 		if err != nil {

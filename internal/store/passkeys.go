@@ -345,28 +345,33 @@ func (s *Store) RecordPasskeyLogin(ctx context.Context, passkeyID, userID int64,
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `
+	var name string
+	err = tx.QueryRowContext(ctx, `
 		UPDATE user_passkeys SET credential=$3::jsonb,last_used_at=$4
-		WHERE id=$1 AND user_id=$2`, passkeyID, userID, string(credential), now)
+		WHERE id=$1 AND user_id=$2 RETURNING name`, passkeyID, userID, string(credential), now).Scan(&name)
+	if err == sql.ErrNoRows {
+		return ErrPasskeyNotFound
+	}
 	if err != nil {
 		return err
 	}
-	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
-		if err == nil {
-			err = ErrPasskeyNotFound
-		}
-		return err
-	}
+	// The name is kept with the event so the sign-in list still says which
+	// passkey it was after the passkey is removed.
 	if err := insertPasskeyAudit(ctx, tx, "user", fmt.Sprint(userID), "passkey-login",
-		fmt.Sprint(passkeyID), "succeeded", map[string]any{}); err != nil {
+		fmt.Sprint(passkeyID), "succeeded", map[string]any{"name": name}); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// RecordPasskeyLoginFailure audits a rejected sign-in attempt.
-func (s *Store) RecordPasskeyLoginFailure(ctx context.Context, reason string) error {
-	return insertPasskeyAudit(ctx, s.DB, "system", "", "passkey-login", "", "failed", map[string]any{"reason": reason})
+// RecordPasskeyLoginFailure audits a rejected sign-in attempt. passkey is the
+// presented passkey when it exists (its owner is then recorded too).
+func (s *Store) RecordPasskeyLoginFailure(ctx context.Context, reason string, passkey *UserPasskey) error {
+	if passkey == nil || passkey.UserID <= 0 {
+		return insertPasskeyAudit(ctx, s.DB, "system", "", "passkey-login", "", "failed", map[string]any{"reason": reason})
+	}
+	return insertPasskeyAudit(ctx, s.DB, "user", fmt.Sprint(passkey.UserID), "passkey-login", fmt.Sprint(passkey.ID), "failed",
+		map[string]any{"reason": reason, "name": passkey.Name})
 }
 
 // RenameUserPasskey changes the display name of one of the user's passkeys.
@@ -457,13 +462,26 @@ type PasskeyUserSummary struct {
 	Passkeys    []UserPasskey `json:"passkeys"`
 }
 
+// PasskeyLogin is one passkey sign-in attempt.
+type PasskeyLogin struct {
+	At          time.Time `json:"at"`
+	OK          bool      `json:"ok"`
+	Reason      string    `json:"reason,omitempty"`
+	Username    string    `json:"username,omitempty"`
+	DisplayName string    `json:"display_name,omitempty"`
+	PasskeyName string    `json:"passkey_name,omitempty"`
+}
+
 // PasskeyOverview summarizes passkey use for the administrator page.
 type PasskeyOverview struct {
 	UsersWithPasskeys int                  `json:"users_with_passkeys"`
 	TotalPasskeys     int                  `json:"total_passkeys"`
 	Users             []PasskeyUserSummary `json:"users"`
 	Days              []PasskeyDay         `json:"days"`
+	RecentLogins      []PasskeyLogin       `json:"recent_logins"`
 }
+
+const passkeyRecentLogins = 50
 
 // GetPasskeyOverview lists users with passkeys and the last days of activity.
 func (s *Store) GetPasskeyOverview(ctx context.Context, days int, now time.Time) (PasskeyOverview, error) {
@@ -473,7 +491,10 @@ func (s *Store) GetPasskeyOverview(ctx context.Context, days int, now time.Time)
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	overview := PasskeyOverview{Users: make([]PasskeyUserSummary, 0), Days: make([]PasskeyDay, 0, days)}
+	overview := PasskeyOverview{
+		Users: make([]PasskeyUserSummary, 0), Days: make([]PasskeyDay, 0, days),
+		RecentLogins: make([]PasskeyLogin, 0, passkeyRecentLogins),
+	}
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT global_user.uuid::text,COALESCE(legacy.username,''),
 		  COALESCE(NULLIF(legacy.display_name,''),global_user.display_name,''),
@@ -552,5 +573,34 @@ func (s *Store) GetPasskeyOverview(ctx context.Context, days int, now time.Time)
 			entry.LoginFailure += count
 		}
 	}
-	return overview, activity.Err()
+	if err := activity.Err(); err != nil {
+		return PasskeyOverview{}, err
+	}
+
+	logins, err := s.DB.QueryContext(ctx, `
+		SELECT event.occurred_at, event.outcome='succeeded', COALESCE(event.detail->>'reason',''),
+		  COALESCE(legacy.username,''),
+		  COALESCE(NULLIF(legacy.display_name,''),global_user.display_name,''),
+		  COALESCE(NULLIF(event.detail->>'name',''),passkey.name,'')
+		FROM audit_events event
+		LEFT JOIN global_users global_user ON global_user.id=CASE
+		  WHEN event.actor_type='user' AND event.actor_id ~ '^[0-9]{1,18}$' THEN event.actor_id::bigint END
+		LEFT JOIN users legacy ON legacy.id=global_user.legacy_user_id
+		LEFT JOIN user_passkeys passkey ON passkey.id=CASE
+		  WHEN event.target_id ~ '^[0-9]{1,18}$' THEN event.target_id::bigint END
+		WHERE event.target_type='passkey' AND event.action='passkey-login'
+		ORDER BY event.occurred_at DESC, event.id DESC
+		LIMIT $1`, passkeyRecentLogins)
+	if err != nil {
+		return PasskeyOverview{}, err
+	}
+	defer logins.Close()
+	for logins.Next() {
+		var login PasskeyLogin
+		if err := logins.Scan(&login.At, &login.OK, &login.Reason, &login.Username, &login.DisplayName, &login.PasskeyName); err != nil {
+			return PasskeyOverview{}, err
+		}
+		overview.RecentLogins = append(overview.RecentLogins, login)
+	}
+	return overview, logins.Err()
 }
