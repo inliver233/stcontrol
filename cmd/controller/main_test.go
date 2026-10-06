@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -63,6 +62,9 @@ func TestControllerMainRecoveryCommand(t *testing.T) {
 }
 
 func TestControllerMainServesHealthAndStopsOnSignal(t *testing.T) {
+	if !canTerminateSelf {
+		t.Skip("a process cannot send itself SIGTERM on this platform")
+	}
 	baseDSN := strings.TrimSpace(os.Getenv("STCONTROL_TEST_POSTGRES_DSN"))
 	if baseDSN == "" {
 		t.Skip("set STCONTROL_TEST_POSTGRES_DSN to run Controller main lifecycle integration")
@@ -128,7 +130,7 @@ func TestControllerMainServesHealthAndStopsOnSignal(t *testing.T) {
 	if !ready {
 		t.Fatal("Controller main did not serve health")
 	}
-	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+	if err := terminateSelf(); err != nil {
 		t.Fatal(err)
 	}
 	select {

@@ -134,6 +134,10 @@ func (s *Server) handleAgentLeaseCommand(w http.ResponseWriter, r *http.Request)
 		case <-deadline.C:
 			w.WriteHeader(http.StatusNoContent)
 			return
+		case <-s.stopping:
+			// The Controller is shutting down; the Agent polls the next process.
+			w.WriteHeader(http.StatusNoContent)
+			return
 		case <-ticker.C:
 		}
 	}

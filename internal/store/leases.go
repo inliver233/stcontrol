@@ -176,6 +176,47 @@ func acquireActivityLeaseLocked(
 	if err != nil {
 		return AcquireActivityLeaseResult{}, false, err
 	}
+	if found && leaseBlocksNewWriter(lease, p.Now) && lease.State == "active" &&
+		lease.ControllerGeneration < p.ControllerGeneration {
+		// A promotion fenced the sessions of the old generation, but the writer
+		// itself did not change. Re-issue the lease to that same writer under
+		// the current generation so the user can sign in again right away
+		// instead of waiting for the old lease to expire. No other node can
+		// become the writer before then.
+		renewed := ActivityLease{
+			UserID:               p.UserID,
+			WriterNodeID:         lease.WriterNodeID,
+			SessionID:            p.SessionID,
+			ActivityEpoch:        lease.ActivityEpoch + 1,
+			State:                "active",
+			LeaseExpiresAt:       p.Now.Add(p.TTL),
+			LastPageHeartbeatAt:  p.Now,
+			LastRequestAt:        p.Now,
+			ControllerGeneration: p.ControllerGeneration,
+			UpdatedAt:            p.Now,
+		}
+		updated, err := tx.ExecContext(ctx, `
+			UPDATE user_activity_leases SET
+			  session_id=$3, activity_epoch=$4, state='active',
+			  lease_expires_at=$5, last_page_heartbeat_at=$6, last_request_at=$6,
+			  in_flight_reads=0, in_flight_writes=0,
+			  controller_generation=$7, updated_at=$6
+			WHERE user_id=$1 AND writer_node_id=$2 AND activity_epoch=$8
+			  AND controller_generation=$9 AND state='active'`,
+			p.UserID, renewed.WriterNodeID, renewed.SessionID, renewed.ActivityEpoch,
+			renewed.LeaseExpiresAt, p.Now, p.ControllerGeneration,
+			lease.ActivityEpoch, lease.ControllerGeneration)
+		if err != nil {
+			return AcquireActivityLeaseResult{}, false, fmt.Errorf("renew stale-generation activity lease: %w", err)
+		}
+		if rows, err := updated.RowsAffected(); err != nil || rows != 1 {
+			return AcquireActivityLeaseResult{}, false, fmt.Errorf("renew stale-generation activity lease: %d rows: %v", rows, err)
+		}
+		if err := recordLeaseOperation(ctx, tx, p, "renewed", renewed); err != nil {
+			return AcquireActivityLeaseResult{}, false, err
+		}
+		return AcquireActivityLeaseResult{Lease: renewed, Existing: true}, false, nil
+	}
 	if found && leaseBlocksNewWriter(lease, p.Now) {
 		result := AcquireActivityLeaseResult{Lease: lease, Existing: true}
 		if err := recordLeaseOperation(ctx, tx, p, "existing", lease); err != nil {
@@ -390,7 +431,8 @@ func getLeaseOperation(ctx context.Context, tx *sql.Tx, p AcquireActivityLeasePa
 			ActivityEpoch: epoch.Int64,
 		},
 		Acquired: outcome == "acquired",
-		Existing: outcome == "existing",
+		// A renewed stale-generation lease keeps its existing writer.
+		Existing: outcome == "existing" || outcome == "renewed",
 	}
 	return result, true, nil
 }

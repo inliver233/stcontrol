@@ -35,6 +35,9 @@ services:
       db:
         condition: service_healthy
     restart: unless-stopped
+    # Requests get up to 15 s to finish on stop; after that the Controller records a clean
+    # stop so the next start keeps the generation and signed-in users stay signed in.
+    stop_grace_period: 30s
 
 volumes:
   pgdata:

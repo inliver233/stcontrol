@@ -212,7 +212,7 @@ func getLoginHandoffByOperation(
 		return LoginHandoff{}, fmt.Errorf("get login handoff retry: %w", err)
 	}
 	handoff.Acquired = outcome == "acquired"
-	handoff.Existing = outcome == "existing"
+	handoff.Existing = outcome == "existing" || outcome == "renewed"
 	return handoff, nil
 }
 

@@ -59,6 +59,101 @@ func (leadership *ControllerLeadership) Watch(ctx context.Context) error {
 	}
 }
 
+// MarkCleanShutdown records that this process is stopping on purpose while it
+// still leads generation. It runs on the leadership connection itself and
+// requires that connection's session to hold the advisory lock, so a process
+// that has already lost leadership (and might still be running) can never
+// mark its generation as resumable.
+func (leadership *ControllerLeadership) MarkCleanShutdown(ctx context.Context, generation int64, now time.Time) (bool, error) {
+	if leadership == nil || leadership.conn == nil {
+		return false, fmt.Errorf("controller leadership is unavailable")
+	}
+	if generation <= 0 {
+		return false, fmt.Errorf("invalid controller generation")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	// PostgreSQL reports a bigint advisory key as classid (high 32 bits) and
+	// objid (low 32 bits) with objsubid 1.
+	key := uint64(controllerAdvisoryLockID)
+	lockHigh, lockLow := int64(key>>32), int64(key&0xffffffff)
+	result, err := leadership.conn.ExecContext(ctx, `
+		UPDATE controller_epochs SET clean_shutdown_at=$2
+		WHERE generation=$1 AND state='active'
+		  AND EXISTS (
+		    SELECT 1 FROM pg_locks
+		    WHERE locktype='advisory' AND granted AND pid=pg_backend_pid()
+		      AND classid=$3::bigint::oid AND objid=$4::bigint::oid AND objsubid=1)`,
+		generation, now, lockHigh, lockLow)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows == 1, err
+}
+
+// ResumeControllerEpoch continues the active generation when its previous
+// leader recorded a clean shutdown no more than maxGap ago, keeping browser
+// sessions, tickets, activity leases and Agent credentials valid across a
+// planned restart. It is called only while the caller owns the leadership
+// advisory lock. The record is consumed either way; without a usable one
+// nothing else changes and the caller promotes a new generation instead.
+func (s *Store) ResumeControllerEpoch(ctx context.Context, source string, maxGap time.Duration, now time.Time) (int64, bool, error) {
+	if source == "" || len(source) > 128 || maxGap <= 0 {
+		return 0, false, fmt.Errorf("invalid controller resume request")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var generation int64
+	var cleanShutdownAt sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+		SELECT generation,clean_shutdown_at FROM controller_epochs
+		WHERE state='active' FOR UPDATE`).Scan(&generation, &cleanShutdownAt); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	if !cleanShutdownAt.Valid {
+		return 0, false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE controller_epochs SET clean_shutdown_at=NULL
+		WHERE generation=$1 AND state='active'`, generation); err != nil {
+		return 0, false, err
+	}
+	gap := now.Sub(cleanShutdownAt.Time)
+	// The marker and now come from the same host clock; allow a little skew.
+	resumed := gap >= -time.Minute && gap <= maxGap
+	if resumed {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO audit_events (
+			  actor_type,action,target_type,target_id,
+			  controller_generation,outcome,detail
+			) VALUES (
+			  'controller','controller-generation-resumed','controller_epoch',$1::text,
+			  $1::bigint,'succeeded',jsonb_build_object(
+			    'source',$2::text,'clean_shutdown_at',$3::timestamptz))`,
+			generation, source, cleanShutdownAt.Time); err != nil {
+			return 0, false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, err
+	}
+	if !resumed {
+		return 0, false, nil
+	}
+	return generation, true, nil
+}
+
 // PromoteControllerEpoch is called only while the caller owns the leadership
 // advisory lock. It fences every browser credential and ticket from the old
 // generation while preserving Agent credentials long enough to reconcile and

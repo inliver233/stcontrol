@@ -408,6 +408,41 @@ func TestControllerAgentHTTPEnrollmentRotationAndCommandQueue(t *testing.T) {
 		map[string]string{"workflow_id": "invalid", "snapshot_id": "invalid", "state": "publishing"}); status != http.StatusBadRequest {
 		t.Fatalf("invalid snapshot progress: status=%d body=%s", status, body)
 	}
+
+	// Shutting down releases an idle command long poll at once, so connected
+	// Agents never hold up a clean stop.
+	idlePollBody, err := json.Marshal(protocol.LeaseCommandRequest{WorkerID: workerID, HighestGeneration: generation})
+	if err != nil {
+		t.Fatalf("encode idle long poll: %v", err)
+	}
+	idlePoll := newAgentSignedRequest(t, http.MethodPost, leaseURL, node.ID, rotatedPSK, idlePollBody)
+	type pollResult struct {
+		status  int
+		elapsed time.Duration
+		err     error
+	}
+	polled := make(chan pollResult, 1)
+	go func() {
+		started := time.Now()
+		response, err := client.Do(idlePoll)
+		if err != nil {
+			polled <- pollResult{err: err}
+			return
+		}
+		_ = response.Body.Close()
+		polled <- pollResult{status: response.StatusCode, elapsed: time.Since(started)}
+	}()
+	time.Sleep(500 * time.Millisecond)
+	server.beginStopping()
+	server.beginStopping()
+	select {
+	case result := <-polled:
+		if result.err != nil || result.status != http.StatusNoContent || result.elapsed > 3*time.Second {
+			t.Fatalf("idle long poll during shutdown: %+v", result)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("an idle command long poll held up shutdown")
+	}
 }
 
 func agentUnsignedJSONRequest(t *testing.T, client *http.Client, method, target string, body any) (int, []byte) {

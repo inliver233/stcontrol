@@ -55,6 +55,11 @@ type Server struct {
 	// AI 监管层 (Phase 0+): nil when disabled.
 	aiSupervisor aiSupervisor
 	relay        *relayDataPlane
+
+	// stopping is closed when Run begins its shutdown, so long-held Agent
+	// requests return at once instead of holding up a clean stop.
+	stopping chan struct{}
+	stopOnce sync.Once
 }
 
 // aiSupervisor is the minimal enqueue surface the phase workers need.
@@ -94,6 +99,7 @@ func New(cfg *config.ControllerConfig, st *store.Store, secretKey []byte) *Serve
 		userDataFaultReleaseNext: false,
 		registrationSlots:        make(chan struct{}, 8),
 		activity:                 make(map[int64]map[string]protocol.UserStatus),
+		stopping:                 make(chan struct{}),
 		oauthHTTP: &http.Client{
 			Timeout: 15 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -240,6 +246,7 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 	case runErr = <-errCh:
 	}
+	s.beginStopping()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	for _, server := range servers {
@@ -249,6 +256,14 @@ func (s *Server) Run(ctx context.Context) error {
 		return nil
 	}
 	return runErr
+}
+
+// beginStopping releases long-held Agent requests (command long polls) so the
+// HTTP server does not wait for them while shutting down.
+func (s *Server) beginStopping() {
+	if s.stopping != nil {
+		s.stopOnce.Do(func() { close(s.stopping) })
+	}
 }
 
 // ValidateRuntimeConfig rejects insecure listeners before the process opens a

@@ -65,6 +65,12 @@ export CONTROLLER_BOOTSTRAP_ADMIN_PASSWORD=<首次管理员密码，至少12位>
 docker compose up -d --build
 ```
 
+重启或升级总控（`docker compose up -d`、`docker compose restart`）时，总控收到 SIGTERM 后
+在仍持有领导锁的情况下记录"正常退出"，10 分钟内重新启动会继续沿用原控制世代：
+在线用户的会话、活动租约和节点凭据都保持有效，用户无感。崩溃、领导锁连接丢失、
+`--passive` 接管或 `--promote` 显式恢复则照旧提升世代；此时活动租约仍在的用户
+可以立即被重新交接回原写入节点，不必等旧租约过期。
+
 前端与 API 必须同源通过 `https://` 访问。明文 HTTP 只允许
 `127.0.0.1/::1` 本机开发或本机反向代理回源；非 loopback 监听没有成对证书时
 Controller 会拒绝启动。Docker 示例直接在 `:8443` 终止 TLS；通用
