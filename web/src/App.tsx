@@ -1,5 +1,5 @@
 import { useEffect, useState, createContext, useContext } from 'react'
-import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { api, Me } from './api'
 import LoginPage from './pages/Login'
 import RegisterPage from './pages/Register'
@@ -21,6 +21,7 @@ const Ctx = createContext<AuthCtx>({ me: null, loading: true, refresh: async () 
 export const useAuth = () => useContext(Ctx)
 
 export default function App() {
+  const location = useLocation()
   const [me, setMe] = useState<Me | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -46,7 +47,8 @@ export default function App() {
         <Route path="/admin/login" element={<AdminLoginPage />} />
         <Route path="/admin/*" element={<AdminPage />} />
 		<Route path="/conflict" element={<ConflictPage />} />
-        <Route path="/account" element={loading ? <div className="loading">加载中…</div> : me && !me.is_admin ? <AccountPage /> : <Navigate to="/login" replace />} />
+        <Route path="/account" element={loading ? <div className="loading">加载中…</div> : me && !me.is_admin ? <AccountPage />
+          : <Navigate to={me ? '/login' : `/login?next=${encodeURIComponent(`/account${location.hash}`)}`} replace />} />
         <Route
           path="/"
           element={

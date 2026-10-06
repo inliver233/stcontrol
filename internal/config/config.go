@@ -31,6 +31,19 @@ type ControllerConfig struct {
 	ImportScan       ImportScanPolicy               `yaml:"import_scan"`
 	AgentAutoUpdate  AgentAutoUpdatePolicy          `yaml:"agent_auto_update"`
 	AISupervisor     AISupervisorPolicy             `yaml:"ai_supervisor"`
+	Passkeys         PasskeyConfig                  `yaml:"passkeys"`
+}
+
+// PasskeyConfig binds passkeys (WebAuthn) to a domain. Passkeys belong to RPID,
+// so a parent domain (e.g. "example.com" for a Controller at
+// login.example.com) keeps them valid if the Controller later moves to another
+// subdomain. Empty RPID uses the public URL's host. Origins lists every page
+// origin allowed to use them; empty means the public URL only. Whether the
+// feature is switched on, and its limits, are administrator settings.
+type PasskeyConfig struct {
+	RPID    string   `yaml:"rp_id"`
+	RPName  string   `yaml:"rp_name"`
+	Origins []string `yaml:"origins"`
 }
 
 // AISupervisorPolicy controls the AI 监管层 (read-only advisory layer, Phase 0).

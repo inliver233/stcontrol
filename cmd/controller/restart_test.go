@@ -24,31 +24,9 @@ func TestControllerRestartContinuesGenerationOnlyAfterCleanStop(t *testing.T) {
 	if baseDSN == "" {
 		t.Skip("set STCONTROL_TEST_POSTGRES_DSN to run the Controller restart integration")
 	}
-	parsed, err := url.Parse(baseDSN)
-	if err != nil {
-		t.Fatal(err)
-	}
-	adminDB, err := sql.Open("postgres", baseDSN)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer adminDB.Close()
-	schema := fmt.Sprintf("stcontrol_cmd_restart_%d_%d", os.Getpid(), time.Now().UnixNano())
-	if _, err := adminDB.Exec(`CREATE SCHEMA ` + pq.QuoteIdentifier(schema)); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if _, err := adminDB.Exec(`DROP SCHEMA ` + pq.QuoteIdentifier(schema) + ` CASCADE`); err != nil {
-			t.Errorf("drop Controller restart schema: %v", err)
-		}
-	}()
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	parsed.RawQuery = query.Encode()
-
 	port := reserveControllerMainPort(t)
 	cfg := config.DefaultController()
-	cfg.DatabaseURL = parsed.String()
+	cfg.DatabaseURL = isolatedControllerDatabase(t, baseDSN)
 	cfg.Listen = fmt.Sprintf("127.0.0.1:%d", port)
 	cfg.PublicURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 	cfg.StaticDir = t.TempDir()
@@ -163,7 +141,8 @@ func TestControllerRestartContinuesGenerationOnlyAfterCleanStop(t *testing.T) {
 	// Losing the leadership connection stops the process without marking it clean.
 	if _, err := db.Exec(`
 		SELECT pg_terminate_backend(pid) FROM pg_locks
-		WHERE locktype='advisory' AND granted AND classid=$1::bigint::oid AND objid=$2::bigint::oid AND objsubid=1`,
+		WHERE locktype='advisory' AND granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
+		  AND classid=$1::bigint::oid AND objid=$2::bigint::oid AND objsubid=1`,
 		int64(0x5354434f), int64(0x4e54524c)); err != nil {
 		t.Fatalf("terminate leadership backend: %v", err)
 	}
@@ -179,4 +158,32 @@ func TestControllerRestartContinuesGenerationOnlyAfterCleanStop(t *testing.T) {
 		t.Fatalf("after lost leadership restart: generation=%d, want %d", got, generation+3)
 	}
 	stop(fifth)
+}
+
+// isolatedControllerDatabase creates a throwaway database for a test that runs
+// a whole Controller. Advisory locks are per database, and other packages'
+// tests take the same leadership lock in parallel.
+func isolatedControllerDatabase(t *testing.T, baseDSN string) string {
+	t.Helper()
+	parsed, err := url.Parse(baseDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminDB, err := sql.Open("postgres", baseDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database := fmt.Sprintf("stcontrol_controller_%d_%d", os.Getpid(), time.Now().UnixNano())
+	if _, err := adminDB.Exec(`CREATE DATABASE ` + pq.QuoteIdentifier(database)); err != nil {
+		_ = adminDB.Close()
+		t.Skipf("cannot create an isolated Controller test database: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := adminDB.Exec(`DROP DATABASE IF EXISTS ` + pq.QuoteIdentifier(database) + ` WITH (FORCE)`); err != nil {
+			t.Errorf("drop isolated Controller test database: %v", err)
+		}
+		_ = adminDB.Close()
+	})
+	parsed.Path = "/" + database
+	return parsed.String()
 }

@@ -125,6 +125,9 @@ func (s *Server) routes(r *chi.Mux) {
 		// later under /api is shadowed by chi's existing /api/auth subtree
 		// and produces a 404 before the authenticated handler is reached.
 		r.With(s.userAuthMiddleware).Post("/logout", s.handleLogout)
+		r.Get("/passkey/config", s.handlePasskeyPublicConfig)
+		r.With(s.loginRateLimitMiddleware).Post("/passkey/login/options", s.handlePasskeyLoginOptions)
+		r.With(s.loginRateLimitMiddleware).Post("/passkey/login/verify", s.handlePasskeyLoginVerify)
 		r.Post("/oauth/complete", s.handleOAuthComplete)
 		r.Get("/oauth/{provider}", s.handleOAuthBegin)
 		r.Get("/oauth/{provider}/callback", s.handleOAuthCallback)
@@ -176,6 +179,11 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Get("/users/me/import-claims", s.handleListMyAccountImportClaims)
 		r.Post("/users/me/import-claims", s.handleClaimImportedAccount)
 		r.Post("/users/me/node-latency", s.handleReportNodeLatency)
+		r.Get("/users/me/passkeys", s.handleListMyPasskeys)
+		r.Post("/users/me/passkeys/register/options", s.handleBeginPasskeyRegistration)
+		r.Post("/users/me/passkeys/register/verify", s.handleFinishPasskeyRegistration)
+		r.Patch("/users/me/passkeys/{id}", s.handleRenameMyPasskey)
+		r.Delete("/users/me/passkeys/{id}", s.handleDeleteMyPasskey)
 	})
 
 	// 冲突恢复区只接受 conflict-frozen 用户，不继承普通用户权限。
@@ -231,5 +239,9 @@ func (s *Server) routes(r *chi.Mux) {
 		r.Post("/admins", s.handleAdminCreateAdmin)
 		r.Put("/admins/{id}/status", s.handleAdminSetAdminStatus)
 		r.Put("/admins/{id}/password", s.handleAdminResetPassword)
+		r.Get("/passkeys", s.handleAdminPasskeys)
+		r.Put("/passkeys/settings", s.handleAdminUpdatePasskeySettings)
+		r.Delete("/passkeys/{id}", s.handleAdminDeletePasskey)
+		r.Delete("/users/{uuid}/passkeys", s.handleAdminDeleteUserPasskeys)
 	})
 }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { api, submitLoginHandoff, type BrowserHandoff } from '../api'
 import { useAuth } from '../App'
+import PasskeysAdmin from './AdminPasskeys'
 import type {
   AdminBackup,
   AdminNode,
@@ -162,6 +163,7 @@ export default function AdminPage() {
     { path: '/admin/users', label: '用户管理' },
     { path: '/admin/backups', label: '备份任务' },
     { path: '/admin/alerts', label: '保护告警' },
+    { path: '/admin/passkeys', label: '通行密钥' },
     { path: '/admin/admins', label: '管理员' },
     { path: '/admin/audit', label: '审计日志' },
     { path: '/admin/ai', label: 'AI 监管' },
@@ -199,6 +201,7 @@ export default function AdminPage() {
           <Route path="/users" element={<UsersAdmin />} />
           <Route path="/backups" element={<BackupsAdmin />} />
           <Route path="/alerts" element={<ProtectionAlertsAdmin />} />
+          <Route path="/passkeys" element={<PasskeysAdmin />} />
           <Route path="/admins" element={<AdminsAdmin />} />
           <Route path="/audit" element={<AuditAdmin />} />
           <Route path="/ai" element={<AISupervisionAdmin />} />

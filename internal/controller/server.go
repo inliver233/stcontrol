@@ -60,6 +60,11 @@ type Server struct {
 	// requests return at once instead of holding up a clean stop.
 	stopping chan struct{}
 	stopOnce sync.Once
+
+	// Passkey relying party, built once from the configuration.
+	passkeyOnce  sync.Once
+	passkeyParty *passkeyRelyingParty
+	passkeyErr   error
 }
 
 // aiSupervisor is the minimal enqueue surface the phase workers need.

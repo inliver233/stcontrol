@@ -3,14 +3,12 @@ package main
 import (
 	"archive/tar"
 	"bytes"
-	"database/sql"
 	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +16,6 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/lib/pq"
 
 	"stcontrol/internal/config"
 	controlcrypto "stcontrol/internal/crypto"
@@ -69,31 +66,9 @@ func TestControllerMainServesHealthAndStopsOnSignal(t *testing.T) {
 	if baseDSN == "" {
 		t.Skip("set STCONTROL_TEST_POSTGRES_DSN to run Controller main lifecycle integration")
 	}
-	parsed, err := url.Parse(baseDSN)
-	if err != nil {
-		t.Fatal(err)
-	}
-	adminDB, err := sql.Open("postgres", baseDSN)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer adminDB.Close()
-	schema := fmt.Sprintf("stcontrol_cmd_controller_%d_%d", os.Getpid(), time.Now().UnixNano())
-	if _, err := adminDB.Exec(`CREATE SCHEMA ` + pq.QuoteIdentifier(schema)); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if _, err := adminDB.Exec(`DROP SCHEMA ` + pq.QuoteIdentifier(schema) + ` CASCADE`); err != nil {
-			t.Errorf("drop Controller main schema: %v", err)
-		}
-	}()
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	parsed.RawQuery = query.Encode()
-
 	port := reserveControllerMainPort(t)
 	cfg := config.DefaultController()
-	cfg.DatabaseURL = parsed.String()
+	cfg.DatabaseURL = isolatedControllerDatabase(t, baseDSN)
 	cfg.Listen = fmt.Sprintf("127.0.0.1:%d", port)
 	cfg.PublicURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 	cfg.StaticDir = t.TempDir()

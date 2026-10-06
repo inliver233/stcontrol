@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api, MyNode, ProtectionState, RestoreStatus, RestoreTarget, measureLatency, submitLoginHandoff } from '../api'
 import { useAuth } from '../App'
 import { Link, useNavigate } from 'react-router-dom'
+import PasskeyPrompt from '../components/PasskeyPrompt'
 
 export default function NodesPage() {
   const [nodes, setNodes] = useState<MyNode[]>([])
@@ -246,6 +247,7 @@ export default function NodesPage() {
           <p>选择要进入的服务器</p>
         </div>
         {error && <div className="error-msg">{error}</div>}
+        <PasskeyPrompt />
         {protection && (
           <div className={protection.state === 'protected' ? 'success-msg' : protection.state === 'conflict' || protection.state === 'unavailable' ? 'error-msg' : 'warning-msg'}>
             <strong>数据保护：{protection.label}</strong><br />{protection.risk}

@@ -96,3 +96,12 @@ ai_supervisor:
   timeout_ms: 60000
   inspect_every_sec: 1800
   auto_adopt_min_confidence: 0.8
+
+# 通行密钥（指纹 / 面容 / 设备锁屏登录）。密钥绑定 rp_id 这个域名：填上级域名
+# （例如总控在 login.example.com 时填 example.com），以后总控换到同域名下的其他子域名，
+# 已添加的密钥照样能用。留空则用 public_url 的主机名。origins 是允许使用密钥的页面来源，
+# 留空表示只有 public_url。功能开关和数量上限在管理后台「通行密钥」里设置，默认关闭。
+passkeys:
+  rp_id: ""
+  rp_name: 云酒馆
+  origins: []

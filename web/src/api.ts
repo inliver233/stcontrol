@@ -182,6 +182,58 @@ export interface ConflictResolutionStatus {
   error?: string
 }
 
+export interface PasskeyItem {
+  id: number
+  name: string
+  created_at: string
+  last_used_at?: string
+}
+
+export interface MyPasskeys {
+  available: boolean
+  allow_registration: boolean
+  max_per_user: number
+  rp_id: string
+  passkeys: PasskeyItem[]
+}
+
+export interface PasskeyLoginConfig {
+  login_enabled: boolean
+  button_text: string
+  hint_text: string
+  rp_id: string
+}
+
+export interface PasskeyCeremony {
+  ceremony_id: string
+  options: { publicKey: unknown }
+}
+
+export interface PasskeySettings {
+  enabled: boolean
+  allow_registration: boolean
+  show_on_login_page: boolean
+  max_per_user: number
+  user_verification: 'required' | 'preferred' | 'discouraged'
+  login_button_text: string
+  login_hint_text: string
+  updated_at?: string
+}
+
+export interface PasskeyAdminOverview {
+  settings: PasskeySettings
+  configured: boolean
+  config_error?: string
+  rp_id: string
+  origins: string[]
+  overview: {
+    users_with_passkeys: number
+    total_passkeys: number
+    users: Array<{ uuid: string; username: string; display_name: string; passkeys: PasskeyItem[] }>
+    days: Array<{ day: string; registered: number; login_success: number; login_failure: number }>
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
 	const method = (options?.method || 'GET').toUpperCase()
 	const headers = new Headers(options?.headers)
@@ -238,6 +290,28 @@ export const api = {
     }),
   registrationStatus: () => request<RegistrationStatus>('/api/auth/registration/status'),
   logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+  // 通行密钥
+  passkeyLoginConfig: () => request<PasskeyLoginConfig>('/api/auth/passkey/config'),
+  passkeyLoginOptions: () => request<PasskeyCeremony>('/api/auth/passkey/login/options', { method: 'POST', body: '{}' }),
+  passkeyLoginVerify: (ceremony_id: string, credential: unknown) =>
+    request<{ ok: boolean; recovery_required: boolean }>('/api/auth/passkey/login/verify', {
+      method: 'POST', body: JSON.stringify({ ceremony_id, credential }),
+    }),
+  myPasskeys: () => request<MyPasskeys>('/api/users/me/passkeys'),
+  passkeyRegisterOptions: () => request<PasskeyCeremony>('/api/users/me/passkeys/register/options', { method: 'POST', body: '{}' }),
+  passkeyRegisterVerify: (ceremony_id: string, name: string, credential: unknown) =>
+    request<{ ok: boolean; passkey: PasskeyItem }>('/api/users/me/passkeys/register/verify', {
+      method: 'POST', body: JSON.stringify({ ceremony_id, name, credential }),
+    }),
+  renamePasskey: (id: number, name: string) =>
+    request<{ ok: boolean; passkey: PasskeyItem }>(`/api/users/me/passkeys/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  deletePasskey: (id: number) => request<{ ok: boolean }>(`/api/users/me/passkeys/${id}`, { method: 'DELETE' }),
+  adminPasskeys: () => request<PasskeyAdminOverview>('/api/admin/passkeys'),
+  adminSavePasskeySettings: (settings: PasskeySettings) =>
+    request<{ ok: boolean; settings: PasskeySettings }>('/api/admin/passkeys/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+  adminDeletePasskey: (id: number) => request<{ ok: boolean }>(`/api/admin/passkeys/${id}`, { method: 'DELETE' }),
+  adminDeleteUserPasskeys: (uuid: string) =>
+    request<{ ok: boolean; removed: number }>(`/api/admin/users/${uuid}/passkeys`, { method: 'DELETE' }),
   me: () => request<Me>('/api/users/me'),
   conflict: () => request<ReplicaConflict>('/api/conflicts/me'),
   conflictDifferences: (offset = 0, limit = 50) =>

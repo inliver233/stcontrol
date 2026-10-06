@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, AccountImportClaim, AuthIdentity, ProtectionState } from '../api'
+import PasskeysPanel from '../components/PasskeysPanel'
 
 const providerLabel: Record<string, string> = {
   password: '账号密码', discord: 'Discord', linuxdo: 'LinuxDo',
@@ -220,6 +221,7 @@ export default function AccountPage() {
           </div>
         ) : (
           <>
+            <PasskeysPanel />
             <div className="section-title">已绑定登录方式</div>
             {identities.map(identity => (
               <div className="my-node" key={identity.provider}>
