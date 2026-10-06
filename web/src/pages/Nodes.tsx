@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api, MyNode, ProtectionState, RestoreStatus, RestoreTarget, measureLatency, submitLoginHandoff } from '../api'
 import { useAuth } from '../App'
 import { Link, useNavigate } from 'react-router-dom'
-import PasskeyPrompt from '../components/PasskeyPrompt'
+import PasskeyPrompt, { shouldPromptPasskey } from '../components/PasskeyPrompt'
 
 export default function NodesPage() {
   const [nodes, setNodes] = useState<MyNode[]>([])
@@ -19,6 +19,9 @@ export default function NodesPage() {
 	const [restoreStatus, setRestoreStatus] = useState<RestoreStatus | null>(null)
 	const [restoring, setRestoring] = useState(false)
 	const mounted = useRef(true)
+  // The passkey prompt; while it is up, the automatic entry waits for the user.
+  const [passkeyPrompt, setPasskeyPrompt] = useState(false)
+  const pendingEntry = useRef<number | null>(null)
   const handoffOperations = useRef(new Map<number, string>())
   const takeoverOperations = useRef(new Map<number, string>())
   const { me, setMe } = useAuth()
@@ -27,6 +30,7 @@ export default function NodesPage() {
   useEffect(() => {
     let cancelled = false
 		mounted.current = true
+    const promptCheck = shouldPromptPasskey()
     ;(async () => {
       try {
         const [{ nodes: list }, protectionState] = await Promise.all([api.myNodes(), api.protection()])
@@ -58,12 +62,17 @@ export default function NodesPage() {
           }),
         )
         if (cancelled) return
+        const prompt = await promptCheck
+        if (cancelled) return
         setNodes(withLatency)
         setLoading(false)
+        setPasskeyPrompt(prompt)
         // 仅有一个节点且它无需风险确认时才自动跳转；有热备时保留选择机会。
+        // 提示添加通行密钥时，等用户添加或跳过后再进入。
         const ready = withLatency.filter(n => n.ready)
         if (ready.length === 1 && !ready[0].requires_takeover) {
-          enterNode(ready[0].node_id)
+          if (prompt) pendingEntry.current = ready[0].node_id
+          else enterNode(ready[0].node_id)
         }
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : '加载节点失败')
@@ -247,7 +256,14 @@ export default function NodesPage() {
           <p>选择要进入的服务器</p>
         </div>
         {error && <div className="error-msg">{error}</div>}
-        <PasskeyPrompt />
+        {passkeyPrompt && (
+          <PasskeyPrompt entering={pendingEntry.current !== null} onFinish={() => {
+            setPasskeyPrompt(false)
+            const nodeId = pendingEntry.current
+            pendingEntry.current = null
+            if (nodeId !== null) void enterNode(nodeId)
+          }} />
+        )}
         {protection && (
           <div className={protection.state === 'protected' ? 'success-msg' : protection.state === 'conflict' || protection.state === 'unavailable' ? 'error-msg' : 'warning-msg'}>
             <strong>数据保护：{protection.label}</strong><br />{protection.risk}
